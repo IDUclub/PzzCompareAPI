@@ -1,0 +1,45 @@
+Makefile
+README.md
+.gitignore
+**.ipynb
+**.log
+
+# Never copy local venv — dependencies are installed inside the image
+.venv/
+venv/
+env/
+
+# Byte-code and caches
+**/__pycache__/
+**.pyc
+**.pyo
+**.pyd
+
+# Dev / IDE
+.git/
+.idea/
+.vscode/
+
+# Local outputs — these are mounted as volumes at runtime
+outputs/
+task_inputs/
+
+# Dev data & local artifacts — the runtime image only needs the .json
+# reference files under data/ (vri classifier, hierarchies, fz->pzz mapping,
+# labels template). Heavy geospatial fixtures, spreadsheets and the local
+# SQLite db are dev-only and must not bloat the image.
+results/
+sokol_eval_outputs/
+*.gpkg
+*.geojson
+*.xlsx
+*.csv
+*.db
+*.sqlite3
+*.qmd
+
+# Tests, docs and scratch — not used at runtime
+tests/
+docs/
+docs_global_state_audit.md
+scripts/

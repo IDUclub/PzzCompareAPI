@@ -1,0 +1,680 @@
+[
+  {
+    "physical_object_function_id": 22,
+    "parent_id": null,
+    "name": "Туристические объекты",
+    "level": 1,
+    "list_label": "5",
+    "code": "tourist_objects",
+    "children": [
+      {
+        "physical_object_function_id": 10,
+        "parent_id": 22,
+        "name": "Достопримечательность",
+        "level": 2,
+        "list_label": "5.1",
+        "code": "sight",
+        "children": [
+          {
+            "physical_object_type_id": 9,
+            "name": "Памятник",
+            "physical_object_function": {
+              "id": 10,
+              "name": "Достопримечательность"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "physical_object_function_id": 20,
+    "parent_id": null,
+    "name": "Площадные объекты",
+    "level": 1,
+    "list_label": "3",
+    "code": "polygon_objects",
+    "children": [
+      {
+        "physical_object_function_id": 5,
+        "parent_id": 20,
+        "name": "Площадка",
+        "level": 2,
+        "list_label": "3.1",
+        "code": "play_field",
+        "children": [
+          {
+            "physical_object_type_id": 7,
+            "name": "Площадка",
+            "physical_object_function": {
+              "id": 5,
+              "name": "Площадка"
+            }
+          },
+          {
+            "physical_object_type_id": 19,
+            "name": "Парковка",
+            "physical_object_function": {
+              "id": 5,
+              "name": "Площадка"
+            }
+          },
+          {
+            "physical_object_type_id": 49,
+            "name": "Полигон ТБО",
+            "physical_object_function": {
+              "id": 5,
+              "name": "Площадка"
+            }
+          }
+        ]
+      },
+      {
+        "physical_object_function_id": 6,
+        "parent_id": 20,
+        "name": "Досуговый объект",
+        "level": 2,
+        "list_label": "3.2",
+        "code": "leisure",
+        "children": [
+          {
+            "physical_object_type_id": 23,
+            "name": "Зоопарк",
+            "physical_object_function": {
+              "id": 6,
+              "name": "Досуговый объект"
+            }
+          },
+          {
+            "physical_object_type_id": 36,
+            "name": "Парк развлечений",
+            "physical_object_function": {
+              "id": 6,
+              "name": "Досуговый объект"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "physical_object_function_id": 24,
+    "parent_id": null,
+    "name": "Промышленные объекты",
+    "level": 1,
+    "list_label": "7",
+    "code": "industrial_objects",
+    "children": [
+      {
+        "physical_object_function_id": 16,
+        "parent_id": 24,
+        "name": "Промышленный объект",
+        "level": 2,
+        "list_label": "7.1",
+        "code": "industry_object",
+        "children": [
+          {
+            "physical_object_type_id": 29,
+            "name": "Склад",
+            "physical_object_function": {
+              "id": 16,
+              "name": "Промышленный объект"
+            }
+          },
+          {
+            "physical_object_type_id": 43,
+            "name": "Промышленная территория",
+            "physical_object_function": {
+              "id": 16,
+              "name": "Промышленный объект"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "physical_object_function_id": 23,
+    "parent_id": null,
+    "name": "Инженерные объекты",
+    "level": 1,
+    "list_label": "6",
+    "code": "engineer_objects",
+    "children": [
+      {
+        "physical_object_function_id": 11,
+        "parent_id": 23,
+        "name": "Объект теплоснабжения",
+        "level": 2,
+        "list_label": "6.1",
+        "code": "heat_supply",
+        "children": [
+          {
+            "physical_object_type_id": 41,
+            "name": "Котельная",
+            "physical_object_function": {
+              "id": 11,
+              "name": "Объект теплоснабжения"
+            }
+          },
+          {
+            "physical_object_type_id": 56,
+            "name": "Объект теплоснабжения",
+            "physical_object_function": {
+              "id": 11,
+              "name": "Объект теплоснабжения"
+            }
+          }
+        ]
+      },
+      {
+        "physical_object_function_id": 12,
+        "parent_id": 23,
+        "name": "Объект электроснабжения",
+        "level": 2,
+        "list_label": "6.2",
+        "code": "energy_supply",
+        "children": [
+          {
+            "physical_object_type_id": 14,
+            "name": "Электрическая подстанция",
+            "physical_object_function": {
+              "id": 12,
+              "name": "Объект электроснабжения"
+            }
+          },
+          {
+            "physical_object_type_id": 21,
+            "name": "Электростанция",
+            "physical_object_function": {
+              "id": 12,
+              "name": "Объект электроснабжения"
+            }
+          },
+          {
+            "physical_object_type_id": 33,
+            "name": "Возобновляемый источник энергии",
+            "physical_object_function": {
+              "id": 12,
+              "name": "Объект электроснабжения"
+            }
+          },
+          {
+            "physical_object_type_id": 34,
+            "name": "Гидроэлектростанция",
+            "physical_object_function": {
+              "id": 12,
+              "name": "Объект электроснабжения"
+            }
+          },
+          {
+            "physical_object_type_id": 35,
+            "name": "Атомная электростанция",
+            "physical_object_function": {
+              "id": 12,
+              "name": "Объект электроснабжения"
+            }
+          }
+        ]
+      },
+      {
+        "physical_object_function_id": 13,
+        "parent_id": 23,
+        "name": "Объект водоснабжения",
+        "level": 2,
+        "list_label": "6.3",
+        "code": "water_supply",
+        "children": [
+          {
+            "physical_object_type_id": 27,
+            "name": "Сеть водоснабжения",
+            "physical_object_function": {
+              "id": 13,
+              "name": "Объект водоснабжения"
+            }
+          },
+          {
+            "physical_object_type_id": 38,
+            "name": "Водонапорная башня",
+            "physical_object_function": {
+              "id": 13,
+              "name": "Объект водоснабжения"
+            }
+          },
+          {
+            "physical_object_type_id": 40,
+            "name": "Водозаборное сооружение",
+            "physical_object_function": {
+              "id": 13,
+              "name": "Объект водоснабжения"
+            }
+          },
+          {
+            "physical_object_type_id": 42,
+            "name": "Насосная станция",
+            "physical_object_function": {
+              "id": 13,
+              "name": "Объект водоснабжения"
+            }
+          }
+        ]
+      },
+      {
+        "physical_object_function_id": 14,
+        "parent_id": 23,
+        "name": "Объект водоотведения",
+        "level": 2,
+        "list_label": "6.4",
+        "code": "water_drainage",
+        "children": [
+          {
+            "physical_object_type_id": 39,
+            "name": "Водоочистное сооружение",
+            "physical_object_function": {
+              "id": 14,
+              "name": "Объект водоотведения"
+            }
+          }
+        ]
+      },
+      {
+        "physical_object_function_id": 15,
+        "parent_id": 23,
+        "name": "Линейный объект",
+        "level": 2,
+        "list_label": "6.5",
+        "code": "linear_object",
+        "children": [
+          {
+            "physical_object_type_id": 13,
+            "name": "Распределительный трубопровод для транспортировки газа",
+            "physical_object_function": {
+              "id": 15,
+              "name": "Линейный объект"
+            }
+          },
+          {
+            "physical_object_type_id": 20,
+            "name": "Линия электропередачи",
+            "physical_object_function": {
+              "id": 15,
+              "name": "Линейный объект"
+            }
+          },
+          {
+            "physical_object_type_id": 24,
+            "name": "Сеть водоотведения",
+            "physical_object_function": {
+              "id": 15,
+              "name": "Линейный объект"
+            }
+          },
+          {
+            "physical_object_type_id": 53,
+            "name": "Сеть электросвязи",
+            "physical_object_function": {
+              "id": 15,
+              "name": "Линейный объект"
+            }
+          },
+          {
+            "physical_object_type_id": 58,
+            "name": "Сеть теплоснабжения",
+            "physical_object_function": {
+              "id": 15,
+              "name": "Линейный объект"
+            }
+          },
+          {
+            "physical_object_type_id": 62,
+            "name": "Железная дорога",
+            "physical_object_function": {
+              "id": 15,
+              "name": "Линейный объект"
+            }
+          }
+        ]
+      },
+      {
+        "physical_object_function_id": 27,
+        "parent_id": 23,
+        "name": "Объект связи",
+        "level": 2,
+        "list_label": "6.6",
+        "code": "communication_object",
+        "children": [
+          {
+            "physical_object_type_id": 57,
+            "name": "Объект связи",
+            "physical_object_function": {
+              "id": 27,
+              "name": "Объект связи"
+            }
+          }
+        ]
+      },
+      {
+        "physical_object_function_id": 28,
+        "parent_id": 23,
+        "name": "Объект добычи и транспортировки газа",
+        "level": 2,
+        "list_label": "6.7",
+        "code": "gas_object",
+        "children": [
+          {
+            "physical_object_type_id": 18,
+            "name": "Объект магистрального газопровода",
+            "physical_object_function": {
+              "id": 28,
+              "name": "Объект добычи и транспортировки газа"
+            }
+          },
+          {
+            "physical_object_type_id": 59,
+            "name": "Объект добычи и транспортировки газа",
+            "physical_object_function": {
+              "id": 28,
+              "name": "Объект добычи и транспортировки газа"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "physical_object_function_id": 25,
+    "parent_id": null,
+    "name": "Сельскохозяйственные объекты",
+    "level": 1,
+    "list_label": "8",
+    "code": "agriculture_objects",
+    "children": [
+      {
+        "physical_object_function_id": 17,
+        "parent_id": 25,
+        "name": "Сельскохозяйственный объект",
+        "level": 2,
+        "list_label": "8.1",
+        "code": "agriculture_object",
+        "children": [
+          {
+            "physical_object_type_id": 46,
+            "name": "Необрабатываемое поле",
+            "physical_object_function": {
+              "id": 17,
+              "name": "Сельскохозяйственный объект"
+            }
+          },
+          {
+            "physical_object_type_id": 60,
+            "name": "Обрабатываемое поле",
+            "physical_object_function": {
+              "id": 17,
+              "name": "Сельскохозяйственный объект"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "physical_object_function_id": 21,
+    "parent_id": null,
+    "name": "Транспортные объекты",
+    "level": 1,
+    "list_label": "4",
+    "code": "transport_objects",
+    "children": [
+      {
+        "physical_object_function_id": 9,
+        "parent_id": 21,
+        "name": "Заправочная станция",
+        "level": 2,
+        "list_label": "4.2",
+        "code": "gas_station",
+        "children": [
+          {
+            "physical_object_type_id": 8,
+            "name": "Автозаправочная станция",
+            "physical_object_function": {
+              "id": 9,
+              "name": "Заправочная станция"
+            }
+          }
+        ]
+      },
+      {
+        "physical_object_function_id": 26,
+        "parent_id": 21,
+        "name": "Дорога",
+        "level": 2,
+        "list_label": "4.3",
+        "code": "road",
+        "children": [
+          {
+            "physical_object_type_id": 50,
+            "name": "Федеральная дорога",
+            "physical_object_function": {
+              "id": 26,
+              "name": "Дорога"
+            }
+          },
+          {
+            "physical_object_type_id": 51,
+            "name": "Региональная дорога",
+            "physical_object_function": {
+              "id": 26,
+              "name": "Дорога"
+            }
+          },
+          {
+            "physical_object_type_id": 52,
+            "name": "Местная дорога",
+            "physical_object_function": {
+              "id": 26,
+              "name": "Дорога"
+            }
+          }
+        ]
+      },
+      {
+        "physical_object_function_id": 8,
+        "parent_id": 21,
+        "name": "Остановка",
+        "level": 2,
+        "list_label": "4.1",
+        "code": "stop",
+        "children": [
+          {
+            "physical_object_type_id": 10,
+            "name": "Остановка наземного общественного транспорта",
+            "physical_object_function": {
+              "id": 8,
+              "name": "Остановка"
+            }
+          },
+          {
+            "physical_object_type_id": 28,
+            "name": "Порт",
+            "physical_object_function": {
+              "id": 8,
+              "name": "Остановка"
+            }
+          },
+          {
+            "physical_object_type_id": 30,
+            "name": "Железнодорожная станция",
+            "physical_object_function": {
+              "id": 8,
+              "name": "Остановка"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "physical_object_function_id": 19,
+    "parent_id": null,
+    "name": "Природные объекты",
+    "level": 1,
+    "list_label": "2",
+    "code": "natural_objects",
+    "children": [
+      {
+        "physical_object_function_id": 2,
+        "parent_id": 19,
+        "name": "Зеленая зона",
+        "level": 2,
+        "list_label": "2.1",
+        "code": "greenery",
+        "children": [
+          {
+            "physical_object_type_id": 3,
+            "name": "Зеленая зона",
+            "physical_object_function": {
+              "id": 2,
+              "name": "Зеленая зона"
+            }
+          },
+          {
+            "physical_object_type_id": 47,
+            "name": "Травяное покрытие",
+            "physical_object_function": {
+              "id": 2,
+              "name": "Зеленая зона"
+            }
+          },
+          {
+            "physical_object_type_id": 48,
+            "name": "Лес",
+            "physical_object_function": {
+              "id": 2,
+              "name": "Зеленая зона"
+            }
+          }
+        ]
+      },
+      {
+        "physical_object_function_id": 3,
+        "parent_id": 19,
+        "name": "Рекреационная зона",
+        "level": 2,
+        "list_label": "2.2",
+        "code": "recreational",
+        "children": [
+          {
+            "physical_object_type_id": 1,
+            "name": "Рекреационная зона",
+            "physical_object_function": {
+              "id": 3,
+              "name": "Рекреационная зона"
+            }
+          },
+          {
+            "physical_object_type_id": 11,
+            "name": "Кладбище",
+            "physical_object_function": {
+              "id": 3,
+              "name": "Рекреационная зона"
+            }
+          },
+          {
+            "physical_object_type_id": 31,
+            "name": "Пляж",
+            "physical_object_function": {
+              "id": 3,
+              "name": "Рекреационная зона"
+            }
+          }
+        ]
+      },
+      {
+        "physical_object_function_id": 4,
+        "parent_id": 19,
+        "name": "Водный объект",
+        "level": 2,
+        "list_label": "2.3",
+        "code": "water",
+        "children": [
+          {
+            "physical_object_type_id": 2,
+            "name": "Водный объект",
+            "physical_object_function": {
+              "id": 4,
+              "name": "Водный объект"
+            }
+          },
+          {
+            "physical_object_type_id": 44,
+            "name": "Река",
+            "physical_object_function": {
+              "id": 4,
+              "name": "Водный объект"
+            }
+          },
+          {
+            "physical_object_type_id": 45,
+            "name": "Озеро",
+            "physical_object_function": {
+              "id": 4,
+              "name": "Водный объект"
+            }
+          },
+          {
+            "physical_object_type_id": 54,
+            "name": "Море",
+            "physical_object_function": {
+              "id": 4,
+              "name": "Водный объект"
+            }
+          },
+          {
+            "physical_object_type_id": 55,
+            "name": "Залив",
+            "physical_object_function": {
+              "id": 4,
+              "name": "Водный объект"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "physical_object_function_id": 18,
+    "parent_id": null,
+    "name": "Строения",
+    "level": 1,
+    "list_label": "1",
+    "code": "construction",
+    "children": [
+      {
+        "physical_object_function_id": 1,
+        "parent_id": 18,
+        "name": "Здание",
+        "level": 2,
+        "list_label": "1.1",
+        "code": "building",
+        "children": [
+          {
+            "physical_object_type_id": 4,
+            "name": "Жилой дом",
+            "physical_object_function": {
+              "id": 1,
+              "name": "Здание"
+            }
+          },
+          {
+            "physical_object_type_id": 5,
+            "name": "Нежилое здание",
+            "physical_object_function": {
+              "id": 1,
+              "name": "Здание"
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

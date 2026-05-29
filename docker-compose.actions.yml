@@ -1,0 +1,140 @@
+# Production deployment compose used by .github/workflows/deploy.yml.
+#
+# The workflow builds & pushes ${IMAGE} (= ${IMAGE_NAME}:${NOW}) and then runs
+# `docker compose -f docker-compose.actions.yml up -d`. This file brings up the
+# full self-contained stack: postgres + redis, a one-shot migrate job, and the
+# four app services (api / worker / beat / mcp), all from the single built image.
+#
+# DB/Redis credentials default to internal-only values (postgres is not exposed
+# on the host); override via the runner environment if needed.
+
+x-app-env: &app-env
+  APP_ENV: development
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pzz_pipeline}
+  REDIS_URL: redis://redis:6379/0
+  LOG_LEVEL: INFO
+  DB_WAIT_TIMEOUT: "60"
+  DB_WAIT_INTERVAL: "2"
+  # The dedicated `migrate` service applies Alembic migrations; the api
+  # workers must not race to upgrade on every boot.
+  RUN_MIGRATIONS_ON_STARTUP: "false"
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pzz_pipeline}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-pzz_pipeline}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    image: ${IMAGE}
+    env_file: .env.development
+    environment: *app-env
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: sh -c "python service/wait_for_db.py && alembic upgrade head"
+
+  api:
+    image: ${IMAGE}
+    restart: unless-stopped
+    env_file: .env.development
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+    volumes:
+      - outputs:/app/outputs
+      - task_inputs:/app/task_inputs
+    command: uvicorn service.app:app --host 0.0.0.0 --port 8000 --workers 2
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  worker:
+    image: ${IMAGE}
+    restart: unless-stopped
+    env_file: .env.development
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - outputs:/app/outputs
+      - task_inputs:/app/task_inputs
+    # Worker exposes its own Prometheus metrics (task queue_wait / run /
+    # fail / retry) — scrape this as a separate target from api:8000/metrics.
+    expose:
+      - "9100"
+    command: >
+      celery -A service.tasks.celery_app worker
+      -P threads
+      --concurrency=${CELERY_CONCURRENCY:-4}
+      --loglevel=INFO
+
+  beat:
+    image: ${IMAGE}
+    restart: unless-stopped
+    env_file: .env.development
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: celery -A service.tasks.celery_app beat --loglevel=INFO
+
+  mcp:
+    image: ${IMAGE}
+    restart: unless-stopped
+    env_file: .env.development
+    environment:
+      APP_ENV: development
+      LOG_LEVEL: INFO
+      MCP_API_BASE_URL: "http://api:8000"
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8765"
+      MCP_WORKERS: "1"
+    depends_on:
+      - api
+    ports:
+      - "8765:8765"
+    command: python -m service.mcp_server.main
+
+volumes:
+  pgdata:
+  outputs:
+  task_inputs:

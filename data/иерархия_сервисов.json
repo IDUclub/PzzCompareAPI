@@ -1,0 +1,1812 @@
+[
+  {
+    "urban_function_id": 42,
+    "parent_id": null,
+    "name": "Туристическая инфраструктура",
+    "level": 1,
+    "list_label": "9",
+    "code": "42",
+    "children": [
+      {
+        "urban_function_id": 43,
+        "parent_id": 42,
+        "name": "Гостиничные услуги",
+        "level": 2,
+        "list_label": "9.1",
+        "code": "43",
+        "children": [
+          {
+            "service_type_id": 110,
+            "urban_function": {
+              "id": 43,
+              "name": "Гостиничные услуги"
+            },
+            "name": "Гостиница",
+            "capacity_modeled": 1000,
+            "code": "hotel",
+            "infrastructure_type": "comfort",
+            "properties": {
+              "weight_value": 0.2
+            }
+          },
+          {
+            "service_type_id": 111,
+            "urban_function": {
+              "id": 43,
+              "name": "Гостиничные услуги"
+            },
+            "name": "Хостел",
+            "capacity_modeled": 200,
+            "code": "hostel",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 112,
+            "urban_function": {
+              "id": 43,
+              "name": "Гостиничные услуги"
+            },
+            "name": "База отдыха",
+            "capacity_modeled": 500,
+            "code": "recreation center",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      },
+      {
+        "urban_function_id": 44,
+        "parent_id": 42,
+        "name": "Достопримечательности",
+        "level": 2,
+        "list_label": "9.2",
+        "code": "44",
+        "children": [
+          {
+            "service_type_id": 113,
+            "urban_function": {
+              "id": 44,
+              "name": "Достопримечательности"
+            },
+            "name": "Памятник",
+            "capacity_modeled": null,
+            "code": "monunent",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "urban_function_id": 5,
+    "parent_id": null,
+    "name": "Социальная инфраструктура",
+    "level": 1,
+    "list_label": "2",
+    "code": "5",
+    "children": [
+      {
+        "urban_function_id": 6,
+        "parent_id": 5,
+        "name": "Образование",
+        "level": 2,
+        "list_label": "2.1",
+        "code": "6",
+        "children": [
+          {
+            "urban_function_id": 7,
+            "parent_id": 6,
+            "name": "Дошкольные образовательные организации",
+            "level": 3,
+            "list_label": "2.1.1",
+            "code": "7",
+            "children": [
+              {
+                "service_type_id": 21,
+                "urban_function": {
+                  "id": 7,
+                  "name": "Дошкольные образовательные организации"
+                },
+                "name": "Детский сад",
+                "capacity_modeled": 500,
+                "code": "kindergarden",
+                "infrastructure_type": "basic",
+                "properties": {
+                  "weight_value": 0.2
+                }
+              }
+            ]
+          },
+          {
+            "urban_function_id": 8,
+            "parent_id": 6,
+            "name": "Общеобразовательные организации",
+            "level": 3,
+            "list_label": "2.1.2",
+            "code": "8",
+            "children": [
+              {
+                "service_type_id": 22,
+                "urban_function": {
+                  "id": 8,
+                  "name": "Общеобразовательные организации"
+                },
+                "name": "Школа",
+                "capacity_modeled": 800,
+                "code": "school",
+                "infrastructure_type": "basic",
+                "properties": {
+                  "weight_value": 0.2
+                }
+              }
+            ]
+          },
+          {
+            "urban_function_id": 9,
+            "parent_id": 6,
+            "name": "Организации дополнительного образования",
+            "level": 3,
+            "list_label": "2.1.3",
+            "code": "9",
+            "children": [
+              {
+                "service_type_id": 23,
+                "urban_function": {
+                  "id": 9,
+                  "name": "Организации дополнительного образования"
+                },
+                "name": "Дом детского творчества",
+                "capacity_modeled": 2000,
+                "code": "house of children's art",
+                "infrastructure_type": null,
+                "properties": {}
+              }
+            ]
+          },
+          {
+            "urban_function_id": 10,
+            "parent_id": 6,
+            "name": "Организации детского отдыха",
+            "level": 3,
+            "list_label": "2.1.4",
+            "code": "10",
+            "children": [
+              {
+                "service_type_id": 25,
+                "urban_function": {
+                  "id": 10,
+                  "name": "Организации детского отдыха"
+                },
+                "name": "Детский лагерь",
+                "capacity_modeled": 500,
+                "code": "summer camp",
+                "infrastructure_type": null,
+                "properties": {}
+              }
+            ]
+          },
+          {
+            "urban_function_id": 11,
+            "parent_id": 6,
+            "name": "Профессиональное образование",
+            "level": 3,
+            "list_label": "2.1.5",
+            "code": "11",
+            "children": [
+              {
+                "service_type_id": 26,
+                "urban_function": {
+                  "id": 11,
+                  "name": "Профессиональное образование"
+                },
+                "name": "Учреждение среднего профессионального образования",
+                "capacity_modeled": 5000,
+                "code": "college",
+                "infrastructure_type": null,
+                "properties": {}
+              },
+              {
+                "service_type_id": 27,
+                "urban_function": {
+                  "id": 11,
+                  "name": "Профессиональное образование"
+                },
+                "name": "Учреждение высшего профессионального образования",
+                "capacity_modeled": 5000,
+                "code": "university",
+                "infrastructure_type": "comfort",
+                "properties": {
+                  "weight_value": 0.2
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "urban_function_id": 19,
+        "parent_id": 5,
+        "name": "Социальная защита",
+        "level": 2,
+        "list_label": "2.3",
+        "code": "19",
+        "children": [
+          {
+            "service_type_id": 43,
+            "urban_function": {
+              "id": 19,
+              "name": "Социальная защита"
+            },
+            "name": "Комплексный центр социального обслуживания населения",
+            "capacity_modeled": null,
+            "code": "integrated social service center",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 44,
+            "urban_function": {
+              "id": 19,
+              "name": "Социальная защита"
+            },
+            "name": "Дом престарелых",
+            "capacity_modeled": 300,
+            "code": "nursing home ",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 45,
+            "urban_function": {
+              "id": 19,
+              "name": "Социальная защита"
+            },
+            "name": "Центр занятости населения",
+            "capacity_modeled": 10000,
+            "code": "employment center ",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 46,
+            "urban_function": {
+              "id": 19,
+              "name": "Социальная защита"
+            },
+            "name": "Детский дом-интернат",
+            "capacity_modeled": null,
+            "code": "orphanage",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      },
+      {
+        "urban_function_id": 21,
+        "parent_id": 5,
+        "name": "Государственные и муниципальные услуги",
+        "level": 2,
+        "list_label": "2.4",
+        "code": "21",
+        "children": [
+          {
+            "service_type_id": 47,
+            "urban_function": {
+              "id": 21,
+              "name": "Государственные и муниципальные услуги"
+            },
+            "name": "МФЦ",
+            "capacity_modeled": 2000,
+            "code": "multifunctional center",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 145,
+            "urban_function": {
+              "id": 21,
+              "name": "Государственные и муниципальные услуги"
+            },
+            "name": "ЗАГС",
+            "capacity_modeled": null,
+            "code": "registry office",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      },
+      {
+        "urban_function_id": 12,
+        "parent_id": 5,
+        "name": "Здравоохранение",
+        "level": 2,
+        "list_label": "2.2",
+        "code": "12",
+        "children": [
+          {
+            "urban_function_id": 15,
+            "parent_id": 12,
+            "name": "Стационарное лечение",
+            "level": 3,
+            "list_label": "2.2.3",
+            "code": "15",
+            "children": [
+              {
+                "service_type_id": 35,
+                "urban_function": {
+                  "id": 15,
+                  "name": "Стационарное лечение"
+                },
+                "name": "Больница",
+                "capacity_modeled": 110,
+                "code": "hospital",
+                "infrastructure_type": "additional",
+                "properties": {
+                  "weight_value": 0.3
+                }
+              },
+              {
+                "service_type_id": 36,
+                "urban_function": {
+                  "id": 15,
+                  "name": "Стационарное лечение"
+                },
+                "name": "Роддом",
+                "capacity_modeled": null,
+                "code": "maternity",
+                "infrastructure_type": "comfort",
+                "properties": {
+                  "weight_value": 0.5
+                }
+              }
+            ]
+          },
+          {
+            "urban_function_id": 17,
+            "parent_id": 12,
+            "name": "Медицинские учреждения особого типа",
+            "level": 3,
+            "list_label": "2.2.5",
+            "code": "17",
+            "children": [
+              {
+                "service_type_id": 41,
+                "urban_function": {
+                  "id": 17,
+                  "name": "Медицинские учреждения особого типа"
+                },
+                "name": "Морг",
+                "capacity_modeled": 500,
+                "code": "mortuary ",
+                "infrastructure_type": null,
+                "properties": {}
+              },
+              {
+                "service_type_id": 146,
+                "urban_function": {
+                  "id": 17,
+                  "name": "Медицинские учреждения особого типа"
+                },
+                "name": "Крематорий",
+                "capacity_modeled": null,
+                "code": "crematorium",
+                "infrastructure_type": null,
+                "properties": {}
+              }
+            ]
+          },
+          {
+            "urban_function_id": 13,
+            "parent_id": 12,
+            "name": "Амбулаторное лечение",
+            "level": 3,
+            "list_label": "2.2.1",
+            "code": "13",
+            "children": [
+              {
+                "service_type_id": 28,
+                "urban_function": {
+                  "id": 13,
+                  "name": "Амбулаторное лечение"
+                },
+                "name": "Поликлиника",
+                "capacity_modeled": 110,
+                "code": "polyclinic",
+                "infrastructure_type": "basic",
+                "properties": {
+                  "weight_value": 0.2
+                }
+              },
+              {
+                "service_type_id": 30,
+                "urban_function": {
+                  "id": 13,
+                  "name": "Амбулаторное лечение"
+                },
+                "name": "Стоматологическая клиника",
+                "capacity_modeled": 1000,
+                "code": "dental clinic",
+                "infrastructure_type": "additional",
+                "properties": {
+                  "weight_value": 0.3
+                }
+              },
+              {
+                "service_type_id": 32,
+                "urban_function": {
+                  "id": 13,
+                  "name": "Амбулаторное лечение"
+                },
+                "name": "Женская консультация",
+                "capacity_modeled": null,
+                "code": "female consultation",
+                "infrastructure_type": null,
+                "properties": {}
+              }
+            ]
+          },
+          {
+            "urban_function_id": 14,
+            "parent_id": 12,
+            "name": "Фармацевтическая сеть",
+            "level": 3,
+            "list_label": "2.2.2",
+            "code": "14",
+            "children": [
+              {
+                "service_type_id": 34,
+                "urban_function": {
+                  "id": 14,
+                  "name": "Фармацевтическая сеть"
+                },
+                "name": "Аптека",
+                "capacity_modeled": 500,
+                "code": "pharmacy",
+                "infrastructure_type": "basic",
+                "properties": {
+                  "weight_value": 0.2
+                }
+              }
+            ]
+          },
+          {
+            "urban_function_id": 16,
+            "parent_id": 12,
+            "name": "Скорая медицинская помощь ",
+            "level": 3,
+            "list_label": "2.2.4",
+            "code": "16",
+            "children": [
+              {
+                "service_type_id": 39,
+                "urban_function": {
+                  "id": 16,
+                  "name": "Скорая медицинская помощь "
+                },
+                "name": "Станция скорой медицинской помощи",
+                "capacity_modeled": 2000,
+                "code": "ambulance station",
+                "infrastructure_type": null,
+                "properties": {}
+              },
+              {
+                "service_type_id": 40,
+                "urban_function": {
+                  "id": 16,
+                  "name": "Скорая медицинская помощь "
+                },
+                "name": "Травматологический пункт",
+                "capacity_modeled": null,
+                "code": "trauma center",
+                "infrastructure_type": null,
+                "properties": {}
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "urban_function_id": 22,
+    "parent_id": null,
+    "name": "Культуро-досуговая инфраструктура",
+    "level": 1,
+    "list_label": "3",
+    "code": "22",
+    "children": [
+      {
+        "urban_function_id": 23,
+        "parent_id": 22,
+        "name": "Объекты культуры",
+        "level": 2,
+        "list_label": "3.1",
+        "code": "23",
+        "children": [
+          {
+            "service_type_id": 48,
+            "urban_function": {
+              "id": 23,
+              "name": "Объекты культуры"
+            },
+            "name": "Библиотека",
+            "capacity_modeled": 5000,
+            "code": "library",
+            "infrastructure_type": "comfort",
+            "properties": {
+              "weight_value": 0.2
+            }
+          },
+          {
+            "service_type_id": 49,
+            "urban_function": {
+              "id": 23,
+              "name": "Объекты культуры"
+            },
+            "name": "Дворец культуры",
+            "capacity_modeled": null,
+            "code": "palace of culture",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 50,
+            "urban_function": {
+              "id": 23,
+              "name": "Объекты культуры"
+            },
+            "name": "Музей",
+            "capacity_modeled": 5000,
+            "code": "museum",
+            "infrastructure_type": "additional",
+            "properties": {
+              "weight_value": 0.2
+            }
+          },
+          {
+            "service_type_id": 51,
+            "urban_function": {
+              "id": 23,
+              "name": "Объекты культуры"
+            },
+            "name": "Театр",
+            "capacity_modeled": 2000,
+            "code": "theatre",
+            "infrastructure_type": "comfort",
+            "properties": {
+              "weight_value": 0.4
+            }
+          },
+          {
+            "service_type_id": 52,
+            "urban_function": {
+              "id": 23,
+              "name": "Объекты культуры"
+            },
+            "name": "Ботанический сад",
+            "capacity_modeled": null,
+            "code": "botanical garden",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      },
+      {
+        "urban_function_id": 24,
+        "parent_id": 22,
+        "name": "Объекты досуга",
+        "level": 2,
+        "list_label": "3.2",
+        "code": "24",
+        "children": [
+          {
+            "service_type_id": 53,
+            "urban_function": {
+              "id": 24,
+              "name": "Объекты досуга"
+            },
+            "name": "Концертный зал",
+            "capacity_modeled": null,
+            "code": "concert hall",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 54,
+            "urban_function": {
+              "id": 24,
+              "name": "Объекты досуга"
+            },
+            "name": "Цирк",
+            "capacity_modeled": null,
+            "code": "circus",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 55,
+            "urban_function": {
+              "id": 24,
+              "name": "Объекты досуга"
+            },
+            "name": "Зоопарк ",
+            "capacity_modeled": 10000,
+            "code": "zoo",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 56,
+            "urban_function": {
+              "id": 24,
+              "name": "Объекты досуга"
+            },
+            "name": "Кинотеатр",
+            "capacity_modeled": 3000,
+            "code": "cinema",
+            "infrastructure_type": "additional",
+            "properties": {
+              "weight_value": 0.2
+            }
+          },
+          {
+            "service_type_id": 57,
+            "urban_function": {
+              "id": 24,
+              "name": "Объекты досуга"
+            },
+            "name": "Торгово-развлекательный центр",
+            "capacity_modeled": 5000,
+            "code": "mall",
+            "infrastructure_type": "additional",
+            "properties": {
+              "weight_value": 0.5
+            }
+          },
+          {
+            "service_type_id": 58,
+            "urban_function": {
+              "id": 24,
+              "name": "Объекты досуга"
+            },
+            "name": "Аквапарк",
+            "capacity_modeled": 5000,
+            "code": "water park",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 59,
+            "urban_function": {
+              "id": 24,
+              "name": "Объекты досуга"
+            },
+            "name": "Стадион",
+            "capacity_modeled": 5000,
+            "code": "stadium",
+            "infrastructure_type": "additional",
+            "properties": {
+              "weight_value": 0.2
+            }
+          },
+          {
+            "service_type_id": 60,
+            "urban_function": {
+              "id": 24,
+              "name": "Объекты досуга"
+            },
+            "name": "Ледовая арена",
+            "capacity_modeled": null,
+            "code": "ice arena",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 147,
+            "urban_function": {
+              "id": 24,
+              "name": "Объекты досуга"
+            },
+            "name": "Конюшня",
+            "capacity_modeled": null,
+            "code": "stable",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      },
+      {
+        "urban_function_id": 25,
+        "parent_id": 22,
+        "name": "Общественное питание",
+        "level": 2,
+        "list_label": "3.3",
+        "code": "25",
+        "children": [
+          {
+            "service_type_id": 61,
+            "urban_function": {
+              "id": 25,
+              "name": "Общественное питание"
+            },
+            "name": "Кафе",
+            "capacity_modeled": 500,
+            "code": "cafe",
+            "infrastructure_type": "basic",
+            "properties": {
+              "weight_value": 0.15
+            }
+          },
+          {
+            "service_type_id": 62,
+            "urban_function": {
+              "id": 25,
+              "name": "Общественное питание"
+            },
+            "name": "Ресторан",
+            "capacity_modeled": 1000,
+            "code": "restaurant",
+            "infrastructure_type": "additional",
+            "properties": {
+              "weight_value": 0.3
+            }
+          },
+          {
+            "service_type_id": 63,
+            "urban_function": {
+              "id": 25,
+              "name": "Общественное питание"
+            },
+            "name": "Бар",
+            "capacity_modeled": 500,
+            "code": "bar",
+            "infrastructure_type": "additional",
+            "properties": {
+              "weight_value": 0.3
+            }
+          },
+          {
+            "service_type_id": 65,
+            "urban_function": {
+              "id": 25,
+              "name": "Общественное питание"
+            },
+            "name": "Булочная",
+            "capacity_modeled": 1000,
+            "code": "bakery",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "urban_function_id": 26,
+    "parent_id": null,
+    "name": "Спортивная инфраструктура",
+    "level": 1,
+    "list_label": "4",
+    "code": "26",
+    "children": [
+      {
+        "service_type_id": 66,
+        "urban_function": {
+          "id": 26,
+          "name": "Спортивная инфраструктура"
+        },
+        "name": "Спортивная площадка",
+        "capacity_modeled": 1000,
+        "code": "pitch",
+        "infrastructure_type": "basic",
+        "properties": {
+          "weight_value": 0.15
+        }
+      },
+      {
+        "service_type_id": 67,
+        "urban_function": {
+          "id": 26,
+          "name": "Спортивная инфраструктура"
+        },
+        "name": "Бассейн",
+        "capacity_modeled": 1000,
+        "code": "swimmimg pool",
+        "infrastructure_type": null,
+        "properties": {}
+      },
+      {
+        "service_type_id": 68,
+        "urban_function": {
+          "id": 26,
+          "name": "Спортивная инфраструктура"
+        },
+        "name": "Спортивный центр",
+        "capacity_modeled": 1000,
+        "code": "sports center",
+        "infrastructure_type": "basic",
+        "properties": {
+          "weight_value": 0.1
+        }
+      },
+      {
+        "service_type_id": 69,
+        "urban_function": {
+          "id": 26,
+          "name": "Спортивная инфраструктура"
+        },
+        "name": "Каток",
+        "capacity_modeled": 1000,
+        "code": "skating rink ",
+        "infrastructure_type": null,
+        "properties": {}
+      },
+      {
+        "service_type_id": 72,
+        "urban_function": {
+          "id": 26,
+          "name": "Спортивная инфраструктура"
+        },
+        "name": "Экологическая тропа",
+        "capacity_modeled": null,
+        "code": "eco path",
+        "infrastructure_type": null,
+        "properties": {}
+      },
+      {
+        "service_type_id": 73,
+        "urban_function": {
+          "id": 26,
+          "name": "Спортивная инфраструктура"
+        },
+        "name": "Скалодром",
+        "capacity_modeled": 100,
+        "code": "climbing gym",
+        "infrastructure_type": null,
+        "properties": {}
+      }
+    ]
+  },
+  {
+    "urban_function_id": 27,
+    "parent_id": null,
+    "name": "Детская инфраструктура",
+    "level": 1,
+    "list_label": "5",
+    "code": "27",
+    "children": [
+      {
+        "service_type_id": 74,
+        "urban_function": {
+          "id": 27,
+          "name": "Детская инфраструктура"
+        },
+        "name": "Детская площадка",
+        "capacity_modeled": 1000,
+        "code": "playground",
+        "infrastructure_type": "basic",
+        "properties": {
+          "weight_value": 0.2
+        }
+      },
+      {
+        "service_type_id": 75,
+        "urban_function": {
+          "id": 27,
+          "name": "Детская инфраструктура"
+        },
+        "name": "Парк аттракционов",
+        "capacity_modeled": 1000,
+        "code": "theme park",
+        "infrastructure_type": null,
+        "properties": {}
+      },
+      {
+        "service_type_id": 77,
+        "urban_function": {
+          "id": 27,
+          "name": "Детская инфраструктура"
+        },
+        "name": "Скейт-парк",
+        "capacity_modeled": 50,
+        "code": "skatepark",
+        "infrastructure_type": "additional",
+        "properties": {
+          "weight_value": 0.1
+        }
+      }
+    ]
+  },
+  {
+    "urban_function_id": 28,
+    "parent_id": null,
+    "name": "Инфраструктура безопасности",
+    "level": 1,
+    "list_label": "6",
+    "code": "28",
+    "children": [
+      {
+        "service_type_id": 78,
+        "urban_function": {
+          "id": 28,
+          "name": "Инфраструктура безопасности"
+        },
+        "name": "Полицейский участок",
+        "capacity_modeled": 50000,
+        "code": "police",
+        "infrastructure_type": "basic",
+        "properties": {
+          "weight_value": 0.4
+        }
+      },
+      {
+        "service_type_id": 79,
+        "urban_function": {
+          "id": 28,
+          "name": "Инфраструктура безопасности"
+        },
+        "name": "Пожарная станция",
+        "capacity_modeled": 45000,
+        "code": "fire station",
+        "infrastructure_type": "additional",
+        "properties": {
+          "weight_value": 0.5
+        }
+      }
+    ]
+  },
+  {
+    "urban_function_id": 29,
+    "parent_id": null,
+    "name": "Транспортная инфраструктура",
+    "level": 1,
+    "list_label": "7",
+    "code": "29",
+    "children": [
+      {
+        "urban_function_id": 30,
+        "parent_id": 29,
+        "name": "Железнодорожный транспорт",
+        "level": 2,
+        "list_label": "7.1",
+        "code": "30",
+        "children": [
+          {
+            "service_type_id": 80,
+            "urban_function": {
+              "id": 30,
+              "name": "Железнодорожный транспорт"
+            },
+            "name": "Железнодорожная станция",
+            "capacity_modeled": null,
+            "code": "train station",
+            "infrastructure_type": "additional",
+            "properties": {
+              "weight_value": 0.3
+            }
+          },
+          {
+            "service_type_id": 81,
+            "urban_function": {
+              "id": 30,
+              "name": "Железнодорожный транспорт"
+            },
+            "name": "Железнодорожный вокзал",
+            "capacity_modeled": 10000,
+            "code": "train building",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      },
+      {
+        "urban_function_id": 31,
+        "parent_id": 29,
+        "name": "Авиатранспорт ",
+        "level": 2,
+        "list_label": "7.2",
+        "code": "31",
+        "children": [
+          {
+            "service_type_id": 82,
+            "urban_function": {
+              "id": 31,
+              "name": "Авиатранспорт "
+            },
+            "name": "Аэропорт",
+            "capacity_modeled": 10000,
+            "code": "airport",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      },
+      {
+        "urban_function_id": 32,
+        "parent_id": 29,
+        "name": "Автомобильный транспорт",
+        "level": 2,
+        "list_label": "7.3",
+        "code": "32",
+        "children": [
+          {
+            "service_type_id": 84,
+            "urban_function": {
+              "id": 32,
+              "name": "Автомобильный транспорт"
+            },
+            "name": "Автозаправочная станция",
+            "capacity_modeled": 2000,
+            "code": "fuel",
+            "infrastructure_type": "basic",
+            "properties": {
+              "weight_value": 0.2
+            }
+          },
+          {
+            "service_type_id": 85,
+            "urban_function": {
+              "id": 32,
+              "name": "Автомобильный транспорт"
+            },
+            "name": "Парковка",
+            "capacity_modeled": null,
+            "code": "parking",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      },
+      {
+        "urban_function_id": 33,
+        "parent_id": 29,
+        "name": "Общественный транспорт",
+        "level": 2,
+        "list_label": "7.4",
+        "code": "33",
+        "children": [
+          {
+            "service_type_id": 86,
+            "urban_function": {
+              "id": 33,
+              "name": "Общественный транспорт"
+            },
+            "name": "Автовокзал",
+            "capacity_modeled": null,
+            "code": "bus terminal",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 87,
+            "urban_function": {
+              "id": 33,
+              "name": "Общественный транспорт"
+            },
+            "name": "Остановка наземного общественного транспорта",
+            "capacity_modeled": null,
+            "code": "bus stop",
+            "infrastructure_type": "basic",
+            "properties": {
+              "weight_value": 0.2
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "urban_function_id": 34,
+    "parent_id": null,
+    "name": "Инфраструктура обслуживания",
+    "level": 1,
+    "list_label": "8",
+    "code": "34",
+    "children": [
+      {
+        "urban_function_id": 35,
+        "parent_id": 34,
+        "name": "Продовольствие",
+        "level": 2,
+        "list_label": "8.1",
+        "code": "35",
+        "children": [
+          {
+            "service_type_id": 89,
+            "urban_function": {
+              "id": 35,
+              "name": "Продовольствие"
+            },
+            "name": "Супермаркет",
+            "capacity_modeled": 5000,
+            "code": "supermarket",
+            "infrastructure_type": "additional",
+            "properties": {
+              "weight_value": 0.5
+            }
+          },
+          {
+            "service_type_id": 90,
+            "urban_function": {
+              "id": 35,
+              "name": "Продовольствие"
+            },
+            "name": "Продукты (магазин у дома)",
+            "capacity_modeled": 3000,
+            "code": "convenience",
+            "infrastructure_type": "basic",
+            "properties": {
+              "weight_value": 0.2
+            }
+          },
+          {
+            "service_type_id": 91,
+            "urban_function": {
+              "id": 35,
+              "name": "Продовольствие"
+            },
+            "name": "Рынок",
+            "capacity_modeled": null,
+            "code": "market",
+            "infrastructure_type": "comfort",
+            "properties": {
+              "weight_value": 0.3
+            }
+          }
+        ]
+      },
+      {
+        "urban_function_id": 36,
+        "parent_id": 34,
+        "name": "Магазины",
+        "level": 2,
+        "list_label": "8.2",
+        "code": "36",
+        "children": [
+          {
+            "service_type_id": 92,
+            "urban_function": {
+              "id": 36,
+              "name": "Магазины"
+            },
+            "name": "Хозяйственные товары",
+            "capacity_modeled": null,
+            "code": "houseware",
+            "infrastructure_type": "basic",
+            "properties": {
+              "weight_value": 0.2
+            }
+          },
+          {
+            "service_type_id": 93,
+            "urban_function": {
+              "id": 36,
+              "name": "Магазины"
+            },
+            "name": "Одежда и обувь",
+            "capacity_modeled": 1000,
+            "code": "clothes",
+            "infrastructure_type": "comfort",
+            "properties": {
+              "weight_value": 0.2
+            }
+          },
+          {
+            "service_type_id": 94,
+            "urban_function": {
+              "id": 36,
+              "name": "Магазины"
+            },
+            "name": "Бытовая техника",
+            "capacity_modeled": null,
+            "code": "appliances",
+            "infrastructure_type": "comfort",
+            "properties": {
+              "weight_value": 0.2
+            }
+          },
+          {
+            "service_type_id": 95,
+            "urban_function": {
+              "id": 36,
+              "name": "Магазины"
+            },
+            "name": "Книжный магазин",
+            "capacity_modeled": null,
+            "code": "bookshop",
+            "infrastructure_type": "comfort",
+            "properties": {
+              "weight_value": 0.2
+            }
+          },
+          {
+            "service_type_id": 96,
+            "urban_function": {
+              "id": 36,
+              "name": "Магазины"
+            },
+            "name": "Детские товары",
+            "capacity_modeled": 1000,
+            "code": "baby goods",
+            "infrastructure_type": "comfort",
+            "properties": {
+              "weight_value": 0.2
+            }
+          },
+          {
+            "service_type_id": 97,
+            "urban_function": {
+              "id": 36,
+              "name": "Магазины"
+            },
+            "name": "Спортивный магазин",
+            "capacity_modeled": 1000,
+            "code": "sport shop",
+            "infrastructure_type": "comfort",
+            "properties": {
+              "weight_value": 0.2
+            }
+          }
+        ]
+      },
+      {
+        "urban_function_id": 37,
+        "parent_id": 34,
+        "name": "Услуги доставки",
+        "level": 2,
+        "list_label": "8.3",
+        "code": "37",
+        "children": [
+          {
+            "service_type_id": 98,
+            "urban_function": {
+              "id": 37,
+              "name": "Услуги доставки"
+            },
+            "name": "Почтовое отделение",
+            "capacity_modeled": 2000,
+            "code": "post office",
+            "infrastructure_type": "basic",
+            "properties": {
+              "weight_value": 0.1
+            }
+          },
+          {
+            "service_type_id": 99,
+            "urban_function": {
+              "id": 37,
+              "name": "Услуги доставки"
+            },
+            "name": "Пункт выдачи",
+            "capacity_modeled": 1000,
+            "code": "dropsite",
+            "infrastructure_type": "additional",
+            "properties": {
+              "weight_value": 0.2
+            }
+          }
+        ]
+      },
+      {
+        "urban_function_id": 38,
+        "parent_id": 34,
+        "name": "Финансовые услуги",
+        "level": 2,
+        "list_label": "8.4",
+        "code": "38",
+        "children": [
+          {
+            "service_type_id": 100,
+            "urban_function": {
+              "id": 38,
+              "name": "Финансовые услуги"
+            },
+            "name": "Отделение банка",
+            "capacity_modeled": 5000,
+            "code": "bank",
+            "infrastructure_type": "additional",
+            "properties": {
+              "weight_value": 0.2
+            }
+          },
+          {
+            "service_type_id": 101,
+            "urban_function": {
+              "id": 38,
+              "name": "Финансовые услуги"
+            },
+            "name": "Банкомат",
+            "capacity_modeled": 10000,
+            "code": "atm",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      },
+      {
+        "urban_function_id": 39,
+        "parent_id": 34,
+        "name": "Юридические услуги",
+        "level": 2,
+        "list_label": "8.5",
+        "code": "39",
+        "children": [
+          {
+            "service_type_id": 102,
+            "urban_function": {
+              "id": 39,
+              "name": "Юридические услуги"
+            },
+            "name": "Юридические услуги",
+            "capacity_modeled": 200,
+            "code": "lawyer",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      },
+      {
+        "urban_function_id": 40,
+        "parent_id": 34,
+        "name": "Услуги ухода за собой",
+        "level": 2,
+        "list_label": "8.6",
+        "code": "40",
+        "children": [
+          {
+            "service_type_id": 104,
+            "urban_function": {
+              "id": 40,
+              "name": "Услуги ухода за собой"
+            },
+            "name": "Парикмахерская",
+            "capacity_modeled": 500,
+            "code": "hairdresser",
+            "infrastructure_type": "basic",
+            "properties": {
+              "weight_value": 0.1
+            }
+          },
+          {
+            "service_type_id": 105,
+            "urban_function": {
+              "id": 40,
+              "name": "Услуги ухода за собой"
+            },
+            "name": "Салон красоты",
+            "capacity_modeled": null,
+            "code": "beauty salon ",
+            "infrastructure_type": "basic",
+            "properties": {
+              "weight_value": 0.1
+            }
+          },
+          {
+            "service_type_id": 106,
+            "urban_function": {
+              "id": 40,
+              "name": "Услуги ухода за собой"
+            },
+            "name": "Общественная баня",
+            "capacity_modeled": 1000,
+            "code": "bathhouse ",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      },
+      {
+        "urban_function_id": 41,
+        "parent_id": 34,
+        "name": "Услуги для питомцев",
+        "level": 2,
+        "list_label": "8.7",
+        "code": "41",
+        "children": [
+          {
+            "service_type_id": 107,
+            "urban_function": {
+              "id": 41,
+              "name": "Услуги для питомцев"
+            },
+            "name": "Ветеринарная клиника",
+            "capacity_modeled": 1000,
+            "code": "veterinary",
+            "infrastructure_type": "additional",
+            "properties": {
+              "weight_value": 0.1
+            }
+          },
+          {
+            "service_type_id": 108,
+            "urban_function": {
+              "id": 41,
+              "name": "Услуги для питомцев"
+            },
+            "name": "Зоомагазин",
+            "capacity_modeled": null,
+            "code": "petshop",
+            "infrastructure_type": "comfort",
+            "properties": {
+              "weight_value": 0.2
+            }
+          },
+          {
+            "service_type_id": 109,
+            "urban_function": {
+              "id": 41,
+              "name": "Услуги для питомцев"
+            },
+            "name": "Площадка для выгула собак",
+            "capacity_modeled": 500,
+            "code": "dog park ",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "urban_function_id": 45,
+    "parent_id": null,
+    "name": "Религиозный объект",
+    "level": 1,
+    "list_label": "10",
+    "code": "45",
+    "children": [
+      {
+        "service_type_id": 114,
+        "urban_function": {
+          "id": 45,
+          "name": "Религиозный объект"
+        },
+        "name": "Религиозный объект",
+        "capacity_modeled": 500,
+        "code": "religion",
+        "infrastructure_type": "comfort",
+        "properties": {
+          "weight_value": 0.2
+        }
+      },
+      {
+        "service_type_id": 115,
+        "urban_function": {
+          "id": 45,
+          "name": "Религиозный объект"
+        },
+        "name": "Кладбище",
+        "capacity_modeled": 0,
+        "code": "cemetery",
+        "infrastructure_type": null,
+        "properties": {}
+      },
+      {
+        "service_type_id": 148,
+        "urban_function": {
+          "id": 45,
+          "name": "Религиозный объект"
+        },
+        "name": "Монастырь",
+        "capacity_modeled": null,
+        "code": "monastery",
+        "infrastructure_type": null,
+        "properties": {}
+      }
+    ]
+  },
+  {
+    "urban_function_id": 46,
+    "parent_id": null,
+    "name": "Инженерная инфраструктура",
+    "level": 1,
+    "list_label": "11",
+    "code": "46",
+    "children": [
+      {
+        "urban_function_id": 49,
+        "parent_id": 46,
+        "name": "Водоснабжение",
+        "level": 2,
+        "list_label": "11.3",
+        "code": "49",
+        "children": [
+          {
+            "service_type_id": 124,
+            "urban_function": {
+              "id": 49,
+              "name": "Водоснабжение"
+            },
+            "name": "Водозаборное сооружение",
+            "capacity_modeled": null,
+            "code": "water works",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 125,
+            "urban_function": {
+              "id": 49,
+              "name": "Водоснабжение"
+            },
+            "name": "Насосная станция",
+            "capacity_modeled": null,
+            "code": "pumping station ",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 128,
+            "urban_function": {
+              "id": 49,
+              "name": "Водоснабжение"
+            },
+            "name": "Очистное сооружение",
+            "capacity_modeled": null,
+            "code": "wastewater plant",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      },
+      {
+        "urban_function_id": 47,
+        "parent_id": 46,
+        "name": "Теплоснабжение",
+        "level": 2,
+        "list_label": "11.1",
+        "code": "47",
+        "children": [
+          {
+            "service_type_id": 116,
+            "urban_function": {
+              "id": 47,
+              "name": "Теплоснабжение"
+            },
+            "name": "Котельная",
+            "capacity_modeled": null,
+            "code": "boiler room",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 117,
+            "urban_function": {
+              "id": 47,
+              "name": "Теплоснабжение"
+            },
+            "name": "Теплоэлектроцентраль",
+            "capacity_modeled": null,
+            "code": "power plant",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      },
+      {
+        "urban_function_id": 48,
+        "parent_id": 46,
+        "name": "Электроснабжение",
+        "level": 2,
+        "list_label": "11.2",
+        "code": "48",
+        "children": [
+          {
+            "service_type_id": 118,
+            "urban_function": {
+              "id": 48,
+              "name": "Электроснабжение"
+            },
+            "name": "Атомная электростанция",
+            "capacity_modeled": null,
+            "code": "nuclear plant",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 119,
+            "urban_function": {
+              "id": 48,
+              "name": "Электроснабжение"
+            },
+            "name": "Гидроэлектростанция",
+            "capacity_modeled": null,
+            "code": "hydropower plant",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 120,
+            "urban_function": {
+              "id": 48,
+              "name": "Электроснабжение"
+            },
+            "name": "Тепловая электростанция",
+            "capacity_modeled": null,
+            "code": "thermal plant",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 121,
+            "urban_function": {
+              "id": 48,
+              "name": "Электроснабжение"
+            },
+            "name": "Возобновляемый источник энергии",
+            "capacity_modeled": null,
+            "code": "renewable energy source",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 123,
+            "urban_function": {
+              "id": 48,
+              "name": "Электроснабжение"
+            },
+            "name": "Трансформаторная подстанция",
+            "capacity_modeled": null,
+            "code": "transformer substation",
+            "infrastructure_type": null,
+            "properties": {}
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "urban_function_id": 52,
+    "parent_id": null,
+    "name": "Промышленная инфраструктура",
+    "level": 1,
+    "list_label": "13",
+    "code": "52",
+    "children": [
+      {
+        "service_type_id": 132,
+        "urban_function": {
+          "id": 52,
+          "name": "Промышленная инфраструктура"
+        },
+        "name": "Промышленная территория",
+        "capacity_modeled": null,
+        "code": "industrial area",
+        "infrastructure_type": null,
+        "properties": {}
+      }
+    ]
+  },
+  {
+    "urban_function_id": 1,
+    "parent_id": null,
+    "name": "Рекреационная инфраструктура",
+    "level": 1,
+    "list_label": "1",
+    "code": "1",
+    "children": [
+      {
+        "urban_function_id": 2,
+        "parent_id": 1,
+        "name": "Зеленые зоны",
+        "level": 2,
+        "list_label": "1.1",
+        "code": "2",
+        "children": [
+          {
+            "service_type_id": 1,
+            "urban_function": {
+              "id": 2,
+              "name": "Зеленые зоны"
+            },
+            "name": "Парк",
+            "capacity_modeled": 2000,
+            "code": "park",
+            "infrastructure_type": "basic",
+            "properties": {
+              "weight_value": 0.2
+            }
+          },
+          {
+            "service_type_id": 2,
+            "urban_function": {
+              "id": 2,
+              "name": "Зеленые зоны"
+            },
+            "name": "Лес",
+            "capacity_modeled": null,
+            "code": "wood",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 3,
+            "urban_function": {
+              "id": 2,
+              "name": "Зеленые зоны"
+            },
+            "name": "Заповедник",
+            "capacity_modeled": null,
+            "code": "reserve",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 4,
+            "urban_function": {
+              "id": 2,
+              "name": "Зеленые зоны"
+            },
+            "name": "ООПТ",
+            "capacity_modeled": null,
+            "code": "protected area",
+            "infrastructure_type": null,
+            "properties": {}
+          },
+          {
+            "service_type_id": 143,
+            "urban_function": {
+              "id": 2,
+              "name": "Зеленые зоны"
+            },
+            "name": "Санаторий",
+            "capacity_modeled": null,
+            "code": "sanatorium",
+            "infrastructure_type": "additional",
+            "properties": {
+              "weight_value": 0.4
+            }
+          }
+        ]
+      },
+      {
+        "urban_function_id": 3,
+        "parent_id": 1,
+        "name": "Пляж",
+        "level": 2,
+        "list_label": "1.2",
+        "code": "3",
+        "children": [
+          {
+            "service_type_id": 5,
+            "urban_function": {
+              "id": 3,
+              "name": "Пляж"
+            },
+            "name": "Пляж",
+            "capacity_modeled": null,
+            "code": "beach",
+            "infrastructure_type": "comfort",
+            "properties": {
+              "weight_value": 0.5
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "urban_function_id": 54,
+    "parent_id": null,
+    "name": "Исправительное учреждение",
+    "level": 1,
+    "list_label": "14",
+    "code": "54",
+    "children": [
+      {
+        "service_type_id": 149,
+        "urban_function": {
+          "id": 54,
+          "name": "Исправительное учреждение"
+        },
+        "name": "Исправительная колония",
+        "capacity_modeled": null,
+        "code": "prison",
+        "infrastructure_type": null,
+        "properties": {}
+      }
+    ]
+  }
+]

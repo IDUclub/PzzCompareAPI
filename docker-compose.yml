@@ -1,0 +1,110 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: pzz_pipeline
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  api:
+    build: .
+    user: root
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pzz_pipeline
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: INFO
+      DB_WAIT_TIMEOUT: 60
+      DB_WAIT_INTERVAL: 2
+      NOT_ALLOWED_LLM_RERANK_NUM_PREDICT: "4000"
+      NOT_ALLOWED_LLM_RERANK_THINK: "false"
+      NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N: "8"
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "8000:8000"
+    command: sh -c "python service/wait_for_db.py && uvicorn service.app:app --host 0.0.0.0 --port 8000"
+    volumes:
+      - ./:/app
+      - ./outputs:/app/outputs
+      - ./task_inputs:/app/task_inputs
+      - ./data:/app/data
+
+  worker:
+    build: .
+    user: root
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pzz_pipeline
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: INFO
+      DB_WAIT_TIMEOUT: 60
+      DB_WAIT_INTERVAL: 2
+      # Rerank output is tiny JSON (~50 tokens) — cap to prevent thinking runaway
+      NOT_ALLOWED_LLM_RERANK_NUM_PREDICT: "4000"
+      NOT_ALLOWED_LLM_RERANK_THINK: "false"
+      # Fewer candidates → shorter prompt → less room for thinking runaway
+      NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N: "8"
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "9100:9100"
+    command: sh -c "python service/wait_for_db.py && celery -A service.tasks.celery_app worker -P threads --concurrency=4 --loglevel=INFO"
+    volumes:
+      - ./:/app
+      - ./outputs:/app/outputs
+      - ./task_inputs:/app/task_inputs
+      - ./data:/app/data
+
+  beat:
+    build: .
+    user: root
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pzz_pipeline
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: INFO
+      DB_WAIT_TIMEOUT: 60
+      DB_WAIT_INTERVAL: 2
+    depends_on:
+      - postgres
+      - redis
+    command: sh -c "python service/wait_for_db.py && celery -A service.tasks.celery_app beat --loglevel=INFO"
+    volumes:
+      - ./:/app
+      - ./outputs:/app/outputs
+      - ./task_inputs:/app/task_inputs
+      - ./data:/app/data
+
+  mcp:
+    build: .
+    user: root
+    environment:
+      APP_ENV: development
+      LOG_LEVEL: INFO
+      # MCP-only settings — see service/mcp_server/config.py
+      MCP_API_BASE_URL: "http://api:8000"
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8765"
+      MCP_WORKERS: "1"
+    depends_on:
+      - api
+    ports:
+      - "8765:8765"
+    command: sh -c "python -m service.mcp_server.main"
+    volumes:
+      - ./:/app
+
+volumes:
+  pgdata:
