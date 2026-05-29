@@ -26,18 +26,18 @@ functional zone.
 
 TWO WAYS TO CLASSIFY:
 1. Scenario flow (preferred for agents): the user has a project open in
-   urban_api. The frontend injects `scenario_id` into request _meta and the
-   user's Bearer token into the Authorization header — you never ask for
-   these. Use classify_scenario / classify_scenario_and_wait, then
-   get_scenario_classification_report. Use get_scenario_zones_info to explain
-   what may be built in a zone.
+   urban_api. Pass `scenario_id` explicitly to the scenario tools; the user's
+   Bearer token is taken from the Authorization header automatically (you
+   never ask for the token). Use classify_scenario / classify_scenario_and_wait,
+   then get_scenario_classification_report. Use get_scenario_zones_info to
+   explain what may be built in a zone.
 2. File flow: the user provides raw GeoJSON (submit_pzz_check_task /
    submit_classify_only_task). Only for small inline datasets.
 
 TYPICAL SCENARIO DIALOG:
-  classify_scenario(year, source) -> external_id
-  poll get_scenario_classification_status(external_id) until "finished"
-  get_scenario_classification_report(external_id) -> relay `chat_message`.
+  classify_scenario(scenario_id, year, source) -> external_id
+  poll get_scenario_classification_status(scenario_id, external_id) until "finished"
+  get_scenario_classification_report(scenario_id, external_id) -> relay `chat_message`.
 
 If a tool returns AUTH_TOKEN_EXPIRED, ask the frontend/user for a fresh
 token and retry — do not reuse the rejected one."""

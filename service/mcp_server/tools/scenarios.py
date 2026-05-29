@@ -1,19 +1,16 @@
 """MCP tools for the scenario classification flow (urban_api-backed).
 
-Parameter split, per IDUclub convention:
+Parameter model:
 
-- **Hidden metadata** (NOT visible to the LLM) is read from the MCP
-  request ``_meta`` and the HTTP ``Authorization`` header:
-    * ``scenario_id`` — which project/scenario the user has open; injected
-      by the frontend into ``_meta``.
-    * Bearer token — the user's urban_api JWT, forwarded to our REST layer
-      which forwards it to urban_api.
-  These depend on *where the user is* and must not be hallucinated by the
-  model, so they never appear in the tool schema.
+- **Visible parameters** (the LLM supplies / asks the user / reads from
+  urban_api): ``scenario_id``, ``year``, ``source``,
+  ``physical_object_type_id``, ``priority``, ``force_recompute``,
+  ``external_id``, ``group_by``. ``scenario_id`` identifies which project /
+  scenario to operate on and is passed explicitly by the caller.
 
-- **Visible parameters** (the LLM can reason about / ask the user / read
-  from urban_api): ``year``, ``source``, ``physical_object_type_id``,
-  ``priority``, ``force_recompute``, ``external_id``, ``group_by``.
+- **Hidden auth** (NOT in the tool schema): the user's Bearer token is read
+  from the HTTP ``Authorization`` header and forwarded to our REST layer,
+  which forwards it to urban_api.
 
 Long runs report progress via ``ctx.report_progress`` so a client on the
 streamable-HTTP transport sees live updates.
@@ -26,7 +23,6 @@ from typing import Annotated, Any
 from fastmcp import Context, FastMCP
 from fastmcp.dependencies import Depends
 from fastmcp.server.dependencies import get_http_headers
-from mcp import ErrorData, McpError
 
 from ..api_client import ApiClient
 from ..dependencies import get_api_client
@@ -47,49 +43,20 @@ def extract_token() -> str | None:
     return auth[7:].strip() if auth.startswith("Bearer ") else None
 
 
-def _scenario_id_from_meta(ctx: Context) -> int:
-    """Read scenario_id from request _meta; raise a clear error if missing.
-
-    The frontend must inject ``scenario_id`` into the MCP request ``_meta``
-    (it knows which project the user has open). We never let the LLM supply
-    it — that would let the model classify an arbitrary scenario.
-    """
-    rc = getattr(ctx, "request_context", None)
-    meta = getattr(rc, "meta", None) if rc else None
-    raw = getattr(meta, "scenario_id", None) if meta else None
-    if raw is None:
-        raise McpError(ErrorData(
-            code=-32602,
-            message=(
-                "MISSING_SCENARIO_CONTEXT: scenario_id was not provided in the "
-                "request _meta. The frontend must inject the current scenario_id "
-                "into the MCP request metadata; it cannot be supplied as a tool "
-                "argument."
-            ),
-        ))
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        raise McpError(ErrorData(
-            code=-32602,
-            message=f"INVALID_SCENARIO_CONTEXT: scenario_id in _meta is not an integer: {raw!r}",
-        ))
-
-
 @scenarios_mcp.tool(
     name="classify_scenario",
     title="Classify scenario objects against PZZ zones",
-    description="""Run PZZ-compliance classification for the CURRENT scenario's objects.
+    description="""Run PZZ-compliance classification for a scenario's objects.
 
 USE WHEN: the user asks to check whether their scenario's buildings sit in
 suitable functional zones, or wants the "is this object in the right zone"
-report. Works on the scenario the user currently has open.
+report.
 
-CONTEXT (provided automatically, do NOT ask the user for these):
-- scenario_id: taken from the request metadata (the open project).
-- authorization: the user's token, taken from the request headers.
+AUTH (automatic, do NOT ask the user): the user's token is taken from the
+request Authorization header.
 
-PARAMETERS (you choose / ask the user):
+PARAMETERS (you supply / ask the user):
+- scenario_id (int, required): the project/scenario to classify.
 - year (int, required): data year of the scenario's functional zones.
 - source (string, required): one of "User", "OSM", "PZZ" — the zone data source.
 - physical_object_type_id (int, default 4): which object type to classify. 4 = residential buildings (Жилой дом). Other ids come from urban_api's physical-object hierarchy.
@@ -98,24 +65,22 @@ PARAMETERS (you choose / ask the user):
 
 BEHAVIOUR: asynchronous. Returns immediately with a task descriptor
 (external_id + status, usually "queued"). The pipeline runs in the
-background. Poll get_scenario_classification_status(external_id) until
-status is "finished", then call get_scenario_classification_report.
+background. Poll get_scenario_classification_status(scenario_id, external_id)
+until status is "finished", then call get_scenario_classification_report.
 
 RETURNS: { external_id, status, priority, ... }.
 
-TIP: to discover valid (year, source) pairs first, call
-get_scenario_zone_sources is NOT available — instead, if you pass an
-unavailable (year, source) this tool returns an error listing what IS
-available.
+TIP: if you pass an unavailable (year, source) this tool returns an error
+listing what IS available for the scenario.
 
 ERRORS:
 - -32002 AUTH_TOKEN_EXPIRED: token rejected — ask frontend for a fresh one.
-- -32602 MISSING_SCENARIO_CONTEXT: frontend didn't inject scenario_id.
 - -32602 Invalid params: (year, source) not available for this scenario.""",
     tags={"scenario", "submit"},
 )
 @map_errors
 async def classify_scenario(
+    scenario_id: Annotated[int, "The project/scenario id to classify."],
     year: Annotated[int, "Data year of the scenario's functional zones, e.g. 2026."],
     source: Annotated[str, "Zone data source: 'User', 'OSM' or 'PZZ'."],
     physical_object_type_id: Annotated[
@@ -123,11 +88,9 @@ async def classify_scenario(
     ] = 4,
     priority: Annotated[int, "Scheduling priority 1-10."] = 1,
     force_recompute: Annotated[bool, "Re-run even if a cached result exists."] = False,
-    ctx: Context = None,
     token: str | None = Depends(extract_token),
     api: ApiClient = Depends(get_api_client),
 ) -> dict[str, Any]:
-    scenario_id = _scenario_id_from_meta(ctx)
     return await api.submit_scenario_classify(
         scenario_id=scenario_id,
         year=year,
@@ -149,7 +112,10 @@ enough to finish within a couple of minutes. For large datasets prefer
 classify_scenario (non-blocking) + polling, since this tool gives up after
 a timeout.
 
-Same context + parameters as classify_scenario, plus:
+AUTH (automatic): the user's token from the Authorization header.
+
+Same parameters as classify_scenario (scenario_id, year, source,
+physical_object_type_id, priority, force_recompute), plus:
 - group_by (string, default "zone"): "zone" groups objects by their zone
   (with PZZ permitted-use summary); "object" returns a flat list.
 - timeout_seconds (int, default 180, max 600): how long to wait before
@@ -165,6 +131,7 @@ when finished; otherwise { external_id, status, timed_out: true }.""",
 )
 @map_errors
 async def classify_scenario_and_wait(
+    scenario_id: Annotated[int, "The project/scenario id to classify."],
     year: Annotated[int, "Data year, e.g. 2026."],
     source: Annotated[str, "Zone data source: 'User', 'OSM' or 'PZZ'."],
     physical_object_type_id: Annotated[int, "Object type. 4 = residential."] = 4,
@@ -176,7 +143,6 @@ async def classify_scenario_and_wait(
     token: str | None = Depends(extract_token),
     api: ApiClient = Depends(get_api_client),
 ) -> dict[str, Any]:
-    scenario_id = _scenario_id_from_meta(ctx)
     submitted = await api.submit_scenario_classify(
         scenario_id=scenario_id,
         year=year,
@@ -238,9 +204,10 @@ USE WHEN: a classify_scenario call returned an external_id and you need to
 know when it's done.
 
 PARAMETERS:
+- scenario_id (int, required): the scenario the task belongs to.
 - external_id (string, required): from classify_scenario.
 
-CONTEXT (automatic): scenario_id (_meta), token (header).
+AUTH (automatic): the user's token from the Authorization header.
 
 RETURNS: TaskOut { external_id, status, started_at, finished_at, error_text }.
 status one of queued / waiting_capacity / running / finished / failed.""",
@@ -249,12 +216,11 @@ status one of queued / waiting_capacity / running / finished / failed.""",
 )
 @map_errors
 async def get_scenario_classification_status(
+    scenario_id: Annotated[int, "The scenario id the task belongs to."],
     external_id: Annotated[str, "Task id from classify_scenario."],
-    ctx: Context = None,
     token: str | None = Depends(extract_token),
     api: ApiClient = Depends(get_api_client),
 ) -> dict[str, Any]:
-    scenario_id = _scenario_id_from_meta(ctx)
     return await api.get_scenario_task(
         scenario_id=scenario_id, external_id=external_id, token=token
     )
@@ -269,12 +235,13 @@ USE WHEN: a scenario task has finished and you want to present results to
 the user.
 
 PARAMETERS:
+- scenario_id (int, required): the scenario the task belongs to.
 - external_id (string, required): finished task id.
 - group_by (string, default "zone"): "zone" groups objects by their actual
   zone and attaches the PZZ permitted-use summary; "object" returns a flat
   list of objects.
 
-CONTEXT (automatic): scenario_id (_meta), token (header).
+AUTH (automatic): the user's token from the Authorization header.
 
 RETURNS:
   {
@@ -292,13 +259,12 @@ ERRORS: -32602 if the task isn't finished yet (poll status first).""",
 )
 @map_errors
 async def get_scenario_classification_report(
+    scenario_id: Annotated[int, "The scenario id the task belongs to."],
     external_id: Annotated[str, "Finished task id."],
     group_by: Annotated[str, "'zone' (default) or 'object'."] = "zone",
-    ctx: Context = None,
     token: str | None = Depends(extract_token),
     api: ApiClient = Depends(get_api_client),
 ) -> dict[str, Any]:
-    scenario_id = _scenario_id_from_meta(ctx)
     return await api.get_scenario_object_zone_fit(
         scenario_id=scenario_id,
         external_id=external_id,
@@ -310,16 +276,17 @@ async def get_scenario_classification_report(
 @scenarios_mcp.tool(
     name="get_scenario_zones_info",
     title="Get scenario zones with permitted-use reference",
-    description="""List the current scenario's functional zones with a "what can be built here" reference.
+    description="""List a scenario's functional zones with a "what can be built here" reference.
 
 USE WHEN: the user asks what zones exist in their project, or what is
 allowed / forbidden in a zone — WITHOUT running classification.
 
 PARAMETERS:
+- scenario_id (int, required): the project/scenario to inspect.
 - year (int, required).
 - source (string, required): "User" / "OSM" / "PZZ".
 
-CONTEXT (automatic): scenario_id (_meta), token (header).
+AUTH (automatic): the user's token from the Authorization header.
 
 RETURNS: { scenario_id, year, source, total, items: [ {
   zone_type_id, zone_type_name,
@@ -333,13 +300,12 @@ that zone type (fields will be null).""",
 )
 @map_errors
 async def get_scenario_zones_info(
+    scenario_id: Annotated[int, "The project/scenario id to inspect."],
     year: Annotated[int, "Data year, e.g. 2026."],
     source: Annotated[str, "Zone data source: 'User' / 'OSM' / 'PZZ'."],
-    ctx: Context = None,
     token: str | None = Depends(extract_token),
     api: ApiClient = Depends(get_api_client),
 ) -> dict[str, Any]:
-    scenario_id = _scenario_id_from_meta(ctx)
     return await api.get_scenario_zones_info(
         scenario_id=scenario_id, year=year, source=source, token=token
     )
@@ -355,9 +321,10 @@ re-fetching from urban_api. If the scenario DATA changed upstream, prefer
 classify_scenario with force_recompute=true instead (it re-pulls).
 
 PARAMETERS:
+- scenario_id (int, required): the scenario the task belongs to.
 - external_id (string, required): terminal (finished/failed) task id.
 
-CONTEXT (automatic): scenario_id (_meta), token (header).
+AUTH (automatic): the user's token from the Authorization header.
 
 RETURNS: TaskOut with status "queued". Poll status afterwards.
 ERRORS: -32602 if the task is still active (409 upstream).""",
@@ -365,12 +332,11 @@ ERRORS: -32602 if the task is still active (409 upstream).""",
 )
 @map_errors
 async def recompute_scenario_classification(
+    scenario_id: Annotated[int, "The scenario id the task belongs to."],
     external_id: Annotated[str, "Terminal task id to re-run."],
-    ctx: Context = None,
     token: str | None = Depends(extract_token),
     api: ApiClient = Depends(get_api_client),
 ) -> dict[str, Any]:
-    scenario_id = _scenario_id_from_meta(ctx)
     return await api.recompute_scenario_task(
         scenario_id=scenario_id, external_id=external_id, token=token
     )
