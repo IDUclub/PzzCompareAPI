@@ -22,7 +22,8 @@ from sqlalchemy.orm import Session
 from starlette.responses import FileResponse
 
 from ..application.use_cases.create_task import create_task
-from ..dependencies import get_app_settings, get_db, get_event_repo, get_task_repo
+from ..auth.exceptions import AuthError
+from ..dependencies import get_app_settings, get_auth_client, get_db, get_event_repo, get_task_repo
 from ..domain.ports.event_repository import EventRepository
 from ..domain.ports.task_repository import TaskRepository
 from ..infrastructure.pzz_mapping import (
@@ -76,7 +77,21 @@ def _get_token_from_header(credentials: HTTPAuthorizationCredentials) -> str:
 async def verify_token(
     credentials: HTTPAuthorizationCredentials = Depends(http_bearer),
 ) -> str:
-    return _get_token_from_header(credentials)
+    """Extract the Bearer token and verify it (Keycloak JWT) when enabled.
+
+    When ``AUTH_VERIFY`` is false the token is accepted as-is (urban_api
+    validates it downstream). When true, the signature + claims are checked
+    against the realm JWKS; a rejected token yields 401 so the caller can
+    refresh it.
+    """
+    token = _get_token_from_header(credentials)
+    auth_client = get_auth_client()
+    if auth_client.config.verify:
+        try:
+            await auth_client.get_user_from_token(token)
+        except AuthError as exc:
+            raise HTTPException(status_code=401, detail=exc.detail) from exc
+    return token
 
 
 def _scenario_id_from_idempotency_key(key: str | None) -> int | None:

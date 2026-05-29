@@ -60,6 +60,20 @@ class Settings(BaseSettings):
     # by Prometheus as a separate target.
     worker_metrics_port: int = Field(default=9100)
 
+    # Bearer-token verification (Keycloak JWT via JWKS). Opt-in: when
+    # auth_verify is false (default) tokens are accepted without signature
+    # checks (dev/test, or when an upstream gateway already validated them).
+    # Set AUTH_VERIFY=true + AUTH_SERVER_URL=<realm url> in prod.
+    auth_verify: bool = Field(default=False)
+    auth_server_url: str = Field(default="")  # https://.../realms/<realm>
+    auth_client_id: str = Field(default="")
+    auth_verify_aud: bool = Field(default=True)
+    auth_valid_audiences: str = Field(default="")  # comma-separated
+    auth_user_cache_ttl: int = Field(default=300)
+    auth_user_cache_size: int = Field(default=10_000)
+    auth_jwks_cache_ttl: int = Field(default=600)
+    auth_timeout_seconds: int = Field(default=5)
+
     urban_api_base_url: str = Field(default="")
     urban_api_timeout_seconds: float = Field(default=30.0)
 

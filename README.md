@@ -179,6 +179,21 @@ get_scenario_classification_report(scenario_id, external_id) # отдать chat
 
 ---
 
+## Аутентификация
+
+Сценарные эндпоинты (`/scenarios/*`) требуют `Authorization: Bearer <jwt>`.
+Токен форвардится в urban_api и, опционально, **проверяется локально** по
+образцу IDUclub (Keycloak JWT через JWKS, см. `service/auth/`):
+
+- `AUTH_VERIFY=false` (по умолчанию) — токен принимается без проверки подписи
+  (dev, либо когда его уже проверил вышестоящий шлюз);
+- `AUTH_VERIFY=true` + `AUTH_SERVER_URL=https://<host>/realms/<realm>` —
+  проверяются подпись (RS256 по JWKS), issuer и (опц.) audience; отвергнутый
+  токен → `401`.
+
+Параметры: `AUTH_SERVER_URL`, `AUTH_CLIENT_ID`, `AUTH_VERIFY_AUD`,
+`AUTH_VALID_AUDIENCES`, кеши `AUTH_JWKS_CACHE_TTL` / `AUTH_USER_CACHE_TTL`.
+
 ## Метрики
 
 Метрики задач (`queue_wait_seconds`, `task_run_seconds`, `task_fail_total`,

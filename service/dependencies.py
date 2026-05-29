@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Generator
 
 from fastapi import Depends, FastAPI, Request
 from sqlalchemy.orm import Session
 
+from .auth import AuthenticationClient, build_auth_config
 from .db import session_scope
 from .domain.ports.config_repository import ConfigRepository
 from .domain.ports.event_repository import EventRepository
@@ -13,6 +15,12 @@ from .infrastructure.repositories.sqlalchemy_config_repository import SqlAlchemy
 from .infrastructure.repositories.sqlalchemy_event_repository import SqlAlchemyEventRepository
 from .infrastructure.repositories.sqlalchemy_task_repository import SqlAlchemyTaskRepository
 from .settings import Settings, get_settings
+
+
+@lru_cache(maxsize=1)
+def get_auth_client() -> AuthenticationClient:
+    """Process-singleton auth client built from settings (JWKS cache shared)."""
+    return AuthenticationClient(build_auth_config(get_settings()))
 
 
 def init_dependencies(app: FastAPI) -> None:
