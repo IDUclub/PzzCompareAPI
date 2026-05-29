@@ -210,6 +210,8 @@ __marimo__/
 *.crt
 *.key
 *.env.*
+# but keep the committed env template (no secrets)
+!.env.example
 results/
 *.geojson
 *.gpkg
