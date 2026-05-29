@@ -41,10 +41,10 @@ class Settings(BaseSettings):
         default="data/rosreestr_vri_classifier_2024_12_24.json"
     )
     default_services_hierarchy_path: str = Field(
-        default="data/иерархия_сервисов.json"
+        default="data/services_hierarchy.json"
     )
     default_physical_objects_hierarchy_path: str = Field(
-        default="data/иерархия_физических_объектов.json"
+        default="data/physical_objects_hierarchy.json"
     )
     default_fz_to_pzz_mapping_path: str = Field(
         default="data/functional_zones_to_pzz_mapping.json"

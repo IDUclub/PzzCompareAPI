@@ -31,8 +31,8 @@ class ReferenceDataProvider:
         self._defaults = {
             "pzz_zone_labels": "data/pzz_zone_llm_labels_template.json",
             "vri_classifier": "data/rosreestr_vri_classifier_2024_12_24.json",
-            "services_hierarchy": "data/иерархия_сервисов.json",
-            "physical_hierarchy": "data/иерархия_физических_объектов.json",
+            "services_hierarchy": "data/services_hierarchy.json",
+            "physical_hierarchy": "data/physical_objects_hierarchy.json",
         }
         try:
             from service.settings import get_settings

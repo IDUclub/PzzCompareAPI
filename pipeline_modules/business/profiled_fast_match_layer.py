@@ -25,9 +25,9 @@ def detect_direct_description_coverage(vri_text: str, candidate_name: Any, candi
     is_direct = best_metrics['coverage'] >= DIRECT_DESC_COVERAGE_THRESHOLD and best_metrics['overlap'] >= max(DIRECT_DESC_MIN_OVERLAP, min(4, len(tokenize_canonical(query_norm)))) and (phrase_hit or best_metrics['seq_ratio'] >= DIRECT_DESC_SEQ_THRESHOLD)
     return {'is_direct': bool(is_direct), 'score': float(best_metrics['score']), 'coverage': float(best_metrics['coverage']), 'overlap': float(best_metrics['overlap']), 'seq_ratio': float(best_metrics['seq_ratio']), 'phrase_hit': bool(phrase_hit)}
 
-SERVICE_HIERARCHY_PATH_CANDIDATES = ['data/иерархия_сервисов.json', '/mnt/data/иерархия_сервисов.json', 'иерархия_сервисов.json']
+SERVICE_HIERARCHY_PATH_CANDIDATES = ['data/services_hierarchy.json', '/mnt/data/services_hierarchy.json', 'services_hierarchy.json']
 
-PHYSICAL_HIERARCHY_PATH_CANDIDATES = ['data/иерархия_физических_объектов.json', '/mnt/data/иерархия_физических_объектов.json', 'иерархия_физических_объектов.json']
+PHYSICAL_HIERARCHY_PATH_CANDIDATES = ['data/physical_objects_hierarchy.json', '/mnt/data/physical_objects_hierarchy.json', 'physical_objects_hierarchy.json']
 
 def resolve_optional_existing_path(path_candidates: list[str]) -> Optional[str]:
     """Return the first existing path or None when all candidates are missing."""
