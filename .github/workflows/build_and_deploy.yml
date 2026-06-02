@@ -40,14 +40,6 @@ jobs:
             cp "$ENV_PATH/.env.development" ./ || echo "No env file to copy"
           fi
 
-#      - name: Set up Docker Buildx
-#        uses: docker/setup-buildx-action@v3
-#        with:
-#          driver-opts: |
-#            network=host
-#          buildkitd-flags: |
-#            --allow-insecure-entitlement security.insecure
-
       - name: Generate image tag
         id: vars
         run: |
@@ -58,20 +50,6 @@ jobs:
           fi
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "sha_short=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
-
-#      - name: Build Docker image
-#        uses: docker/build-push-action@v5
-#        with:
-#          context: .
-#          file: Dockerfile
-#          push: true
-#          tags: |
-#            http://${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
-#            http://${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest
-#          cache-from: type=gha
-#          cache-to: type=gha,mode=max
-#          provenance: false
-#          sbom: false
 
       - name: Build and push Docker image
         run: |
@@ -85,7 +63,7 @@ jobs:
       - name: Stop old services gracefully
         run: |
           docker compose -f docker-compose.actions.yml stop api worker beat mcp || true
-          sleep 10  # Дать время на завершение задач
+          sleep 10
 
       - name: Start postgres and redis
         if: inputs.skip_migrations == 'false'
@@ -107,17 +85,8 @@ jobs:
 
       - name: Health check API
         run: |
-          for i in {1..30}; do
-            if curl -f http://localhost:8300/health; then
-              echo "✅ API is healthy"
-              exit 0
-            fi
-            echo "Attempt $i/30: API not ready yet..."
-            sleep 2
-          done
-          echo "❌ API failed to start"
-          docker compose -f docker-compose.actions.yml logs api --tail=50
-          exit 1
+          curl --retry 30 --retry-delay 2 --retry-connrefused http://localhost:8300/health
+          echo "✅ API is healthy"
 
       - name: Verify services
         run: |
@@ -125,19 +94,16 @@ jobs:
           docker compose -f docker-compose.actions.yml ps
           RUNNING=$(docker compose -f docker-compose.actions.yml ps --services --filter "status=running" | wc -l)
           TOTAL=6
-          
           echo "Running services: $RUNNING/$TOTAL"
-          
           if [ "$RUNNING" -ne "$TOTAL" ]; then
             echo "❌ Not all services are running!"
             echo "Logs from failed services:"
             docker compose -f docker-compose.actions.yml logs --tail=30
             exit 1
           fi
-          
           echo "✅ All $TOTAL services are running successfully"
 
-      - name: Clean up old images (optional)
+      - name: Clean up old images
         run: |
           docker image prune -a --filter "until=168h" -f || true
           
