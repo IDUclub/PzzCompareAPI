@@ -1,4 +1,4 @@
-# Production deployment compose used by .github/workflows/deploy.yml.
+# Production deployment compose used by .github/workflows/build_and_deploy.yml.
 #
 # The workflow builds & pushes ${IMAGE} (= ${IMAGE_NAME}:${NOW}) and then runs
 # `docker compose -f docker-compose.actions.yml up -d`. This file brings up the
@@ -27,6 +27,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-pzz_pipeline}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    networks:
+      - pzz_compare
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -38,6 +40,8 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
+    networks:
+      - pzz_compare
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -49,6 +53,8 @@ services:
     env_file: .env.development
     environment: *app-env
     restart: "no"
+    networks:
+      - pzz_compare
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,7 +73,9 @@ services:
       migrate:
         condition: service_completed_successfully
     ports:
-      - "8000:8000"
+      - "8300:8000"
+    networks:
+      - pzz_compare  
     volumes:
       - outputs:/app/outputs
       - task_inputs:/app/task_inputs
@@ -95,8 +103,10 @@ services:
       - task_inputs:/app/task_inputs
     # Worker exposes its own Prometheus metrics (task queue_wait / run /
     # fail / retry) — scrape this as a separate target from api:8000/metrics.
-    expose:
-      - "9100"
+    networks:
+      - pzz_compare
+    ports:
+      - "9200:9100"
     command: >
       celery -A service.tasks.celery_app worker
       -P threads
@@ -108,6 +118,8 @@ services:
     restart: unless-stopped
     env_file: .env.development
     environment: *app-env
+    networks:
+      - pzz_compare
     depends_on:
       postgres:
         condition: service_healthy
@@ -132,9 +144,26 @@ services:
       - api
     ports:
       - "8765:8765"
+    networks:
+      - pzz_compare
     command: python -m service.mcp_server.main
 
 volumes:
   pgdata:
+    driver_opts:
+      type: none
+      device: /var/essdata/postgres_data
+      o: bind
   outputs:
+    driver_opts:
+      type: none
+      device: /var/essdata/PzzCompareData/outputs
+      o: bind
   task_inputs:
+    driver_opts:
+      type: none
+      device: /var/essdata/PzzCompareData/task_inputs
+      o: bind
+networks:
+  pzz_compare:
+    driver: bridge

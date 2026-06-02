@@ -1,0 +1,144 @@
+name: Build and Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Custom image tag (optional, defaults to timestamp)'
+        required: false
+        type: string
+      skip_migrations:
+        description: 'Skip running database migrations'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build-and-deploy:
+    runs-on: [self-hosted]
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Copy keys
+        env:
+          KEYS_PATH: ${{ secrets.KEYS_PATH }}
+        run: |
+          if [ -n "$KEYS_PATH" ]; then
+            cp "$KEYS_PATH"/* ./ || echo "No keys to copy"
+          fi
+
+      - name: Copy env file
+        env:
+          ENV_PATH: ${{ secrets.ENV_PATH }}
+        run: |
+          if [ -n "$ENV_PATH" ]; then
+            cp "$ENV_PATH/.env.development" ./ || echo "No env file to copy"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate image tag
+        id: vars
+        run: |
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            TAG="${{ inputs.image_tag }}"
+          else
+            TAG=$(date +'%Y%m%d-%H%M%S')-${GITHUB_SHA::8}
+          fi
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "sha_short=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
+            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Stop old services gracefully
+        run: |
+          docker compose -f docker-compose.actions.yml stop api worker beat mcp || true
+          sleep 10  # Дать время на завершение задач
+
+      - name: Run database migrations
+        if: inputs.skip_migrations == false
+        run: |
+          # Запускаем только БД и Redis
+          docker compose -f docker-compose.actions.yml up -d postgres redis
+          
+          # Ждём готовности БД
+          sleep 5
+          
+          # Запускаем миграции
+          docker compose -f docker-compose.actions.yml run --rm migrate
+                    
+      - name: Start all services
+        run: |
+          # Запускаем всё
+          docker compose -f docker-compose.actions.yml up -d
+          
+          # Ждём инициализации
+          echo "Waiting for services to initialize..."
+          sleep 10
+          
+          # Health check API
+          for i in {1..30}; do
+            if curl -f http://localhost:8300/health; then
+              echo "✅ API is healthy"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "❌ API failed to start"
+              docker compose -f docker-compose.actions.yml logs api --tail=50
+              exit 1
+            fi
+            echo "Attempt $i/30: API not ready yet..."
+            sleep 2
+          done
+
+      - name: Verify services
+        run: |
+          echo "Checking service status..."
+          docker compose -f docker-compose.actions.yml ps
+          
+          # Проверяем что все сервисы запущены
+          RUNNING=$(docker compose -f docker-compose.actions.yml ps --services --filter "status=running" | wc -l)
+          TOTAL=6
+          
+          echo "Running services: $RUNNING/$TOTAL"
+          
+          if [ "$RUNNING" -ne "$TOTAL" ]; then
+            echo "❌ Not all services are running!"
+            echo "Logs from failed services:"
+            docker compose -f docker-compose.actions.yml logs --tail=30
+            exit 1
+          fi
+          
+          echo "✅ All $TOTAL services are running successfully"
+
+      - name: Clean up old images (optional)
+        run: |
+          # Удаляем старые образы, но не трогаем volumes с данными
+          docker image prune -a --filter "until=168h" -f || true
+          # Не запускаем docker volume prune, чтобы не удалить данные!
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "========================================="
+          echo "Deployment completed with status: ${{ job.status }}"
+          echo "Image: ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}"
+          echo "Migrations: ${{ inputs.skip_migrations == 'false' && 'Run' || 'Skipped' }}"
+          echo "Timestamp: $(date)"
+          echo "========================================="
