@@ -66,8 +66,8 @@ jobs:
           file: Dockerfile
           push: true
           tags: |
-            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
-            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest
+            http://${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
+            http://${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
