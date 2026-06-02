@@ -59,7 +59,7 @@ jobs:
             .
           docker push ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
           docker push ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest
-      
+
       - name: Stop old services gracefully
         run: |
           docker compose -f docker-compose.actions.yml stop api worker beat mcp || true
@@ -76,7 +76,7 @@ jobs:
       - name: Run database migrations
         if: inputs.skip_migrations == 'false'
         run: docker compose -f docker-compose.actions.yml run --rm migrate
-                    
+
       - name: Start all services
         run: docker compose -f docker-compose.actions.yml up -d
 
@@ -106,7 +106,7 @@ jobs:
       - name: Clean up old images
         run: |
           docker image prune -a --filter "until=168h" -f || true
-          
+
       - name: Deployment summary
         if: always()
         run: |
