@@ -59,20 +59,29 @@ jobs:
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "sha_short=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
 
-      - name: Build Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: Dockerfile
-          push: true
-          tags: |
-            http://${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
-            http://${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: false
-          sbom: false
+#      - name: Build Docker image
+#        uses: docker/build-push-action@v5
+#        with:
+#          context: .
+#          file: Dockerfile
+#          push: true
+#          tags: |
+#            http://${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
+#            http://${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest
+#          cache-from: type=gha
+#          cache-to: type=gha,mode=max
+#          provenance: false
+#          sbom: false
 
+      - name: Build and push Docker image
+        run: |
+          docker build \
+            -t ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }} \
+            -t ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest \
+        
+          docker push ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
+          docker push ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest
+      
       - name: Stop old services gracefully
         run: |
           docker compose -f docker-compose.actions.yml stop api worker beat mcp || true
