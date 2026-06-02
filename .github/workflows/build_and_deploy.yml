@@ -100,23 +100,24 @@ jobs:
         run: docker compose -f docker-compose.actions.yml run --rm migrate
                     
       - name: Start all services
+        run: docker compose -f docker-compose.actions.yml up -d
+
+      - name: Wait for services initialization
+        run: sleep 10
+
+      - name: Health check API
         run: |
-          docker compose -f docker-compose.actions.yml up -d
-          echo "Waiting for services to initialize..."
-          sleep 10
           for i in {1..30}; do
             if curl -f http://localhost:8300/health; then
               echo "✅ API is healthy"
-              break
-            fi
-            if [ $i -eq 30 ]; then
-              echo "❌ API failed to start"
-              docker compose -f docker-compose.actions.yml logs api --tail=50
-              exit 1
+              exit 0
             fi
             echo "Attempt $i/30: API not ready yet..."
             sleep 2
           done
+          echo "❌ API failed to start"
+          docker compose -f docker-compose.actions.yml logs api --tail=50
+          exit 1
 
       - name: Verify services
         run: |
