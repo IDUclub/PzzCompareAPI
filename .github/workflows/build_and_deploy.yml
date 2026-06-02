@@ -87,12 +87,17 @@ jobs:
           docker compose -f docker-compose.actions.yml stop api worker beat mcp || true
           sleep 10  # Дать время на завершение задач
 
+      - name: Start postgres and redis
+        if: inputs.skip_migrations == false
+        run: docker compose -f docker-compose.actions.yml up -d postgres redis
+
+      - name: Wait for database
+        if: inputs.skip_migrations == false
+        run: sleep 5
+
       - name: Run database migrations
         if: inputs.skip_migrations == false
-        run: |
-          docker compose -f docker-compose.actions.yml up -d postgres redis
-          sleep 5
-          docker compose -f docker-compose.actions.yml run --rm migrate
+        run: docker compose -f docker-compose.actions.yml run --rm migrate
                     
       - name: Start all services
         run: |
