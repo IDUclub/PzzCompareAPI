@@ -42,6 +42,11 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            network=host
+          buildkitd-flags: |
+            --allow-insecure-entitlement security.insecure
 
       - name: Generate image tag
         id: vars
@@ -65,6 +70,8 @@ jobs:
             ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
 
       - name: Stop old services gracefully
         run: |
