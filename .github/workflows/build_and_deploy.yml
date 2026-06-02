@@ -40,13 +40,13 @@ jobs:
             cp "$ENV_PATH/.env.development" ./ || echo "No env file to copy"
           fi
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            network=host
-          buildkitd-flags: |
-            --allow-insecure-entitlement security.insecure
+#      - name: Set up Docker Buildx
+#        uses: docker/setup-buildx-action@v3
+#        with:
+#          driver-opts: |
+#            network=host
+#          buildkitd-flags: |
+#            --allow-insecure-entitlement security.insecure
 
       - name: Generate image tag
         id: vars
@@ -78,7 +78,7 @@ jobs:
           docker build \
             -t ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }} \
             -t ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest \
-        
+            .
           docker push ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
           docker push ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest
       
