@@ -15,7 +15,7 @@ on:
 
 jobs:
   build-and-deploy:
-    runs-on: [self-hosted]
+    runs-on: 46_runner
     timeout-minutes: 30
     
     steps:
