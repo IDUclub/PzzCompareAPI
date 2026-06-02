@@ -52,6 +52,7 @@ services:
     image: ${IMAGE}
     env_file: .env.development
     environment: *app-env
+      IMAGE: ${IMAGE}
     restart: "no"
     networks:
       - pzz_compare
@@ -65,6 +66,7 @@ services:
     restart: unless-stopped
     env_file: .env.development
     environment: *app-env
+      IMAGE: ${IMAGE}
     depends_on:
       postgres:
         condition: service_healthy
@@ -91,6 +93,7 @@ services:
     restart: unless-stopped
     env_file: .env.development
     environment: *app-env
+      IMAGE: ${IMAGE}
     depends_on:
       postgres:
         condition: service_healthy
@@ -118,6 +121,7 @@ services:
     restart: unless-stopped
     env_file: .env.development
     environment: *app-env
+      IMAGE: ${IMAGE}
     networks:
       - pzz_compare
     depends_on:
@@ -134,6 +138,7 @@ services:
     restart: unless-stopped
     env_file: .env.development
     environment:
+      IMAGE: ${IMAGE}
       APP_ENV: development
       LOG_LEVEL: INFO
       MCP_API_BASE_URL: "http://api:8000"
