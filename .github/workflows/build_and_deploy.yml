@@ -62,7 +62,7 @@ jobs:
 
       - name: Stop old services gracefully
         run: |
-          docker compose -f docker-compose.actions.yml stop api worker beat mcp || true
+          docker compose -f docker-compose.actions.yml down || true
           sleep 10
 
       - name: Start postgres and redis
