@@ -17,6 +17,9 @@ jobs:
   build-and-deploy:
     runs-on: 46_runner
     timeout-minutes: 30
+    outputs:
+      tag: ${{ steps.vars.outputs.tag }}
+      sha_short: ${{ steps.vars.outputs.sha_short }}
     
     steps:
       - name: Checkout code
