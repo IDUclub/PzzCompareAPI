@@ -53,16 +53,12 @@ jobs:
 
       - name: Build and push Docker image
         run: |
-          docker build \
-            -t ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }} \
-            -t ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest \
-            .
+          docker build -t ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }} .
           docker push ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
-          docker push ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest
 
       - name: Stop old services gracefully
         run: |
-          docker compose -f docker-compose.actions.yml down || true
+          docker compose -f docker-compose.actions.yml stop api worker beat mcp || true
           sleep 10
 
       - name: Start postgres and redis
@@ -104,8 +100,7 @@ jobs:
           echo "✅ All $TOTAL services are running successfully"
 
       - name: Clean up old images
-        run: |
-          docker image prune -a --filter "until=168h" -f || true
+        run: docker image prune -a --filter "until=168h" -f || true
 
       - name: Deployment summary
         if: always()
