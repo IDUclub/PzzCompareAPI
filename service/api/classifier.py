@@ -16,7 +16,7 @@ from ..domain.ports.task_repository import TaskRepository
 from ..infrastructure.storage import get_object_storage
 from ..schemas import TaskCreate, TaskOut
 from ..settings import Settings
-from ..tasks import execute_pipeline_task
+from ..tasks import celery_app, execute_pipeline_task
 from .utils import api_log
 
 router = APIRouter(prefix="/tasks", tags=["classifier"])
@@ -220,6 +220,7 @@ def _create_pipeline_task(
         external_id=external_id,
         input_paths=input_paths,
         session=session,
+        revoke_task=celery_app.control.revoke,
     )
     session.flush()
     session.refresh(task)
