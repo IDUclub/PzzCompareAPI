@@ -156,3 +156,105 @@ def test_failed_task_with_same_idempotency_key_is_reenqueued(tmp_path):
     assert enqueue_count == 2
     assert repo.tasks[task.id].status == TaskStatus.queued
     assert repo.tasks[task.id].error_text is None
+
+
+def test_queued_task_is_reenqueued_on_force_recompute(tmp_path):
+    """A task stuck in queued (e.g. Celery message lost) must be re-enqueued
+    when force_recompute=True is passed.  This was the reported bug where the
+    task appeared as 'enqueued' but was never actually processed."""
+    repo = Repo()
+    events = EventRepo()
+    enqueue_count = 0
+
+    def enqueue(task_id: int):
+        nonlocal enqueue_count
+        enqueue_count += 1
+        return Result()
+
+    task = create_task(
+        payload=_payload(), settings=_settings(tmp_path),
+        task_repo=repo, event_repo=events, enqueue_task=enqueue,
+        idempotency_key="stuck-queued",
+    )
+    # Simulate task stuck in queued (Celery message lost — count stays 1).
+    assert repo.tasks[task.id].status == TaskStatus.queued
+
+    # Without force_recompute, still returns existing task and does NOT re-enqueue.
+    not_rerun = create_task(
+        payload=_payload(), settings=_settings(tmp_path),
+        task_repo=repo, event_repo=events, enqueue_task=enqueue,
+        idempotency_key="stuck-queued",
+    )
+    assert not_rerun.id == task.id
+    assert enqueue_count == 1
+
+    # With force_recompute, it MUST re-enqueue.
+    rerun = create_task(
+        payload=_payload(), settings=_settings(tmp_path),
+        task_repo=repo, event_repo=events, enqueue_task=enqueue,
+        idempotency_key="stuck-queued",
+        force_recompute=True,
+    )
+    assert rerun.id == task.id
+    assert enqueue_count == 2
+    assert repo.tasks[task.id].status == TaskStatus.queued
+
+
+def test_waiting_capacity_task_is_reenqueued_on_force_recompute(tmp_path):
+    """Same fix applies to tasks stuck in waiting_capacity."""
+    repo = Repo()
+    events = EventRepo()
+    enqueue_count = 0
+
+    def enqueue(task_id: int):
+        nonlocal enqueue_count
+        enqueue_count += 1
+        return Result()
+
+    task = create_task(
+        payload=_payload(), settings=_settings(tmp_path),
+        task_repo=repo, event_repo=events, enqueue_task=enqueue,
+        idempotency_key="stuck-capacity",
+    )
+    repo.update_status(task.id, TaskStatus.waiting_capacity)
+
+    rerun = create_task(
+        payload=_payload(), settings=_settings(tmp_path),
+        task_repo=repo, event_repo=events, enqueue_task=enqueue,
+        idempotency_key="stuck-capacity",
+        force_recompute=True,
+    )
+    assert rerun.id == task.id
+    assert enqueue_count == 2
+    assert repo.tasks[task.id].status == TaskStatus.queued
+
+
+def test_stuck_queued_task_old_celery_id_is_revoked_on_force_recompute(tmp_path):
+    """The stale Celery message must be revoked to prevent a double-execution race."""
+    repo = Repo()
+    events = EventRepo()
+    revoked = []
+
+    def enqueue(task_id: int):
+        return Result()
+
+    def revoke(celery_id: str):
+        revoked.append(celery_id)
+
+    task = create_task(
+        payload=_payload(), settings=_settings(tmp_path),
+        task_repo=repo, event_repo=events, enqueue_task=enqueue,
+        idempotency_key="revoke-test",
+    )
+    # Give it a fake stale Celery task ID.
+    repo.tasks[task.id].celery_task_id = "old-celery-abc"
+
+    create_task(
+        payload=_payload(), settings=_settings(tmp_path),
+        task_repo=repo, event_repo=events, enqueue_task=enqueue,
+        idempotency_key="revoke-test",
+        force_recompute=True,
+        revoke_task=revoke,
+    )
+
+    assert revoked == ["old-celery-abc"]

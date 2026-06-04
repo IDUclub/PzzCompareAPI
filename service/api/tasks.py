@@ -87,13 +87,25 @@ def build_recompute_task_response(
     event_repo: EventRepository,
     session: Session,
 ) -> TaskOut:
-    """Re-enqueue an already-authorized terminal task; shared logic."""
-    if task.status not in {TaskStatus.finished, TaskStatus.failed}:
+    """Re-enqueue an already-authorized task; shared logic.
+
+    Allowed for all non-running states.  For tasks stuck in ``queued`` or
+    ``waiting_capacity`` (e.g. Celery message was lost) the old Celery task
+    is revoked before a fresh one is enqueued.
+    """
+    _rerunnable = {TaskStatus.finished, TaskStatus.failed, TaskStatus.queued, TaskStatus.waiting_capacity}
+    if task.status not in _rerunnable:
         raise HTTPException(
             status_code=409,
-            detail=f"Task is not in a terminal state (current: {task.status.value}); "
-                   "cancel it first or wait for it to finish",
+            detail=f"Task is currently running; cancel it first",
         )
+
+    # Revoke the stale Celery message so it doesn't race with the new one.
+    if task.celery_task_id and task.status in {TaskStatus.queued, TaskStatus.waiting_capacity}:
+        try:
+            celery_app.control.revoke(task.celery_task_id)
+        except Exception:  # noqa: BLE001
+            pass
 
     task_repo.set_error(task.id, None)
     task_repo.set_result(task.id, None)

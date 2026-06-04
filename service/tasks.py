@@ -21,6 +21,7 @@ from .domain.ports.task_repository import TaskNotFoundError
 from .infrastructure.repositories.sqlalchemy_config_repository import SqlAlchemyConfigRepository
 from .infrastructure.repositories.sqlalchemy_event_repository import SqlAlchemyEventRepository
 from .infrastructure.repositories.sqlalchemy_task_repository import SqlAlchemyTaskRepository
+from .log_sink import setup_redis_sink
 from .logging_config import setup_logging
 from .metrics import queue_wait_seconds, task_fail_total, task_retry_total, task_run_seconds
 from .models import PipelineTask, TaskStatus
@@ -40,6 +41,12 @@ celery_app.conf.beat_schedule = {
         "schedule": schedule(run_every=settings.outputs_cleanup_interval_seconds),
     },
 }
+
+
+@worker_ready.connect
+def _setup_worker_log_sink(**kwargs) -> None:  # noqa: ARG001
+    """Wire up the Redis log sink once the worker is fully started."""
+    setup_redis_sink(redis_url=settings.redis_url)
 
 
 @worker_ready.connect
