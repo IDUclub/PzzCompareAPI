@@ -79,6 +79,7 @@ def create_task(
     external_id: str | None = None,
     input_paths: dict[str, str] | None = None,
     session: Any = None,
+    revoke_task: Callable[[str], object] | None = None,
 ) -> PipelineTask:
     """Create or re-enqueue a task.
 
@@ -91,12 +92,24 @@ def create_task(
     if idempotency_key:
         existing = task_repo.get_by_idempotency_key(idempotency_key)
         if existing is not None:
+            _non_terminal = {TaskStatus.queued, TaskStatus.waiting_capacity}
             should_rerun = (
-                force_recompute and existing.status in {TaskStatus.failed, TaskStatus.finished}
+                force_recompute and existing.status in {
+                    TaskStatus.failed, TaskStatus.finished,
+                    TaskStatus.queued, TaskStatus.waiting_capacity,
+                }
             ) or (
                 retry_failed and existing.status == TaskStatus.failed
             )
             if should_rerun:
+                # Revoke the old Celery message when the task is stuck in a
+                # non-terminal state so the stale message doesn't race with
+                # the newly enqueued one.
+                if revoke_task is not None and existing.celery_task_id and existing.status in _non_terminal:
+                    try:
+                        revoke_task(existing.celery_task_id)
+                    except Exception:  # noqa: BLE001
+                        pass
                 task_repo.set_error(existing.id, None)
                 task_repo.set_result(existing.id, None)
                 existing.started_at = None

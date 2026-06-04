@@ -6,16 +6,21 @@ Starlette ASGI app that uvicorn (or another ASGI runner) can serve.
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastmcp import FastMCP
 from starlette.responses import JSONResponse, RedirectResponse
 from starlette.routing import Route
 
+from ..log_sink import setup_redis_sink
+from ..logging_config import setup_logging
 from .dependencies import init_dependencies, shutdown_dependencies
 from .tools.scenarios import scenarios_mcp
 from .tools.tasks import tasks_mcp
 
+setup_logging()
+setup_redis_sink(redis_url=os.getenv("REDIS_URL", ""))
 
 logger = logging.getLogger("service.mcp_server")
 
