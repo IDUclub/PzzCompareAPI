@@ -62,6 +62,10 @@ LLM_LONG_TEXT_HARD_CASE_MIN_LEN = int(os.getenv("LLM_LONG_TEXT_HARD_CASE_MIN_LEN
 ENABLE_PROFILED_FAST_MATCH = _env_bool("ENABLE_PROFILED_FAST_MATCH", True)
 ALLOW_ZONE_NAME_SUMMARY_AUTOMATCH = _env_bool("ALLOW_ZONE_NAME_SUMMARY_AUTOMATCH", False)
 RESIDENTIAL_AUTO_REQUIRES_SUBTYPE = _env_bool("RESIDENTIAL_AUTO_REQUIRES_SUBTYPE", True)
+# Жилой объект без указания этажности/типа застройки относим к обобщенному ВРИ
+# 2.0 «Жилая застройка», а не к среднеэтажной (2.5) / многоэтажной (2.6).
+RESIDENTIAL_UNSPECIFIED_TO_GENERIC = _env_bool("RESIDENTIAL_UNSPECIFIED_TO_GENERIC", True)
+RESIDENTIAL_GENERIC_VRI_CODE = os.getenv("RESIDENTIAL_GENERIC_VRI_CODE", "2.0")
 PROFILED_EMBED_RESTRICTION = _env_bool("PROFILED_EMBED_RESTRICTION", True)
 LLM_BACKEND = os.getenv("LLM_BACKEND", "vllm")
 LLM_MODEL = os.getenv("LLM_MODEL", os.getenv("GENERATE_MODEL", "openai/gpt-oss-20b" if LLM_BACKEND == "vllm" else "gpt-oss:20b"))

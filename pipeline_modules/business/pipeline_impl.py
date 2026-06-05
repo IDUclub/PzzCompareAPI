@@ -21,6 +21,8 @@ from .matching_layer import (
     fast_embed_match_in_zone,
     fast_string_match_in_zone,
     find_exact_zone_candidates,
+    is_residential_unspecified_vri,
+    resolve_residential_unspecified_in_zone,
     resolve_zone_reference,
     run_zone_check_with_llm,
 )
@@ -38,6 +40,7 @@ from .rerank_layer import (
     build_not_allowed_same_zone_candidates,
     fast_rerank_not_allowed_candidates,
     get_not_allowed_query_key,
+    promote_generic_residential_first,
     run_not_allowed_rerank_with_llm,
     serialize_not_allowed_same_zone_candidates,
     should_run_not_allowed_llm_rerank,
@@ -302,7 +305,11 @@ def run_pipeline(
             llm_input = ranked_candidates[:NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N]
             final_candidates = ranked_candidates[:5]
 
-            if should_run_not_allowed_llm_rerank(vri_text, llm_input):
+            # Жилой объект без указания этажности/типа застройки: детерминированно
+            # ставим обобщенный ВРИ 2.0 «Жилая застройка» в Топ-1 и не тратим LLM-реранк.
+            residential_generic_case = is_residential_unspecified_vri(vri_text)
+
+            if not residential_generic_case and should_run_not_allowed_llm_rerank(vri_text, llm_input):
                 rerank_key = normalize_text(vri_text).lower()
                 cached = llm_rerank_cache.get(rerank_key)
                 if cached is not None:
@@ -316,6 +323,11 @@ def run_pipeline(
                         if rerank_key not in llm_rerank_cache:
                             llm_rerank_cache[rerank_key] = result
                     final_candidates = llm_rerank_cache[rerank_key]
+
+            if residential_generic_case:
+                final_candidates = promote_generic_residential_first(
+                    vri_text=vri_text, candidates=ranked_candidates, context=context,
+                )[:5]
 
             payload["CHECK_SCOPE"] = "classifier_only"
             payload["MATCH_METHOD"] = "classifier_top5_llm_or_fast"
@@ -339,6 +351,19 @@ def run_pipeline(
             payload["Статус"] = status_to_russian_label("no_zone_metadata")
             payload["MATCH_METHOD"] = "no_zone_metadata"
             payload["PZZ_REASON"] = "Для фактической зоны не найдено описание в шаблоне ПЗЗ."
+            return payload
+
+        residential_generic = resolve_residential_unspecified_in_zone(
+            vri_text=vri_text, actual_zone_code=actual_zone_code, context=context,
+        )
+        if residential_generic is not None:
+            verdict = normalize_text(residential_generic.get("verdict")) or "unclear"
+            payload["PZZ_VRI_VERDICT"] = verdict
+            payload["Статус"] = status_to_russian_label(verdict)
+            payload["MATCH_METHOD"] = residential_generic.get("match_method") or "residential_unspecified_generic"
+            payload["MATCHED_VRI_NAME"] = normalize_text(residential_generic.get("matched_vri_name")) or pd.NA
+            payload["MATCHED_VRI_CODE"] = normalize_text(residential_generic.get("matched_vri_code")) or pd.NA
+            payload["PZZ_REASON"] = normalize_text(residential_generic.get("reason")) or payload["PZZ_REASON"]
             return payload
 
         exact_matches = find_exact_zone_candidates(vri_text=vri_text, zone_code=actual_zone_code, context=context)
