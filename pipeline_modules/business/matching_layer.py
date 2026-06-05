@@ -70,6 +70,54 @@ def detect_direct_description_coverage(vri_text: str, candidate_name: Any, candi
     is_direct = best_metrics['coverage'] >= DIRECT_DESC_COVERAGE_THRESHOLD and best_metrics['overlap'] >= max(DIRECT_DESC_MIN_OVERLAP, min(4, len(tokenize_canonical(query_norm)))) and (phrase_hit or best_metrics['seq_ratio'] >= DIRECT_DESC_SEQ_THRESHOLD)
     return {'is_direct': bool(is_direct), 'score': float(best_metrics['score']), 'coverage': float(best_metrics['coverage']), 'overlap': float(best_metrics['overlap']), 'seq_ratio': float(best_metrics['seq_ratio']), 'phrase_hit': bool(phrase_hit)}
 
+# Жилой дом / жилая застройка / многоквартирный дом (включая частые опечатки и аббревиатуру МКД).
+RESIDENTIAL_DWELLING_INDICATOR = re.compile('многоквартирн|многквартирн|могоквартирн|\\bмкд\\b|\\bжил[а-я]*\\s+дом|\\bжил[а-я]*\\s+застройк|\\bжил[а-я]*\\s+здан')
+# Явный тип / этажность застройки — при наличии оставляем обычную логику (ИЖС, 2.1.1, 2.3, 2.5, 2.6 и т.п.).
+RESIDENTIAL_TYPE_QUALIFIER = re.compile('малоэтажн|среднеэтажн|многоэтажн|высотн|блокиров|секционн|таунхаус|индивидуальн|одноэтажн|двухэтажн|трехэтажн')
+# Не жилая застройка в узком смысле (обслуживание жилой застройки 2.7, ЛПХ, соц. обслуживание, коммуналка).
+RESIDENTIAL_NON_DWELLING_GUARD = re.compile('обслуживан|коммунальн|социальн|подсобн\\s+хозяйств')
+
+def is_residential_unspecified_vri(vri_text: Any) -> bool:
+    """Detect a residential dwelling VRI without an explicit storey / building-type qualifier."""
+    canon = canonicalize_vri_name(vri_text)
+    if not canon:
+        return False
+    if RESIDENTIAL_NON_DWELLING_GUARD.search(canon):
+        return False
+    if not RESIDENTIAL_DWELLING_INDICATOR.search(canon):
+        return False
+    if RESIDENTIAL_TYPE_QUALIFIER.search(canon):
+        return False
+    return True
+
+def resolve_residential_unspecified_in_zone(vri_text: str, actual_zone_code: Optional[str], context: Any=None) -> Optional[dict[str, Any]]:
+    """Map storey-unspecified residential VRIs to the generic code 2.0 «Жилая застройка».
+
+    Если обобщенный ВРИ прямо разрешен в фактической зоне — отдаем его как allowed_*.
+    Если нет — все равно присваиваем 2.0, но помечаем как требующий ручной проверки,
+    так как зона может допускать только конкретный класс жилой застройки.
+    """
+    if not RESIDENTIAL_UNSPECIFIED_TO_GENERIC:
+        return None
+    if not is_residential_unspecified_vri(vri_text):
+        return None
+    generic_code = normalize_text(RESIDENTIAL_GENERIC_VRI_CODE)
+    if not generic_code:
+        return None
+    classifier_by_code = context.rosreestr_classifier_by_code if context is not None else {}
+    generic_name = normalize_text((classifier_by_code.get(generic_code) or {}).get('name')) or 'Жилая застройка'
+    zone_code = normalize_text(actual_zone_code)
+    zone_items_map = context.zone_items_lookup if context is not None else {}
+    zone_items = zone_items_map.get(zone_code)
+    if zone_items is not None and not zone_items.empty:
+        matches = [item for _, item in zone_items.iterrows() if normalize_text(item.get('catalog_vri_code')) == generic_code]
+        if matches:
+            best = max(matches, key=lambda item: SECTION_PRIORITY.get(normalize_text(item.get('section_name')), 0))
+            section_name = normalize_text(best.get('section_name'))
+            verdict = SECTION_TO_VERDICT.get(section_name, 'allowed_main')
+            return {'verdict': verdict, 'matched_vri_name': normalize_text(best.get('catalog_vri_name')) or generic_name, 'matched_vri_code': generic_code, 'match_method': 'residential_unspecified_generic_in_zone', 'reason': f'Жилой объект без указания этажности/типа застройки отнесен к обобщенному ВРИ «{generic_name}» (код {generic_code}), который прямо разрешен в фактической зоне.'}
+    return {'verdict': 'unclear', 'matched_vri_name': generic_name, 'matched_vri_code': generic_code, 'match_method': 'residential_unspecified_generic_manual', 'reason': f'Жилой объект без указания этажности/типа застройки отнесен к обобщенному ВРИ «{generic_name}» (код {generic_code}). В фактической зоне обобщенный ВРИ напрямую не указан и допустим только конкретный класс жилой застройки — требуется ручная проверка.'}
+
 def fast_string_match_in_zone(vri_text: str, actual_zone_code: Optional[str], context: Any=None) -> Optional[dict[str, Any]]:
     """Resolve actual-zone VRI using cheap exact/fuzzy checks before embeddings or LLM."""
     zone_code = normalize_text(actual_zone_code)
