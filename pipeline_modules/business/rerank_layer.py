@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 from .clients import not_allowed_rerank_ollama
 from .common import *
-from .matching_layer import build_catalog_embed_text
+from .matching_layer import build_catalog_embed_text, is_residential_unspecified_vri
 from .profiled_fast_match_layer import (
     PROFILE_TO_VRI_PATTERNS,
     build_zone_classifier_snapshot,
@@ -470,6 +470,35 @@ def build_not_allowed_same_zone_candidates(vri_text: Any, actual_zone_code: Any,
             break
     recall_candidates_cache[query_key] = [dict(item) for item in candidates]
     return [dict(item) for item in candidates[:top_n]]
+
+
+def promote_generic_residential_first(vri_text: Any, candidates: list[dict[str, Any]], context: Any=None) -> list[dict[str, Any]]:
+    """Force generic residential code 2.0 «Жилая застройка» to the top of the candidate list.
+
+    Применяется к жилым ВРИ без указания этажности/типа застройки. Если код 2.0 уже есть
+    среди кандидатов — поднимаем его на первое место; если нет — синтезируем из классификатора.
+    Остальные кандидаты сохраняют относительный порядок как альтернативы.
+    """
+    if not RESIDENTIAL_UNSPECIFIED_TO_GENERIC:
+        return list(candidates or [])
+    if not is_residential_unspecified_vri(vri_text):
+        return list(candidates or [])
+    generic_code = normalize_text(RESIDENTIAL_GENERIC_VRI_CODE)
+    if not generic_code:
+        return list(candidates or [])
+    candidates = list(candidates or [])
+    generic_item: Optional[dict[str, Any]] = None
+    rest: list[dict[str, Any]] = []
+    for item in candidates:
+        if generic_item is None and normalize_text(item.get('code')) == generic_code:
+            generic_item = dict(item)
+        else:
+            rest.append(item)
+    if generic_item is None:
+        classifier_by_code = getattr(context, 'rosreestr_classifier_by_code', None) or {}
+        entry = classifier_by_code.get(generic_code) or {}
+        generic_item = {'score': float(candidates[0].get('score') or 1.0) if candidates else 1.0, 'section_name': 'classifier_global', 'code': generic_code, 'name': normalize_text(entry.get('name')) or 'Жилая застройка', 'description': normalize_text(entry.get('description')), 'profile_rank': 100}
+    return [generic_item] + rest
 
 
 def serialize_not_allowed_same_zone_candidates(candidates: list[dict[str, Any]]) -> Any:
@@ -1005,6 +1034,9 @@ def attach_not_allowed_llm_rerank_column(df: pd.DataFrame, cadastral_vri_col: st
     # Write serialised results back to the DataFrame
     for query_key, payload in query_items:
         final_candidates = results.get(query_key, [])
+        final_candidates = promote_generic_residential_first(
+            vri_text=payload['query_text'], candidates=final_candidates, context=context,
+        )
         serialized = serialize_not_allowed_same_zone_candidates(final_candidates[:NOT_ALLOWED_CANDIDATES_TOP_N])
         for idx in payload['indexes']:
             work_df.at[idx, 'PZZ_NOT_ALLOWED_TOP5_CANDIDATES'] = serialized
