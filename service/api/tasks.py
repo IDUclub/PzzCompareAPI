@@ -1,15 +1,18 @@
-"""Task management endpoints: get / list / cancel / recompute / events / result."""
+"""Task management endpoints: get / list / cancel / recompute / events / result / stream."""
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 from starlette.responses import FileResponse
 
+from ..db import session_scope
 from ..dependencies import get_app_settings, get_db, get_event_repo, get_task_repo
 from ..domain.ports.event_repository import EventRepository
 from ..domain.ports.task_repository import TaskRepository
@@ -17,6 +20,8 @@ from ..domain.task_state import ensure_transition
 from ..infrastructure.pzz_mapping import lookup_zone_summary
 from ..infrastructure.storage import get_object_storage, is_remote_path
 from ..models import PipelineTask, TaskEvent, TaskStatus
+
+_TERMINAL_STATUSES = {TaskStatus.finished, TaskStatus.failed}
 from ..schemas import TaskEventOut, TaskListOut, TaskOut
 from ..settings import Settings
 from ..tasks import celery_app, execute_pipeline_task
@@ -227,6 +232,75 @@ def list_tasks_endpoint(
         limit=limit,
         offset=offset,
     )
+
+
+async def _task_sse_generator(
+    external_id: str,
+    poll_interval: float,
+    request: Request,
+) -> AsyncIterator[ServerSentEvent]:
+    last_event_id = 0
+    last_status: TaskStatus | None = None
+
+    while True:
+        if await request.is_disconnected():
+            break
+
+        with session_scope() as session:
+            task = session.execute(
+                select(PipelineTask).where(PipelineTask.external_id == external_id)
+            ).scalar_one_or_none()
+
+            if task is None:
+                yield ServerSentEvent(data=json.dumps({"error": "Task not found"}), event="error")
+                break
+
+            new_events = session.execute(
+                select(TaskEvent)
+                .where(TaskEvent.task_id == task.id, TaskEvent.id > last_event_id)
+                .order_by(TaskEvent.id.asc())
+            ).scalars().all()
+
+            for ev in new_events:
+                last_event_id = ev.id
+                yield ServerSentEvent(
+                    data=json.dumps(TaskEventOut.model_validate(ev).model_dump(mode="json")),
+                    event="task_event",
+                )
+
+            current_status = task.status
+            if current_status != last_status:
+                last_status = current_status
+                yield ServerSentEvent(
+                    data=json.dumps(TaskOut.model_validate(task).model_dump(mode="json")),
+                    event="status",
+                )
+
+            if current_status in _TERMINAL_STATUSES:
+                yield ServerSentEvent(
+                    data=json.dumps({"status": current_status.value}),
+                    event="done",
+                )
+                break
+
+        await asyncio.sleep(poll_interval)
+
+
+@router.get("/tasks/{external_id}/stream")
+async def stream_task_status_endpoint(
+    request: Request,
+    external_id: str,
+    poll_interval: float = Query(2.0, ge=0.5, le=10.0),
+    task_repo: TaskRepository = Depends(get_task_repo),
+) -> EventSourceResponse:
+    """Stream task status and events via Server-Sent Events.
+
+    Pushes ``task_event`` for each new pipeline event and ``status`` on
+    status changes. Sends ``done`` and closes the stream when the task
+    reaches a terminal state (``finished`` or ``failed``).
+    """
+    get_public_task_or_404(external_id, task_repo)
+    return EventSourceResponse(_task_sse_generator(external_id, poll_interval, request))
 
 
 @router.get("/tasks/{external_id}/result")
