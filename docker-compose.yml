@@ -1,12 +1,14 @@
 services:
-  postgres:
+  postgres_pzz:
     image: postgres:16
     environment:
       POSTGRES_DB: pzz_pipeline
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "6432:5432"
+    networks:
+      - pzz_compare
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -14,13 +16,15 @@ services:
     image: redis:7
     ports:
       - "6379:6379"
+    networks:
+      - pzz_compare
 
   api:
     build: .
     user: root
     environment:
       APP_ENV: development
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pzz_pipeline
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres_pzz:5432/pzz_pipeline
       REDIS_URL: redis://redis:6379/0
       LOG_LEVEL: INFO
       DB_WAIT_TIMEOUT: 60
@@ -29,23 +33,25 @@ services:
       NOT_ALLOWED_LLM_RERANK_THINK: "false"
       NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N: "8"
     depends_on:
-      - postgres
+      - postgres_pzz
       - redis
     ports:
-      - "8000:8000"
+      - "8300:8000"
+    networks:
+      - pzz_compare
     command: sh -c "python service/wait_for_db.py && uvicorn service.app:app --host 0.0.0.0 --port 8000"
     volumes:
-      - ./:/app
-      - ./outputs:/app/outputs
-      - ./task_inputs:/app/task_inputs
-      - ./data:/app/data
+#      - /PzzCompareData:/app
+      - /PzzCompareData/outputs:/app/outputs
+      - /PzzCompareData/task_inputs:/app/task_inputs
+#      - ./data:/app/data
 
   worker:
     build: .
     user: root
     environment:
       APP_ENV: development
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pzz_pipeline
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres_pzz:5432/pzz_pipeline
       REDIS_URL: redis://redis:6379/0
       LOG_LEVEL: INFO
       DB_WAIT_TIMEOUT: 60
@@ -56,36 +62,40 @@ services:
       # Fewer candidates → shorter prompt → less room for thinking runaway
       NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N: "8"
     depends_on:
-      - postgres
+      - postgres_pzz
       - redis
     ports:
-      - "9100:9100"
+      - "9200:9100"
+    networks:
+      - pzz_compare
     command: sh -c "python service/wait_for_db.py && celery -A service.tasks.celery_app worker -P threads --concurrency=4 --loglevel=INFO"
     volumes:
-      - ./:/app
-      - ./outputs:/app/outputs
-      - ./task_inputs:/app/task_inputs
-      - ./data:/app/data
+#      - /PzzCompareData:/app
+      - /PzzCompareData/outputs:/app/outputs
+      - /PzzCompareData/task_inputs:/app/task_inputs
+#      - ./data:/app/data
 
   beat:
     build: .
     user: root
     environment:
       APP_ENV: development
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pzz_pipeline
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres_pzz:5432/pzz_pipeline
       REDIS_URL: redis://redis:6379/0
       LOG_LEVEL: INFO
       DB_WAIT_TIMEOUT: 60
       DB_WAIT_INTERVAL: 2
     depends_on:
-      - postgres
+      - postgres_pzz
       - redis
+    networks:
+      - pzz_compare
     command: sh -c "python service/wait_for_db.py && celery -A service.tasks.celery_app beat --loglevel=INFO"
     volumes:
-      - ./:/app
-      - ./outputs:/app/outputs
-      - ./task_inputs:/app/task_inputs
-      - ./data:/app/data
+#      - /PzzCompareData:/app
+      - /PzzCompareData/outputs:/app/outputs
+      - /PzzCompareData/task_inputs:/app/task_inputs
+#      - ./data:/app/data
 
   mcp:
     build: .
@@ -102,9 +112,18 @@ services:
       - api
     ports:
       - "8765:8765"
+    networks:
+      - pzz_compare
     command: sh -c "python -m service.mcp_server.main"
-    volumes:
-      - ./:/app
+#    volumes:
+#      - /PzzCompareData:/app
 
 volumes:
   pgdata:
+    driver_opts:
+      type: none
+      device: /var/essdata/postgres_data
+      o: bind
+networks:
+  pzz_compare:
+    driver: bridge
