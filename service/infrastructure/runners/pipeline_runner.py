@@ -88,11 +88,15 @@ class SubprocessPipelineRunner(PipelineRunner):
         env["EMBED_BATCH_SIZE"] = str(self._settings.embed_batch_size)
         env["PIPELINE_CALLABLE"] = self._settings.pipeline_callable
 
-        subprocess.run(
+        result = subprocess.run(
             [sys.executable, "-m", self._settings.pipeline_module],
-            check=True,
             env=env,
+            stderr=subprocess.PIPE,
+            text=True,
         )
+        if result.returncode != 0:
+            stderr_tail = (result.stderr or "").strip()[-3000:]
+            raise subprocess.CalledProcessError(result.returncode, result.args, stderr=stderr_tail)
 
         return _build_output_glob(output_dir, request.task_external_id)
 

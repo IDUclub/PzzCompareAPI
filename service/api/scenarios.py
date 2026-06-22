@@ -37,7 +37,11 @@ from ..schemas import TaskCreate, TaskEventOut, TaskOut
 from ..settings import Settings
 from ..tasks import execute_pipeline_task
 from .classifier import persist_geojson_dict
+from fastapi import Request as FastRequest
+from sse_starlette.sse import EventSourceResponse
+
 from .tasks import (
+    _task_sse_generator,
     build_cancel_task_response,
     build_object_zone_fit_response,
     build_recompute_task_response,
@@ -585,6 +589,30 @@ async def recompute_scenario_task_endpoint(
         task_repo=task_repo,
     )
     return build_recompute_task_response(task, task_repo, event_repo, session)
+
+
+@router.get("/{scenario_id}/tasks/{external_id}/stream")
+async def stream_scenario_task_status_endpoint(
+    request: FastRequest,
+    scenario_id: int = FastPath(..., ge=1),
+    external_id: str = FastPath(..., min_length=1),
+    poll_interval: float = Query(2.0, ge=0.5, le=10.0),
+    token: str = Depends(verify_token),
+    app_settings: Settings = Depends(get_app_settings),
+    task_repo: TaskRepository = Depends(get_task_repo),
+) -> EventSourceResponse:
+    """Stream scenario task status and events via Server-Sent Events."""
+    await _verify_scenario_access(
+        scenario_id=scenario_id,
+        token=token,
+        app_settings=app_settings,
+    )
+    _get_scenario_task_or_404(
+        scenario_id=scenario_id,
+        external_id=external_id,
+        task_repo=task_repo,
+    )
+    return EventSourceResponse(_task_sse_generator(external_id, poll_interval, request))
 
 
 @router.get(
