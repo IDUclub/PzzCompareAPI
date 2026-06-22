@@ -54,13 +54,17 @@ jobs:
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "sha_short=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
 
+      - name: Set image env
+        run: |
+          echo "IMAGE=${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}" >> $GITHUB_ENV
+
       - name: Build and push Docker image
         run: |
           docker build \
             -t ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }} \
             -t ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest \
             .
-          docker push ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
+          docker push "$IMAGE"
           docker push ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest
 
       - name: Stop old services gracefully
@@ -69,19 +73,17 @@ jobs:
           sleep 10
 
       - name: Start postgres and redis
-        if: inputs.skip_migrations == 'false'
         run: docker compose -f docker-compose.actions.yml up -d postgres redis
 
       - name: Wait for database
-        if: inputs.skip_migrations == 'false'
         run: sleep 5
 
       - name: Run database migrations
-        if: inputs.skip_migrations == 'false'
+        if: ${{ !inputs.skip_migrations }}
         run: docker compose -f docker-compose.actions.yml run --rm migrate
 
-      - name: Start all services
-        run: docker compose -f docker-compose.actions.yml up -d
+      - name: Start app services
+        run: docker compose -f docker-compose.actions.yaml up -d api worker beat mcp
 
       - name: Wait for services initialization
         run: sleep 10
@@ -116,6 +118,6 @@ jobs:
           echo "========================================="
           echo "Deployment completed with status: ${{ job.status }}"
           echo "Image: ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}"
-          echo "Migrations: ${{ inputs.skip_migrations == 'false' && 'Run' || 'Skipped' }}"
+          echo "Migrations: ${{ inputs.skip_migrations && 'Skipped' || 'Run' }}"
           echo "Timestamp: $(date)"
           echo "========================================="
