@@ -83,7 +83,7 @@ jobs:
         run: docker compose -f docker-compose.actions.yml run --rm migrate
 
       - name: Start app services
-        run: docker compose -f docker-compose.actions.yaml up -d api worker beat mcp
+        run: docker compose -f docker-compose.actions.yml up -d api worker beat mcp
 
       - name: Wait for services initialization
         run: sleep 10
