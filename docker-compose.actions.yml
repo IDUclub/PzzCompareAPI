@@ -51,7 +51,8 @@ services:
   migrate:
     image: ${IMAGE}
     env_file: .env.development
-    environment: *app-env
+    environment:
+      <<: *app-env
       IMAGE: ${IMAGE}
     restart: "no"
     networks:
@@ -65,15 +66,14 @@ services:
     image: ${IMAGE}
     restart: unless-stopped
     env_file: .env.development
-    environment: *app-env
+    environment:
+      <<: *app-env
       IMAGE: ${IMAGE}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     ports:
       - "8300:8000"
     networks:
@@ -92,15 +92,14 @@ services:
     image: ${IMAGE}
     restart: unless-stopped
     env_file: .env.development
-    environment: *app-env
+    environment:
+      <<: *app-env
       IMAGE: ${IMAGE}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     volumes:
       - outputs:/app/outputs
       - task_inputs:/app/task_inputs
@@ -120,7 +119,8 @@ services:
     image: ${IMAGE}
     restart: unless-stopped
     env_file: .env.development
-    environment: *app-env
+    environment:
+      <<: *app-env
       IMAGE: ${IMAGE}
     networks:
       - pzz_compare
@@ -129,8 +129,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     command: celery -A service.tasks.celery_app beat --loglevel=INFO
 
   mcp:
