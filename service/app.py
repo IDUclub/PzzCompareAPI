@@ -5,11 +5,13 @@ Endpoint logic lives in ``service/api/*`` routers, grouped by concern:
 This module only wires the app: startup lifecycle, dependency init,
 config defaults, and ``include_router`` calls.
 """
+import os
 from contextlib import asynccontextmanager
 
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from .api import classifier, scenarios, system, tasks
 from .api.utils import api_log
@@ -58,6 +60,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PZZ Pipeline Background Service", lifespan=lifespan)
+
+_cors_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "*")
+_cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(system.router)
 app.include_router(classifier.router)
