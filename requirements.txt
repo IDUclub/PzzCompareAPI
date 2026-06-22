@@ -29,3 +29,4 @@ python-jose[cryptography]==3.3.0
 cachetools==5.5.2
 tenacity==9.0.0
 loguru==0.7.3
+sse-starlette==2.3.6
