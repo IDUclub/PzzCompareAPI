@@ -129,7 +129,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: celery -A service.tasks.celery_app beat --loglevel=INFO
+    command: celery -A service.tasks.celery_app beat --loglevel=INFO --schedule /tmp/ celerybeat-schedule
 
   mcp:
     image: ${IMAGE}
