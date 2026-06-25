@@ -98,7 +98,9 @@ jobs:
           echo "Checking service status..."
           docker compose -f docker-compose.actions.yml ps
           RUNNING=$(docker compose -f docker-compose.actions.yml ps --services --filter "status=running" | wc -l)
-          TOTAL=6
+          # Long-running services: postgres redis api worker worker_llm beat mcp
+          # (migrate is one-shot and exits). Update when adding/removing services.
+          TOTAL=7
           echo "Running services: $RUNNING/$TOTAL"
           if [ "$RUNNING" -ne "$TOTAL" ]; then
             echo "❌ Not all services are running!"
