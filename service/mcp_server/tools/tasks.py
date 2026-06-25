@@ -24,6 +24,28 @@ from ..exceptions import map_errors
 tasks_mcp = FastMCP("PZZ Pipeline Tasks")
 
 
+def _result_not_ready_response(
+    *,
+    external_id: str,
+    status: str | None,
+    error_text: str | None = None,
+) -> dict[str, Any]:
+    failed = status == "failed"
+    return {
+        "external_id": external_id,
+        "ready": False,
+        "status": status,
+        "error_text": error_text,
+        "next_step": (
+            "The task failed; GeoJSON result is unavailable. Show error_text "
+            "to the user or call recompute_task after fixing the cause."
+            if failed
+            else "Poll get_task_status until status is finished, then call "
+            "get_task_result again."
+        ),
+    }
+
+
 @tasks_mcp.tool(
     name="submit_classify_only_task",
     title="Submit classification-only task",
@@ -235,7 +257,11 @@ WARNING
 - Result may be large (MBs). For raw download prefer the HTTP endpoint /tasks/{external_id}/result with a streaming client.
 
 ERRORS
-- -32602 Invalid params: task not found, not yet finished, or failed.""",
+- -32602 Invalid params: task not found.
+
+If the task is still queued/running, or if it failed, this tool returns
+{ ready:false, status, error_text, next_step } instead of raising a tool
+error.""",
     tags={"pipeline", "read"},
     annotations={"readOnlyHint": True},
 )
@@ -244,6 +270,15 @@ async def get_task_result(
     external_id: Annotated[str, "Task identifier."],
     api: ApiClient = Depends(get_api_client),
 ) -> dict[str, Any]:
+    task = await api.get_task(external_id)
+    status = task.get("status")
+    if status != "finished":
+        return _result_not_ready_response(
+            external_id=external_id,
+            status=status,
+            error_text=task.get("error_text"),
+        )
+
     return await api.get_task_result(external_id)
 
 

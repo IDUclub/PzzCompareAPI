@@ -42,8 +42,10 @@ from ..infrastructure.urban_api_client import UrbanApiClient, UrbanApiError
 from ..models import PipelineTask, TaskEvent, TaskStatus
 from ..schemas import TaskCreate, TaskEventOut, TaskOut
 from ..settings import Settings
-from ..tasks import execute_pipeline_task
+from ..tasks import enqueue_pipeline_task, execute_pipeline_task
 from .classifier import persist_geojson_dict
+from fastapi.concurrency import run_in_threadpool
+
 from .tasks import (
     _TERMINAL_STATUSES,
     build_cancel_task_response,
@@ -52,6 +54,7 @@ from .tasks import (
     build_task_events_response,
     build_task_result_response,
     get_task_or_404,
+    task_stream_with_report_generator,
 )
 from .utils import api_log
 
@@ -212,22 +215,116 @@ def _flatten_functional_zone_features(
     return feature_collection
 
 
-@router.post("/{scenario_id}/classify", response_model=TaskOut)
-async def classify_scenario_endpoint(
-    scenario_id: int = FastPath(..., ge=1),
-    year: int = Form(..., ge=1900, le=2100),
-    source: str = Form(..., min_length=1),
-    physical_object_type_id: int = Form(4),
-    priority: int = Form(1, ge=1, le=10),
-    force_recompute: bool = Form(False),
-    idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
-    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
-    token: str = Depends(verify_token),
-    app_settings: Settings = Depends(get_app_settings),
-    task_repo: TaskRepository = Depends(get_task_repo),
-    event_repo: EventRepository = Depends(get_event_repo),
-    session: Session = Depends(get_db),
-) -> TaskOut:
+def _persist_and_create_scenario_task(
+    *,
+    objects_fc: dict[str, Any],
+    zones_fc: dict[str, Any],
+    scenario_id: int,
+    year: int,
+    source: str,
+    physical_object_type_id: int,
+    priority: int,
+    namespaced_key: str,
+    force_recompute: bool,
+    app_settings: Settings,
+    task_repo: TaskRepository,
+    event_repo: EventRepository,
+    session: Session,
+) -> PipelineTask:
+    """Flatten inputs, persist GeoJSON to storage, and create the task.
+
+    Synchronous and I/O-heavy (three MinIO writes); intended to run in a
+    threadpool so the API event loop stays responsive under concurrent submits.
+    """
+    objects_fc = _flatten_physical_object_features(objects_fc, vri_col=_CADASTRAL_VRI_COL)
+    zones_fc = _flatten_functional_zone_features(
+        zones_fc, code_col=_PZZ_ZONE_CODE_COL, name_col=_PZZ_ZONE_NAME_COL
+    )
+
+    external_id = uuid4().hex
+    task_dir = Path(app_settings.task_inputs_dir) / external_id
+    storage = get_object_storage()
+
+    stored_cadastral = persist_geojson_dict(
+        objects_fc, task_dir, "cadastral_feature_collection.geojson", external_id, storage
+    )
+    stored_pzz_zones = persist_geojson_dict(
+        zones_fc, task_dir, "pzz_zones_feature_collection.geojson", external_id, storage
+    )
+
+    observed_zone_types: dict[str, str | None] = {}
+    for feature in zones_fc.get("features") or []:
+        props = feature.get("properties") or {}
+        code = (props.get(_PZZ_ZONE_CODE_COL) or "").strip()
+        if code and code not in observed_zone_types:
+            observed_zone_types[code] = props.get(_PZZ_ZONE_NAME_COL) or None
+    scenario_labels = build_pipeline_zone_labels(observed_zone_types=observed_zone_types)
+    stored_labels = persist_geojson_dict(
+        scenario_labels, task_dir, "pzz_zone_vri_labels.json", external_id, storage
+    )
+
+    input_paths = {
+        "cadastral_data_path": stored_cadastral,
+        "pzz_zones_data_path": stored_pzz_zones,
+        "pzz_zone_vri_labels_path": stored_labels,
+        "vri_classifier_path": str(Path(app_settings.default_vri_classifier_path).resolve()),
+    }
+
+    payload = TaskCreate(
+        include_pzz_check=True,
+        cadastral_vri_col=_CADASTRAL_VRI_COL,
+        pzz_zone_code_col=_PZZ_ZONE_CODE_COL,
+        pzz_zone_name_col=_PZZ_ZONE_NAME_COL,
+        priority=priority,
+    )
+
+    task = create_task(
+        payload=payload,
+        settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        enqueue_task=lambda tid: enqueue_pipeline_task(tid, is_scenario=True),
+        idempotency_key=namespaced_key,
+        retry_failed=False,
+        force_recompute=force_recompute,
+        external_id=external_id,
+        input_paths=input_paths,
+        session=session,
+    )
+    session.flush()
+    session.refresh(task)
+    api_log(
+        "create_task",
+        "accepted",
+        task_id=task.id,
+        external_id=task.external_id,
+        mode="scenario_classify",
+        scenario_id=scenario_id,
+        year=year,
+        source=source,
+        physical_object_type_id=physical_object_type_id,
+        objects_count=len(objects_fc.get("features") or []),
+        zones_count=len(zones_fc.get("features") or []),
+    )
+    return task
+
+
+async def _build_scenario_classification_task(
+    *,
+    scenario_id: int,
+    year: int,
+    source: str,
+    physical_object_type_id: int,
+    priority: int,
+    force_recompute: bool,
+    idempotency_key_form: str | None,
+    idempotency_key_header: str | None,
+    token: str,
+    app_settings: Settings,
+    task_repo: TaskRepository,
+    event_repo: EventRepository,
+    session: Session,
+) -> PipelineTask:
     """Run PZZ-style classification on a scenario's data fetched from urban_api.
 
     Flow:
@@ -280,7 +377,7 @@ async def classify_scenario_endpoint(
                 physical_object_type_id=physical_object_type_id,
                 scenario_updated_at=scenario_updated_at,
             )
-            return TaskOut.model_validate(existing)
+            return existing
 
         try:
             sources = await urban.list_functional_zone_sources(scenario_id, token=token)
@@ -326,77 +423,133 @@ async def classify_scenario_endpoint(
             ),
         )
 
-    objects_fc = _flatten_physical_object_features(objects_fc, vri_col=_CADASTRAL_VRI_COL)
-    zones_fc = _flatten_functional_zone_features(
-        zones_fc, code_col=_PZZ_ZONE_CODE_COL, name_col=_PZZ_ZONE_NAME_COL
-    )
-
-    external_id = uuid4().hex
-    task_dir = Path(app_settings.task_inputs_dir) / external_id
-    storage = get_object_storage()
-
-    stored_cadastral = persist_geojson_dict(
-        objects_fc, task_dir, "cadastral_feature_collection.geojson", external_id, storage
-    )
-    stored_pzz_zones = persist_geojson_dict(
-        zones_fc, task_dir, "pzz_zones_feature_collection.geojson", external_id, storage
-    )
-
-    observed_zone_types: dict[str, str | None] = {}
-    for feature in zones_fc.get("features") or []:
-        props = feature.get("properties") or {}
-        code = (props.get(_PZZ_ZONE_CODE_COL) or "").strip()
-        if code and code not in observed_zone_types:
-            observed_zone_types[code] = props.get(_PZZ_ZONE_NAME_COL) or None
-    scenario_labels = build_pipeline_zone_labels(observed_zone_types=observed_zone_types)
-    stored_labels = persist_geojson_dict(
-        scenario_labels, task_dir, "pzz_zone_vri_labels.json", external_id, storage
-    )
-
-    input_paths = {
-        "cadastral_data_path": stored_cadastral,
-        "pzz_zones_data_path": stored_pzz_zones,
-        "pzz_zone_vri_labels_path": stored_labels,
-        "vri_classifier_path": str(Path(app_settings.default_vri_classifier_path).resolve()),
-    }
-
-    payload = TaskCreate(
-        include_pzz_check=True,
-        cadastral_vri_col=_CADASTRAL_VRI_COL,
-        pzz_zone_code_col=_PZZ_ZONE_CODE_COL,
-        pzz_zone_name_col=_PZZ_ZONE_NAME_COL,
-        priority=priority,
-    )
-
-    task = create_task(
-        payload=payload,
-        settings=app_settings,
-        task_repo=task_repo,
-        event_repo=event_repo,
-        enqueue_task=execute_pipeline_task.delay,
-        idempotency_key=namespaced_key,
-        retry_failed=False,
-        force_recompute=force_recompute,
-        external_id=external_id,
-        input_paths=input_paths,
-        session=session,
-    )
-    session.flush()
-    session.refresh(task)
-    api_log(
-        "create_task",
-        "accepted",
-        task_id=task.id,
-        external_id=task.external_id,
-        mode="scenario_classify",
+    return await run_in_threadpool(
+        _persist_and_create_scenario_task,
+        objects_fc=objects_fc,
+        zones_fc=zones_fc,
         scenario_id=scenario_id,
         year=year,
         source=source,
         physical_object_type_id=physical_object_type_id,
-        objects_count=len(objects_fc.get("features") or []),
-        zones_count=len(zones_fc.get("features") or []),
+        priority=priority,
+        namespaced_key=namespaced_key,
+        force_recompute=force_recompute,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+    )
+
+
+@router.post("/{scenario_id}/classify", response_model=TaskOut)
+async def classify_scenario_endpoint(
+    scenario_id: int = FastPath(..., ge=1),
+    year: int = Form(..., ge=1900, le=2100),
+    source: str = Form(..., min_length=1),
+    physical_object_type_id: int = Form(4),
+    priority: int = Form(1, ge=1, le=10),
+    force_recompute: bool = Form(False),
+    idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    token: str = Depends(verify_token),
+    app_settings: Settings = Depends(get_app_settings),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    event_repo: EventRepository = Depends(get_event_repo),
+    session: Session = Depends(get_db),
+) -> TaskOut:
+    """Create a scenario classification task (asynchronous).
+
+    Fetches the scenario's data from urban_api, persists inputs, and enqueues
+    the classification. Returns the TaskOut descriptor; track via
+    /scenarios/{id}/tasks/{external_id} or the SSE /stream endpoint.
+    """
+    task = await _build_scenario_classification_task(
+        scenario_id=scenario_id,
+        year=year,
+        source=source,
+        physical_object_type_id=physical_object_type_id,
+        priority=priority,
+        force_recompute=force_recompute,
+        idempotency_key_form=idempotency_key_form,
+        idempotency_key_header=idempotency_key_header,
+        token=token,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
     )
     return TaskOut.model_validate(task)
+
+
+@router.post("/{scenario_id}/classify/stream")
+async def classify_scenario_stream_endpoint(
+    request: FastRequest,
+    scenario_id: int = FastPath(..., ge=1),
+    year: int = Form(..., ge=1900, le=2100),
+    source: str = Form(..., min_length=1),
+    physical_object_type_id: int = Form(4),
+    priority: int = Form(1, ge=1, le=10),
+    force_recompute: bool = Form(False),
+    group_by: str = Form("zone"),
+    poll_interval: float = Query(2.0, ge=0.5, le=10.0),
+    idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    token: str = Depends(verify_token),
+    app_settings: Settings = Depends(get_app_settings),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    event_repo: EventRepository = Depends(get_event_repo),
+    session: Session = Depends(get_db),
+) -> EventSourceResponse:
+    """Create the scenario classification task AND stream it to completion.
+
+    One call does the whole flow: creates (or reuses a cached) task, then
+    streams Server-Sent Events until the task is terminal:
+
+      - ``task``        the created task descriptor (keep external_id to
+                        reconnect to /stream if the connection drops);
+      - ``task_event``  per pipeline event;
+      - ``status``      on status changes;
+      - ``geojson``     the classified result FeatureCollection when finished;
+      - ``report``      the object-zone-fit summary when finished;
+      - ``done``        terminal marker; the stream then closes.
+
+    Request setup errors (e.g. invalid year/source -> 422) are returned as a
+    normal HTTP status BEFORE the stream starts; only in-flight problems are
+    delivered as an ``error`` event.
+
+    Note: native EventSource cannot POST or set Authorization — use a
+    fetch-based SSE client.
+    """
+    if group_by not in ("zone", "object"):
+        raise HTTPException(status_code=422, detail="group_by must be 'zone' or 'object'")
+
+    task = await _build_scenario_classification_task(
+        scenario_id=scenario_id,
+        year=year,
+        source=source,
+        physical_object_type_id=physical_object_type_id,
+        priority=priority,
+        force_recompute=force_recompute,
+        idempotency_key_form=idempotency_key_form,
+        idempotency_key_header=idempotency_key_header,
+        token=token,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+    )
+    session.commit()
+    initial = TaskOut.model_validate(task).model_dump(mode="json")
+    return EventSourceResponse(
+        task_stream_with_report_generator(
+            task.external_id,
+            group_by=group_by,
+            poll_interval=poll_interval,
+            request=request,
+            app_settings=app_settings,
+            initial=initial,
+        )
+    )
 
 
 @router.get("/{scenario_id}/zones-info")

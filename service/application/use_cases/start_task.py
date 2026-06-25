@@ -54,8 +54,14 @@ def start_task(
 
     reserved, updated_sum = try_reserve(current_sum, task_priority, max_sum)
     if not reserved:
-        ensure_transition(task.status.value, TaskStatus.waiting_capacity.value)
-        task_repo.update_status(task.id, TaskStatus.waiting_capacity)
+        # A task already in waiting_capacity is here on a capacity retry; the
+        # state machine forbids waiting_capacity -> waiting_capacity, so only
+        # transition when coming from another state. Without this guard the
+        # retry raised ValueError and the task got stuck in waiting_capacity
+        # forever once capacity later freed.
+        if task.status != TaskStatus.waiting_capacity:
+            ensure_transition(task.status.value, TaskStatus.waiting_capacity.value)
+            task_repo.update_status(task.id, TaskStatus.waiting_capacity)
         event_repo.append_event(
             task_id=task.id,
             stage="capacity",
@@ -69,6 +75,9 @@ def start_task(
     task_repo.update_status(task.id, TaskStatus.running, started_at=utc_now())
     event_repo.append_event(task_id=task.id, stage="pipeline", status="start")
 
+    idempotency_key = task_repo.get_idempotency_key_by_external_id(task.external_id)
+    is_scenario = bool(idempotency_key and idempotency_key.startswith("sc:"))
+
     request = PipelineRequest(
         task_external_id=task.external_id,
         cadastral_data_path=task.cadastral_data_path,
@@ -80,6 +89,7 @@ def start_task(
         pzz_zone_code_col=task.pzz_zone_code_col,
         pzz_zone_name_col=task.pzz_zone_name_col,
         outputs_dir=settings.outputs_dir,
+        is_scenario=is_scenario,
     )
 
     return StartTaskResult(task_priority=task_priority, request=request, retry_in_seconds=0)

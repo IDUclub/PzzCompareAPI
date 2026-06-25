@@ -41,6 +41,22 @@ celery_app.conf.beat_schedule = {
         "schedule": schedule(run_every=settings.outputs_cleanup_interval_seconds),
     },
 }
+# Two queues so GPU-bound upload (LLM) tasks run at a lower concurrency than
+# fast deterministic scenario tasks. Non-pipeline tasks (beat) use "default".
+celery_app.conf.task_default_queue = "default"
+
+
+def enqueue_pipeline_task(task_id: int, *, is_scenario: bool):
+    """Enqueue execute_pipeline_task onto the queue that fits the task type.
+
+    Deterministic scenario runs are CPU-light -> "default" (high concurrency).
+    LLM upload runs (and scenario runs when the deterministic path is off) are
+    GPU-bound -> "llm", served by its own low-concurrency worker so the
+    embedder / vLLM backends are not oversubscribed.
+    """
+    deterministic = is_scenario and settings.scenario_deterministic
+    queue = "default" if deterministic else "llm"
+    return execute_pipeline_task.apply_async(args=[task_id], queue=queue)
 
 
 @worker_ready.connect
@@ -209,14 +225,19 @@ def execute_pipeline_task(self, task_id: int) -> None:
     )
 
     try:
-        output_path = PipelineRunnerFactory.create(settings).run(outcome.request)
+        output_path = PipelineRunnerFactory.create(settings, outcome.request).run(outcome.request)
     except Exception as exc:  # noqa: BLE001
-        error_text = str(exc)
+        # CalledProcessError stringifies to just "...exit status 1"; the real
+        # subprocess stderr (captured by SubprocessPipelineRunner) lives on
+        # exc.stderr. Surface it so error_text -> finish_task -> TaskEvent.details
+        # (what /logs shows) carries the actual traceback instead of swallowing it.
+        stderr_tail = getattr(exc, "stderr", None)
+        error_text = f"{exc}\n{stderr_tail}".strip() if stderr_tail else str(exc)
         _log_structured(
             task_id=task_id, external_id=external_id, celery_task_id=celery_task_id,
             stage="external.pipeline", status="error",
             duration_ms=int((perf_counter() - stage_started) * 1000),
-            error=str(exc), level=logging.ERROR,
+            error=error_text, level=logging.ERROR,
         )
     else:
         _log_structured(

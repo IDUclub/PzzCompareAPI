@@ -43,6 +43,31 @@ def extract_token() -> str | None:
     return auth[7:].strip() if auth.startswith("Bearer ") else None
 
 
+def _not_ready_response(
+    *,
+    scenario_id: int,
+    external_id: str,
+    status: str | None,
+    error_text: str | None = None,
+) -> dict[str, Any]:
+    failed = status == "failed"
+    return {
+        "scenario_id": scenario_id,
+        "external_id": external_id,
+        "task_external_id": external_id,
+        "ready": False,
+        "status": status,
+        "error_text": error_text,
+        "next_step": (
+            "The task failed; report is unavailable. Show error_text to the user "
+            "or call recompute_scenario_classification after fixing the cause."
+            if failed
+            else "Poll get_scenario_classification_status until status is finished, "
+            "then call get_scenario_classification_report again."
+        ),
+    }
+
+
 @scenarios_mcp.tool(
     name="classify_scenario",
     title="Classify scenario objects against PZZ zones",
@@ -253,7 +278,9 @@ RETURNS:
   }
 The `chat_message` field is the easiest thing to relay to the user verbatim.
 
-ERRORS: -32602 if the task isn't finished yet (poll status first).""",
+If the task is still queued/running, or if it failed, this tool returns
+{ ready:false, status, error_text, next_step } instead of raising a tool
+error.""",
     tags={"scenario", "read"},
     annotations={"readOnlyHint": True},
 )
@@ -265,6 +292,18 @@ async def get_scenario_classification_report(
     token: str | None = Depends(extract_token),
     api: ApiClient = Depends(get_api_client),
 ) -> dict[str, Any]:
+    task = await api.get_scenario_task(
+        scenario_id=scenario_id, external_id=external_id, token=token
+    )
+    status = task.get("status")
+    if status != "finished":
+        return _not_ready_response(
+            scenario_id=scenario_id,
+            external_id=external_id,
+            status=status,
+            error_text=task.get("error_text"),
+        )
+
     return await api.get_scenario_object_zone_fit(
         scenario_id=scenario_id,
         external_id=external_id,

@@ -15,3 +15,6 @@ class PipelineRequest:
     pzz_zone_code_col: str
     pzz_zone_name_col: str
     outputs_dir: str
+    # True for urban_api-backed scenario tasks (idempotency key prefixed "sc:").
+    # Routes to the deterministic, no-LLM classifier when enabled in settings.
+    is_scenario: bool = False
