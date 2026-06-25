@@ -95,7 +95,11 @@ class SubprocessPipelineRunner(PipelineRunner):
             text=True,
         )
         if result.returncode != 0:
-            stderr_tail = (result.stderr or "").strip()[-3000:]
+            # Keep the tail of stderr: a Python traceback ends with the actual
+            # exception type + message, so the last chunk is the useful part.
+            # Surfaced into the task's error_text / failed event so /logs shows
+            # the real cause, not just "exit status 1".
+            stderr_tail = (result.stderr or "").strip()[-8000:]
             raise subprocess.CalledProcessError(result.returncode, result.args, stderr=stderr_tail)
 
         return _build_output_glob(output_dir, request.task_external_id)
