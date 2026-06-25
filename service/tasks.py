@@ -41,6 +41,22 @@ celery_app.conf.beat_schedule = {
         "schedule": schedule(run_every=settings.outputs_cleanup_interval_seconds),
     },
 }
+# Two queues so GPU-bound upload (LLM) tasks run at a lower concurrency than
+# fast deterministic scenario tasks. Non-pipeline tasks (beat) use "default".
+celery_app.conf.task_default_queue = "default"
+
+
+def enqueue_pipeline_task(task_id: int, *, is_scenario: bool):
+    """Enqueue execute_pipeline_task onto the queue that fits the task type.
+
+    Deterministic scenario runs are CPU-light -> "default" (high concurrency).
+    LLM upload runs (and scenario runs when the deterministic path is off) are
+    GPU-bound -> "llm", served by its own low-concurrency worker so the
+    embedder / vLLM backends are not oversubscribed.
+    """
+    deterministic = is_scenario and settings.scenario_deterministic
+    queue = "default" if deterministic else "llm"
+    return execute_pipeline_task.apply_async(args=[task_id], queue=queue)
 
 
 @worker_ready.connect

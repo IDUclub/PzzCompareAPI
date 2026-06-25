@@ -6,8 +6,20 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
+from sse_starlette.sse import EventSourceResponse
 
 from ..application.use_cases.create_task import create_task
 from ..dependencies import get_app_settings, get_db, get_event_repo, get_task_repo
@@ -16,7 +28,8 @@ from ..domain.ports.task_repository import TaskRepository
 from ..infrastructure.storage import get_object_storage
 from ..schemas import TaskCreate, TaskOut
 from ..settings import Settings
-from ..tasks import celery_app, execute_pipeline_task
+from ..tasks import celery_app, enqueue_pipeline_task, execute_pipeline_task
+from .tasks import task_stream_with_report_generator
 from .utils import api_log
 
 router = APIRouter(prefix="/tasks", tags=["classifier"])
@@ -213,7 +226,7 @@ def _create_pipeline_task(
         settings=app_settings,
         task_repo=task_repo,
         event_repo=event_repo,
-        enqueue_task=execute_pipeline_task.delay,
+        enqueue_task=lambda tid: enqueue_pipeline_task(tid, is_scenario=False),
         idempotency_key=namespaced_key,
         retry_failed=retry_failed,
         force_recompute=force_recompute,
@@ -342,3 +355,128 @@ def create_classify_only_task_endpoint(
 
 
 create_classify_only_task_endpoint.__doc__ = (create_classify_only_task_endpoint.__doc__ or "") + "\n    " + _TASK_RERUN_DOCSTRING
+
+
+@router.post("/pzz-check/stream")
+async def create_pzz_check_stream_endpoint(
+    request: Request,
+    cadastral_feature_collection_file: UploadFile = File(...),
+    pzz_zones_feature_collection_file: UploadFile = File(...),
+    pzz_zone_vri_labels_file: UploadFile | None = File(default=None),
+    vri_classifier_file: UploadFile | None = File(default=None),
+    cadastral_vri_col: str = Form(..., min_length=1),
+    pzz_zone_code_col: str = Form(..., min_length=1),
+    pzz_zone_name_col: str = Form(..., min_length=1),
+    priority: int = Form(1, ge=1, le=10),
+    retry_failed: bool = Form(False),
+    force_recompute: bool = Form(False),
+    poll_interval: float = Query(2.0, ge=0.5, le=10.0),
+    idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    app_settings: Settings = Depends(get_app_settings),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    event_repo: EventRepository = Depends(get_event_repo),
+    session: Session = Depends(get_db),
+) -> EventSourceResponse:
+    """Create a full PZZ-check task AND stream it to completion via SSE.
+
+    Same inputs as POST /tasks/pzz-check. One call uploads, creates the task,
+    then streams: ``task`` -> ``task_event``/``status`` -> ``geojson`` (the
+    classified FeatureCollection with zone verdicts) -> ``done``.
+
+    The upload flow returns the classified layer only; the object-zone-fit
+    summary is a scenario/chatbot concern and is available separately via
+    GET /tasks/{external_id}/object-zone-fit if needed.
+
+    Use a fetch-based SSE client (native EventSource cannot POST multipart).
+    """
+    task_out = await run_in_threadpool(
+        _create_pipeline_task,
+        cadastral_file=cadastral_feature_collection_file,
+        pzz_zones_file=pzz_zones_feature_collection_file,
+        labels_file=pzz_zone_vri_labels_file,
+        classifier_file=vri_classifier_file,
+        include_pzz_check=True,
+        cadastral_vri_col=cadastral_vri_col,
+        pzz_zone_code_col=pzz_zone_code_col,
+        pzz_zone_name_col=pzz_zone_name_col,
+        priority=priority,
+        retry_failed=retry_failed,
+        force_recompute=force_recompute,
+        idempotency_key=idempotency_key_header or idempotency_key_form,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+    )
+    session.commit()
+    return EventSourceResponse(
+        task_stream_with_report_generator(
+            task_out.external_id,
+            group_by="zone",
+            poll_interval=poll_interval,
+            request=request,
+            app_settings=app_settings,
+            initial=task_out.model_dump(mode="json"),
+            include_report=False,
+        )
+    )
+
+
+@router.post("/classify-only/stream")
+async def create_classify_only_stream_endpoint(
+    request: Request,
+    cadastral_feature_collection_file: UploadFile = File(...),
+    vri_classifier_file: UploadFile | None = File(default=None),
+    cadastral_vri_col: str = Form(..., min_length=1),
+    priority: int = Form(1, ge=1, le=10),
+    retry_failed: bool = Form(False),
+    force_recompute: bool = Form(False),
+    poll_interval: float = Query(2.0, ge=0.5, le=10.0),
+    idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    app_settings: Settings = Depends(get_app_settings),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    event_repo: EventRepository = Depends(get_event_repo),
+    session: Session = Depends(get_db),
+) -> EventSourceResponse:
+    """Create a classify-only task AND stream it to completion via SSE.
+
+    Same inputs as POST /tasks/classify-only (no PZZ zones). Streams:
+    ``task`` -> ``task_event``/``status`` -> ``geojson`` (classified
+    FeatureCollection with VRI candidate properties) -> ``done``.
+
+    No ``report`` event: classify-only has no zones, so the object-zone-fit
+    summary is not applicable. Use a fetch-based SSE client.
+    """
+    task_out = await run_in_threadpool(
+        _create_pipeline_task,
+        cadastral_file=cadastral_feature_collection_file,
+        pzz_zones_file=None,
+        labels_file=None,
+        classifier_file=vri_classifier_file,
+        include_pzz_check=False,
+        cadastral_vri_col=cadastral_vri_col,
+        pzz_zone_code_col="",
+        pzz_zone_name_col="",
+        priority=priority,
+        retry_failed=retry_failed,
+        force_recompute=force_recompute,
+        idempotency_key=idempotency_key_header or idempotency_key_form,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+    )
+    session.commit()
+    return EventSourceResponse(
+        task_stream_with_report_generator(
+            task_out.external_id,
+            group_by="object",
+            poll_interval=poll_interval,
+            request=request,
+            app_settings=app_settings,
+            initial=task_out.model_dump(mode="json"),
+            include_report=False,
+        )
+    )

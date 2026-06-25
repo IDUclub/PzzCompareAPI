@@ -68,7 +68,37 @@ services:
       - "9200:9100"
     networks:
       - pzz_compare
-    command: sh -c "python service/wait_for_db.py && celery -A service.tasks.celery_app worker -P threads --concurrency=4 --loglevel=INFO"
+    # Fast queue: deterministic scenario tasks + beat-scheduled jobs.
+    command: sh -c "python service/wait_for_db.py && celery -A service.tasks.celery_app worker -P threads --concurrency=4 -Q default --loglevel=INFO"
+    volumes:
+#      - /PzzCompareData:/app
+      - /PzzCompareData/outputs:/app/outputs
+      - /PzzCompareData/task_inputs:/app/task_inputs
+#      - ./data:/app/data
+
+  worker_llm:
+    build: .
+    user: root
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres_pzz:5432/pzz_pipeline
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: INFO
+      DB_WAIT_TIMEOUT: 60
+      DB_WAIT_INTERVAL: 2
+      NOT_ALLOWED_LLM_RERANK_NUM_PREDICT: "4000"
+      NOT_ALLOWED_LLM_RERANK_THINK: "false"
+      NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N: "8"
+    depends_on:
+      - postgres_pzz
+      - redis
+    ports:
+      - "9201:9100"
+    networks:
+      - pzz_compare
+    # GPU-bound queue: LLM upload pipelines. Low concurrency so the embedder /
+    # vLLM backends are not oversubscribed.
+    command: sh -c "python service/wait_for_db.py && celery -A service.tasks.celery_app worker -P threads --concurrency=2 -Q llm --loglevel=INFO"
     volumes:
 #      - /PzzCompareData:/app
       - /PzzCompareData/outputs:/app/outputs

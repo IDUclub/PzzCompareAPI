@@ -54,8 +54,14 @@ def start_task(
 
     reserved, updated_sum = try_reserve(current_sum, task_priority, max_sum)
     if not reserved:
-        ensure_transition(task.status.value, TaskStatus.waiting_capacity.value)
-        task_repo.update_status(task.id, TaskStatus.waiting_capacity)
+        # A task already in waiting_capacity is here on a capacity retry; the
+        # state machine forbids waiting_capacity -> waiting_capacity, so only
+        # transition when coming from another state. Without this guard the
+        # retry raised ValueError and the task got stuck in waiting_capacity
+        # forever once capacity later freed.
+        if task.status != TaskStatus.waiting_capacity:
+            ensure_transition(task.status.value, TaskStatus.waiting_capacity.value)
+            task_repo.update_status(task.id, TaskStatus.waiting_capacity)
         event_repo.append_event(
             task_id=task.id,
             stage="capacity",
