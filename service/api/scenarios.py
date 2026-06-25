@@ -35,7 +35,7 @@ from ..infrastructure.storage import get_object_storage
 from ..infrastructure.urban_api_client import UrbanApiClient, UrbanApiError
 from ..schemas import TaskCreate, TaskEventOut, TaskOut
 from ..settings import Settings
-from ..tasks import execute_pipeline_task
+from ..tasks import enqueue_pipeline_task, execute_pipeline_task
 from .classifier import persist_geojson_dict
 from fastapi import Request as FastRequest
 from fastapi.concurrency import run_in_threadpool
@@ -279,7 +279,7 @@ def _persist_and_create_scenario_task(
         settings=app_settings,
         task_repo=task_repo,
         event_repo=event_repo,
-        enqueue_task=execute_pipeline_task.delay,
+        enqueue_task=lambda tid: enqueue_pipeline_task(tid, is_scenario=True),
         idempotency_key=namespaced_key,
         retry_failed=False,
         force_recompute=force_recompute,

@@ -24,7 +24,7 @@ from ..models import PipelineTask, TaskEvent, TaskStatus
 _TERMINAL_STATUSES = {TaskStatus.finished, TaskStatus.failed}
 from ..schemas import TaskEventOut, TaskListOut, TaskOut
 from ..settings import Settings
-from ..tasks import celery_app, execute_pipeline_task
+from ..tasks import celery_app, enqueue_pipeline_task, execute_pipeline_task
 from ..time_utils import utc_now
 from .utils import api_log
 
@@ -120,7 +120,9 @@ def build_recompute_task_response(
     session.commit()
 
     try:
-        celery_result = execute_pipeline_task.delay(task.id)
+        celery_result = enqueue_pipeline_task(
+            task.id, is_scenario=_is_scenario_task(task.external_id, task_repo)
+        )
     except Exception as exc:  # noqa: BLE001
         task_repo.update_status(task.id, TaskStatus.failed, finished_at=utc_now())
         task_repo.set_error(task.id, f"Failed to enqueue Celery task: {exc}")

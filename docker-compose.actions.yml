@@ -109,10 +109,40 @@ services:
       - pzz_compare
     ports:
       - "9200:9100"
+    # Fast queue: deterministic scenario tasks + beat-scheduled jobs.
     command: >
       celery -A service.tasks.celery_app worker
       -P threads
       --concurrency=${CELERY_CONCURRENCY:-4}
+      -Q default
+      --loglevel=INFO
+
+  worker_llm:
+    image: ${IMAGE}
+    restart: unless-stopped
+    env_file: .env.development
+    environment:
+      <<: *app-env
+      IMAGE: ${IMAGE}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - outputs:/app/outputs
+      - task_inputs:/app/task_inputs
+    networks:
+      - pzz_compare
+    ports:
+      - "9201:9100"
+    # GPU-bound queue: LLM upload pipelines. Low concurrency so the embedder /
+    # vLLM backends are not oversubscribed.
+    command: >
+      celery -A service.tasks.celery_app worker
+      -P threads
+      --concurrency=${CELERY_LLM_CONCURRENCY:-2}
+      -Q llm
       --loglevel=INFO
 
   beat:

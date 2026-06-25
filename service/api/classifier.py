@@ -28,7 +28,7 @@ from ..domain.ports.task_repository import TaskRepository
 from ..infrastructure.storage import get_object_storage
 from ..schemas import TaskCreate, TaskOut
 from ..settings import Settings
-from ..tasks import celery_app, execute_pipeline_task
+from ..tasks import celery_app, enqueue_pipeline_task, execute_pipeline_task
 from .tasks import task_stream_with_report_generator
 from .utils import api_log
 
@@ -226,7 +226,7 @@ def _create_pipeline_task(
         settings=app_settings,
         task_repo=task_repo,
         event_repo=event_repo,
-        enqueue_task=execute_pipeline_task.delay,
+        enqueue_task=lambda tid: enqueue_pipeline_task(tid, is_scenario=False),
         idempotency_key=namespaced_key,
         retry_failed=retry_failed,
         force_recompute=force_recompute,
