@@ -38,6 +38,7 @@ from ..settings import Settings
 from ..tasks import execute_pipeline_task
 from .classifier import persist_geojson_dict
 from fastapi import Request as FastRequest
+from fastapi.concurrency import run_in_threadpool
 from sse_starlette.sse import EventSourceResponse
 
 from .tasks import (
@@ -210,6 +211,100 @@ def _flatten_functional_zone_features(
     return feature_collection
 
 
+def _persist_and_create_scenario_task(
+    *,
+    objects_fc: dict[str, Any],
+    zones_fc: dict[str, Any],
+    scenario_id: int,
+    year: int,
+    source: str,
+    physical_object_type_id: int,
+    priority: int,
+    namespaced_key: str,
+    force_recompute: bool,
+    app_settings: Settings,
+    task_repo: TaskRepository,
+    event_repo: EventRepository,
+    session: Session,
+) -> PipelineTask:
+    """Flatten inputs, persist GeoJSON to storage, and create the task.
+
+    Synchronous and I/O-heavy (three MinIO writes); intended to run in a
+    threadpool so the API event loop stays responsive under concurrent submits.
+    """
+    objects_fc = _flatten_physical_object_features(objects_fc, vri_col=_CADASTRAL_VRI_COL)
+    zones_fc = _flatten_functional_zone_features(
+        zones_fc, code_col=_PZZ_ZONE_CODE_COL, name_col=_PZZ_ZONE_NAME_COL
+    )
+
+    external_id = uuid4().hex
+    task_dir = Path(app_settings.task_inputs_dir) / external_id
+    storage = get_object_storage()
+
+    stored_cadastral = persist_geojson_dict(
+        objects_fc, task_dir, "cadastral_feature_collection.geojson", external_id, storage
+    )
+    stored_pzz_zones = persist_geojson_dict(
+        zones_fc, task_dir, "pzz_zones_feature_collection.geojson", external_id, storage
+    )
+
+    observed_zone_types: dict[str, str | None] = {}
+    for feature in zones_fc.get("features") or []:
+        props = feature.get("properties") or {}
+        code = (props.get(_PZZ_ZONE_CODE_COL) or "").strip()
+        if code and code not in observed_zone_types:
+            observed_zone_types[code] = props.get(_PZZ_ZONE_NAME_COL) or None
+    scenario_labels = build_pipeline_zone_labels(observed_zone_types=observed_zone_types)
+    stored_labels = persist_geojson_dict(
+        scenario_labels, task_dir, "pzz_zone_vri_labels.json", external_id, storage
+    )
+
+    input_paths = {
+        "cadastral_data_path": stored_cadastral,
+        "pzz_zones_data_path": stored_pzz_zones,
+        "pzz_zone_vri_labels_path": stored_labels,
+        "vri_classifier_path": str(Path(app_settings.default_vri_classifier_path).resolve()),
+    }
+
+    payload = TaskCreate(
+        include_pzz_check=True,
+        cadastral_vri_col=_CADASTRAL_VRI_COL,
+        pzz_zone_code_col=_PZZ_ZONE_CODE_COL,
+        pzz_zone_name_col=_PZZ_ZONE_NAME_COL,
+        priority=priority,
+    )
+
+    task = create_task(
+        payload=payload,
+        settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        enqueue_task=execute_pipeline_task.delay,
+        idempotency_key=namespaced_key,
+        retry_failed=False,
+        force_recompute=force_recompute,
+        external_id=external_id,
+        input_paths=input_paths,
+        session=session,
+    )
+    session.flush()
+    session.refresh(task)
+    api_log(
+        "create_task",
+        "accepted",
+        task_id=task.id,
+        external_id=task.external_id,
+        mode="scenario_classify",
+        scenario_id=scenario_id,
+        year=year,
+        source=source,
+        physical_object_type_id=physical_object_type_id,
+        objects_count=len(objects_fc.get("features") or []),
+        zones_count=len(zones_fc.get("features") or []),
+    )
+    return task
+
+
 async def _build_scenario_classification_task(
     *,
     scenario_id: int,
@@ -324,77 +419,22 @@ async def _build_scenario_classification_task(
             ),
         )
 
-    objects_fc = _flatten_physical_object_features(objects_fc, vri_col=_CADASTRAL_VRI_COL)
-    zones_fc = _flatten_functional_zone_features(
-        zones_fc, code_col=_PZZ_ZONE_CODE_COL, name_col=_PZZ_ZONE_NAME_COL
-    )
-
-    external_id = uuid4().hex
-    task_dir = Path(app_settings.task_inputs_dir) / external_id
-    storage = get_object_storage()
-
-    stored_cadastral = persist_geojson_dict(
-        objects_fc, task_dir, "cadastral_feature_collection.geojson", external_id, storage
-    )
-    stored_pzz_zones = persist_geojson_dict(
-        zones_fc, task_dir, "pzz_zones_feature_collection.geojson", external_id, storage
-    )
-
-    observed_zone_types: dict[str, str | None] = {}
-    for feature in zones_fc.get("features") or []:
-        props = feature.get("properties") or {}
-        code = (props.get(_PZZ_ZONE_CODE_COL) or "").strip()
-        if code and code not in observed_zone_types:
-            observed_zone_types[code] = props.get(_PZZ_ZONE_NAME_COL) or None
-    scenario_labels = build_pipeline_zone_labels(observed_zone_types=observed_zone_types)
-    stored_labels = persist_geojson_dict(
-        scenario_labels, task_dir, "pzz_zone_vri_labels.json", external_id, storage
-    )
-
-    input_paths = {
-        "cadastral_data_path": stored_cadastral,
-        "pzz_zones_data_path": stored_pzz_zones,
-        "pzz_zone_vri_labels_path": stored_labels,
-        "vri_classifier_path": str(Path(app_settings.default_vri_classifier_path).resolve()),
-    }
-
-    payload = TaskCreate(
-        include_pzz_check=True,
-        cadastral_vri_col=_CADASTRAL_VRI_COL,
-        pzz_zone_code_col=_PZZ_ZONE_CODE_COL,
-        pzz_zone_name_col=_PZZ_ZONE_NAME_COL,
-        priority=priority,
-    )
-
-    task = create_task(
-        payload=payload,
-        settings=app_settings,
-        task_repo=task_repo,
-        event_repo=event_repo,
-        enqueue_task=execute_pipeline_task.delay,
-        idempotency_key=namespaced_key,
-        retry_failed=False,
-        force_recompute=force_recompute,
-        external_id=external_id,
-        input_paths=input_paths,
-        session=session,
-    )
-    session.flush()
-    session.refresh(task)
-    api_log(
-        "create_task",
-        "accepted",
-        task_id=task.id,
-        external_id=task.external_id,
-        mode="scenario_classify",
+    return await run_in_threadpool(
+        _persist_and_create_scenario_task,
+        objects_fc=objects_fc,
+        zones_fc=zones_fc,
         scenario_id=scenario_id,
         year=year,
         source=source,
         physical_object_type_id=physical_object_type_id,
-        objects_count=len(objects_fc.get("features") or []),
-        zones_count=len(zones_fc.get("features") or []),
+        priority=priority,
+        namespaced_key=namespaced_key,
+        force_recompute=force_recompute,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
     )
-    return task
 
 
 @router.post("/{scenario_id}/classify", response_model=TaskOut)
@@ -494,8 +534,6 @@ async def classify_scenario_stream_endpoint(
         event_repo=event_repo,
         session=session,
     )
-    # Commit so the streaming generator (its own DB session) sees the task and
-    # the Celery worker can pick it up.
     session.commit()
     initial = TaskOut.model_validate(task).model_dump(mode="json")
     return EventSourceResponse(
