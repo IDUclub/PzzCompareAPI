@@ -164,8 +164,20 @@ class PipelineRunnerFactory:
     """Create pipeline runner by mode with optional fallback."""
 
     @staticmethod
-    def create(settings: "Settings") -> PipelineRunner:
-        inner = PipelineRunnerFactory._create_inner(settings)
+    def create(settings: "Settings", request: "PipelineRequest | None" = None) -> PipelineRunner:
+        if (
+            request is not None
+            and getattr(request, "is_scenario", False)
+            and getattr(settings, "scenario_deterministic", False)
+        ):
+            # Scenario tasks classify via dictionary lookups (no LLM/embeddings).
+            # Imported lazily so the heavy geo deps load only in the worker.
+            from service.infrastructure.runners.deterministic_scenario_runner import (
+                DeterministicScenarioRunner,
+            )
+            inner: PipelineRunner = DeterministicScenarioRunner(settings)
+        else:
+            inner = PipelineRunnerFactory._create_inner(settings)
         return StorageAwarePipelineRunner(inner, get_object_storage())
 
     @staticmethod

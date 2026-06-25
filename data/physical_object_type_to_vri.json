@@ -1,0 +1,83 @@
+{
+  "metadata": {
+    "description": "Deterministic mapping physical_object_type_id -> Rosreestr VRI code, used by the scenario classifier to decide PZZ fit without any LLM/embedding step.",
+    "source_types": "urban_api GET /api/v1/physical_object_types (53 types)",
+    "vri_catalog": "data/functional_zones_to_pzz_mapping.json (Rosreestr codes)",
+    "validation_status": "Type 4 (Жилой дом) is the validated, floor-aware mapping used by scenario runs. The remaining types are best-effort starters keyed on physical_object_function; codes left null where a single VRI is ambiguous (these are not exercised by current scenario runs, which fetch one object type at a time).",
+    "version": 1
+  },
+
+  "residential_floor_bands": {
+    "comment": "Жилой дом (type 4) has no private/apartment distinction in the type itself, so the residential VRI is derived from the floor count ('Количество этажей'). Bands follow the common РФ convention: малоэтажная <=4, среднеэтажная 5-8, многоэтажная >=9. fallback used when floors is missing.",
+    "floors_field": "Количество этажей",
+    "fallback_vri_code": "2.1",
+    "bands": [
+      { "max_floors": 4, "vri_code": "2.1.1", "vri_name": "Малоэтажная многоквартирная жилая застройка" },
+      { "max_floors": 8, "vri_code": "2.5", "vri_name": "Среднеэтажная жилая застройка" },
+      { "max_floors": null, "vri_code": "2.6", "vri_name": "Многоэтажная жилая застройка (высотная застройка)" }
+    ]
+  },
+
+  "by_type_id": {
+    "4": { "name": "Жилой дом", "strategy": "residential_floor_bands" },
+
+    "5": { "name": "Нежилое здание", "vri_code": null, "note": "ambiguous without a service type; needs service_type_id to resolve" },
+    "8": { "name": "Автозаправочная станция", "vri_code": "4.9.1" },
+    "29": { "name": "Склад", "vri_code": "6.9" },
+    "43": { "name": "Промышленная территория", "vri_code": "6.0" },
+    "49": { "name": "Полигон ТБО", "vri_code": "12.2" },
+
+    "13": { "name": "Распределительный трубопровод для транспортировки газа", "vri_code": "3.1.1" },
+    "14": { "name": "Электрическая подстанция", "vri_code": "3.1.1" },
+    "18": { "name": "Объект магистрального газопровода", "vri_code": "3.1.1" },
+    "20": { "name": "Линия электропередачи", "vri_code": "3.1.1" },
+    "21": { "name": "Электростанция", "vri_code": "3.1.1" },
+    "24": { "name": "Сеть водоотведения", "vri_code": "3.1.1" },
+    "27": { "name": "Сеть водоснабжения", "vri_code": "3.1.1" },
+    "33": { "name": "Возобновляемый источник энергии", "vri_code": "3.1.1" },
+    "34": { "name": "Гидроэлектростанция", "vri_code": "3.1.1" },
+    "35": { "name": "Атомная электростанция", "vri_code": "3.1.1" },
+    "38": { "name": "Водонапорная башня", "vri_code": "3.1.1" },
+    "39": { "name": "Водоочистное сооружение", "vri_code": "3.1.1" },
+    "40": { "name": "Водозаборное сооружение", "vri_code": "3.1.1" },
+    "41": { "name": "Котельная", "vri_code": "3.1.1" },
+    "42": { "name": "Насосная станция", "vri_code": "3.1.1" },
+    "53": { "name": "Сеть электросвязи", "vri_code": "3.1.1" },
+    "56": { "name": "Объект теплоснабжения", "vri_code": "3.1.1" },
+    "57": { "name": "Объект связи", "vri_code": "3.2.3" },
+    "58": { "name": "Сеть теплоснабжения", "vri_code": "3.1.1" },
+    "59": { "name": "Объект добычи и транспортировки газа", "vri_code": "3.1.1" },
+
+    "10": { "name": "Остановка наземного общественного транспорта", "vri_code": "7.2.1" },
+    "19": { "name": "Парковка", "vri_code": "2.7.1" },
+    "28": { "name": "Порт", "vri_code": "7.3" },
+    "30": { "name": "Железнодорожная станция", "vri_code": "7.1" },
+    "50": { "name": "Федеральная дорога", "vri_code": "7.2" },
+    "51": { "name": "Региональная дорога", "vri_code": "7.2" },
+    "52": { "name": "Местная дорога", "vri_code": "7.2" },
+    "61": { "name": "Аэропорт", "vri_code": "7.4" },
+    "62": { "name": "Железная дорога", "vri_code": "7.1" },
+
+    "1": { "name": "Рекреационная зона", "vri_code": "5.0" },
+    "11": { "name": "Кладбище", "vri_code": "12.1" },
+    "23": { "name": "Зоопарк", "vri_code": "3.6.3" },
+    "31": { "name": "Пляж", "vri_code": "5.1.5" },
+    "36": { "name": "Парк развлечений", "vri_code": "3.6.2" },
+    "9": { "name": "Памятник", "vri_code": "9.3" },
+
+    "46": { "name": "Необрабатываемое поле", "vri_code": "1.0" },
+    "60": { "name": "Обрабатываемое поле", "vri_code": "1.0" },
+
+    "3": { "name": "Зеленая зона", "vri_code": null, "note": "landscape, not a building VRI" },
+    "47": { "name": "Травяное покрытие", "vri_code": null, "note": "landscape" },
+    "48": { "name": "Лес", "vri_code": "10.1" },
+    "7": { "name": "Площадка", "vri_code": null, "note": "ambiguous" },
+    "63": { "name": "Закрытая территория", "vri_code": null, "note": "ambiguous" },
+
+    "2": { "name": "Водный объект", "vri_code": null, "note": "water surface, no building VRI" },
+    "44": { "name": "Река", "vri_code": null, "note": "water surface" },
+    "45": { "name": "Озеро", "vri_code": null, "note": "water surface" },
+    "54": { "name": "Море", "vri_code": null, "note": "water surface" },
+    "55": { "name": "Залив", "vri_code": null, "note": "water surface" }
+  }
+}

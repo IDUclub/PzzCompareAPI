@@ -209,7 +209,7 @@ def execute_pipeline_task(self, task_id: int) -> None:
     )
 
     try:
-        output_path = PipelineRunnerFactory.create(settings).run(outcome.request)
+        output_path = PipelineRunnerFactory.create(settings, outcome.request).run(outcome.request)
     except Exception as exc:  # noqa: BLE001
         error_text = str(exc)
         _log_structured(

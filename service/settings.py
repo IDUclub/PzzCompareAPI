@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     default_fz_to_pzz_mapping_path: str = Field(
         default="data/functional_zones_to_pzz_mapping.json"
     )
+    # Scenario tasks (urban_api-backed, controlled vocabularies) classify
+    # deterministically via dictionary lookups instead of the LLM pipeline.
+    # Set SCENARIO_DETERMINISTIC=false to fall back to the LLM pipeline.
+    scenario_deterministic: bool = Field(default=True)
+    physical_object_type_to_vri_path: str = Field(
+        default="data/physical_object_type_to_vri.json"
+    )
     priority_max_sum_default: int = 20
 
     run_migrations_on_startup: bool = Field(default=True)
