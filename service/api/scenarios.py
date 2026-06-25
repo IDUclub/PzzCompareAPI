@@ -12,17 +12,22 @@ forwarded to urban_api verbatim.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Form, Header, HTTPException, Path as FastPath, Query
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Path as FastPath, Query, Request as FastRequest
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 from starlette.responses import FileResponse
 
 from ..application.use_cases.create_task import create_task
 from ..auth.exceptions import AuthError
+from ..db import session_scope
 from ..dependencies import get_app_settings, get_auth_client, get_db, get_event_repo, get_task_repo
 from ..domain.ports.event_repository import EventRepository
 from ..domain.ports.task_repository import TaskRepository
@@ -31,18 +36,18 @@ from ..infrastructure.pzz_mapping import (
     lookup_zone_summary,
     mapping_version,
 )
+from ..infrastructure.repositories.sqlalchemy_task_repository import SqlAlchemyTaskRepository
 from ..infrastructure.storage import get_object_storage
 from ..infrastructure.urban_api_client import UrbanApiClient, UrbanApiError
+from ..models import PipelineTask, TaskEvent, TaskStatus
 from ..schemas import TaskCreate, TaskEventOut, TaskOut
 from ..settings import Settings
 from ..tasks import enqueue_pipeline_task, execute_pipeline_task
 from .classifier import persist_geojson_dict
-from fastapi import Request as FastRequest
 from fastapi.concurrency import run_in_threadpool
-from sse_starlette.sse import EventSourceResponse
 
 from .tasks import (
-    _task_sse_generator,
+    _TERMINAL_STATUSES,
     build_cancel_task_response,
     build_object_zone_fit_response,
     build_recompute_task_response,
@@ -51,7 +56,6 @@ from .tasks import (
     get_task_or_404,
     task_stream_with_report_generator,
 )
-from ..models import PipelineTask
 from .utils import api_log
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
@@ -744,6 +748,157 @@ async def recompute_scenario_task_endpoint(
     return build_recompute_task_response(task, task_repo, event_repo, session)
 
 
+def _parse_scenario_idempotency_key(key: str) -> tuple[int, str, int] | None:
+    """Parse (year, source, physical_object_type_id) from sc: idempotency key.
+
+    Key format: sc:{scenario_id}:{year}:{source}:type-{po_type_id}:upd-{...}:m-{...}
+    """
+    if not key or not key.startswith("sc:"):
+        return None
+    parts = key.split(":")
+    try:
+        year = int(parts[2])
+        source = parts[3]
+        po_type_id = int(parts[4].split("-", 1)[1])
+        return year, source, po_type_id
+    except (ValueError, IndexError):
+        return None
+
+
+async def _scenario_task_sse_generator(
+    scenario_id: int,
+    external_id: str,
+    poll_interval: float,
+    request: FastRequest,
+    token: str,
+    app_settings: Settings,
+) -> AsyncIterator[ServerSentEvent]:
+    # 1. Parse year/source from idempotency key and emit zones_info immediately
+    with session_scope() as session:
+        repo = SqlAlchemyTaskRepository(session)
+        idempotency_key = repo.get_idempotency_key_by_external_id(external_id) or ""
+
+    parsed = _parse_scenario_idempotency_key(idempotency_key)
+    if parsed and app_settings.urban_api_base_url:
+        year, source, _ = parsed
+        try:
+            async with UrbanApiClient(
+                base_url=app_settings.urban_api_base_url,
+                timeout_seconds=app_settings.urban_api_timeout_seconds,
+            ) as urban:
+                zones_fc = await urban.get_functional_zones(
+                    scenario_id, year=year, source=source, token=token
+                )
+            items: list[dict[str, Any]] = []
+            for feature in zones_fc.get("features") or []:
+                props = feature.get("properties") or {}
+                zone_type = props.get("functional_zone_type") or {}
+                if isinstance(zone_type, dict):
+                    zone_type_id = zone_type.get("id")
+                    zone_type_name = zone_type.get("nickname") or zone_type.get("name")
+                else:
+                    zone_type_id = None
+                    zone_type_name = None
+                items.append({
+                    "functional_zone_id": props.get("functional_zone_id"),
+                    "zone_type_id": zone_type_id,
+                    "zone_type_name": zone_type_name,
+                    "name": props.get("name"),
+                    "year": props.get("year"),
+                    "source": props.get("source"),
+                    "properties": props.get("properties"),
+                    "pzz_summary": lookup_zone_summary(zone_type_id),
+                })
+            yield ServerSentEvent(
+                data=json.dumps({
+                    "scenario_id": scenario_id,
+                    "year": year,
+                    "source": source,
+                    "total": len(items),
+                    "items": items,
+                }),
+                event="zones_info",
+            )
+        except Exception:
+            pass
+
+    # 2. Poll for task events and status changes
+    last_event_id = 0
+    last_status: TaskStatus | None = None
+
+    while True:
+        if await request.is_disconnected():
+            break
+
+        with session_scope() as session:
+            task = session.execute(
+                select(PipelineTask).where(PipelineTask.external_id == external_id)
+            ).scalar_one_or_none()
+
+            if task is None:
+                yield ServerSentEvent(data=json.dumps({"error": "Task not found"}), event="error")
+                break
+
+            new_events = session.execute(
+                select(TaskEvent)
+                .where(TaskEvent.task_id == task.id, TaskEvent.id > last_event_id)
+                .order_by(TaskEvent.id.asc())
+            ).scalars().all()
+
+            for ev in new_events:
+                last_event_id = ev.id
+                yield ServerSentEvent(
+                    data=json.dumps(TaskEventOut.model_validate(ev).model_dump(mode="json")),
+                    event="task_event",
+                )
+
+            current_status = task.status
+            if current_status != last_status:
+                last_status = current_status
+                yield ServerSentEvent(
+                    data=json.dumps(TaskOut.model_validate(task).model_dump(mode="json")),
+                    event="status",
+                )
+
+            if current_status in _TERMINAL_STATUSES:
+                # 3. On success emit object_zone_fit and result
+                if current_status == TaskStatus.finished:
+                    try:
+                        ozone = build_object_zone_fit_response(task, external_id, "zone", app_settings)
+                        yield ServerSentEvent(
+                            data=json.dumps(ozone, default=str),
+                            event="object_zone_fit",
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        from pathlib import Path
+                        from ..infrastructure.storage import get_object_storage, is_remote_path
+                        result_path = task.result_path
+                        if result_path:
+                            if is_remote_path(result_path):
+                                outputs_dir = Path(app_settings.outputs_dir)
+                                outputs_dir.mkdir(parents=True, exist_ok=True)
+                                cache_path = outputs_dir / result_path.split("/")[-1]
+                                if not cache_path.is_file():
+                                    get_object_storage().download_file(result_path, str(cache_path))
+                                result_path = str(cache_path)
+                            yield ServerSentEvent(
+                                data=Path(result_path).read_text(encoding="utf-8"),
+                                event="result",
+                            )
+                    except Exception:
+                        pass
+
+                yield ServerSentEvent(
+                    data=json.dumps({"status": current_status.value}),
+                    event="done",
+                )
+                break
+
+        await asyncio.sleep(poll_interval)
+
+
 @router.get("/{scenario_id}/tasks/{external_id}/stream")
 async def stream_scenario_task_status_endpoint(
     request: FastRequest,
@@ -754,7 +909,15 @@ async def stream_scenario_task_status_endpoint(
     app_settings: Settings = Depends(get_app_settings),
     task_repo: TaskRepository = Depends(get_task_repo),
 ) -> EventSourceResponse:
-    """Stream scenario task status and events via Server-Sent Events."""
+    """Stream scenario task status and events via Server-Sent Events.
+
+    Emits the following event types in order:
+    - ``zones_info`` — functional zone data from urban_api (sent immediately on connect)
+    - ``task_event`` — each new pipeline event
+    - ``status`` — task status on every change
+    - ``object_zone_fit`` — zone/object fit summary when task finishes
+    - ``done`` — terminal event (``{"status": "finished"|"failed"}``), stream closes
+    """
     await _verify_scenario_access(
         scenario_id=scenario_id,
         token=token,
@@ -765,7 +928,9 @@ async def stream_scenario_task_status_endpoint(
         external_id=external_id,
         task_repo=task_repo,
     )
-    return EventSourceResponse(_task_sse_generator(external_id, poll_interval, request))
+    return EventSourceResponse(
+        _scenario_task_sse_generator(scenario_id, external_id, poll_interval, request, token, app_settings)
+    )
 
 
 @router.get(
