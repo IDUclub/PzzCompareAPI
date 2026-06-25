@@ -48,7 +48,9 @@ from .tasks import (
     build_task_events_response,
     build_task_result_response,
     get_task_or_404,
+    task_stream_with_report_generator,
 )
+from ..models import PipelineTask
 from .utils import api_log
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
@@ -208,22 +210,22 @@ def _flatten_functional_zone_features(
     return feature_collection
 
 
-@router.post("/{scenario_id}/classify", response_model=TaskOut)
-async def classify_scenario_endpoint(
-    scenario_id: int = FastPath(..., ge=1),
-    year: int = Form(..., ge=1900, le=2100),
-    source: str = Form(..., min_length=1),
-    physical_object_type_id: int = Form(4),
-    priority: int = Form(1, ge=1, le=10),
-    force_recompute: bool = Form(False),
-    idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
-    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
-    token: str = Depends(verify_token),
-    app_settings: Settings = Depends(get_app_settings),
-    task_repo: TaskRepository = Depends(get_task_repo),
-    event_repo: EventRepository = Depends(get_event_repo),
-    session: Session = Depends(get_db),
-) -> TaskOut:
+async def _build_scenario_classification_task(
+    *,
+    scenario_id: int,
+    year: int,
+    source: str,
+    physical_object_type_id: int,
+    priority: int,
+    force_recompute: bool,
+    idempotency_key_form: str | None,
+    idempotency_key_header: str | None,
+    token: str,
+    app_settings: Settings,
+    task_repo: TaskRepository,
+    event_repo: EventRepository,
+    session: Session,
+) -> PipelineTask:
     """Run PZZ-style classification on a scenario's data fetched from urban_api.
 
     Flow:
@@ -276,7 +278,7 @@ async def classify_scenario_endpoint(
                 physical_object_type_id=physical_object_type_id,
                 scenario_updated_at=scenario_updated_at,
             )
-            return TaskOut.model_validate(existing)
+            return existing
 
         try:
             sources = await urban.list_functional_zone_sources(scenario_id, token=token)
@@ -392,7 +394,120 @@ async def classify_scenario_endpoint(
         objects_count=len(objects_fc.get("features") or []),
         zones_count=len(zones_fc.get("features") or []),
     )
+    return task
+
+
+@router.post("/{scenario_id}/classify", response_model=TaskOut)
+async def classify_scenario_endpoint(
+    scenario_id: int = FastPath(..., ge=1),
+    year: int = Form(..., ge=1900, le=2100),
+    source: str = Form(..., min_length=1),
+    physical_object_type_id: int = Form(4),
+    priority: int = Form(1, ge=1, le=10),
+    force_recompute: bool = Form(False),
+    idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    token: str = Depends(verify_token),
+    app_settings: Settings = Depends(get_app_settings),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    event_repo: EventRepository = Depends(get_event_repo),
+    session: Session = Depends(get_db),
+) -> TaskOut:
+    """Create a scenario classification task (asynchronous).
+
+    Fetches the scenario's data from urban_api, persists inputs, and enqueues
+    the classification. Returns the TaskOut descriptor; track via
+    /scenarios/{id}/tasks/{external_id} or the SSE /stream endpoint.
+    """
+    task = await _build_scenario_classification_task(
+        scenario_id=scenario_id,
+        year=year,
+        source=source,
+        physical_object_type_id=physical_object_type_id,
+        priority=priority,
+        force_recompute=force_recompute,
+        idempotency_key_form=idempotency_key_form,
+        idempotency_key_header=idempotency_key_header,
+        token=token,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+    )
     return TaskOut.model_validate(task)
+
+
+@router.post("/{scenario_id}/classify/stream")
+async def classify_scenario_stream_endpoint(
+    request: FastRequest,
+    scenario_id: int = FastPath(..., ge=1),
+    year: int = Form(..., ge=1900, le=2100),
+    source: str = Form(..., min_length=1),
+    physical_object_type_id: int = Form(4),
+    priority: int = Form(1, ge=1, le=10),
+    force_recompute: bool = Form(False),
+    group_by: str = Form("zone"),
+    poll_interval: float = Query(2.0, ge=0.5, le=10.0),
+    idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    token: str = Depends(verify_token),
+    app_settings: Settings = Depends(get_app_settings),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    event_repo: EventRepository = Depends(get_event_repo),
+    session: Session = Depends(get_db),
+) -> EventSourceResponse:
+    """Create the scenario classification task AND stream it to completion.
+
+    One call does the whole flow: creates (or reuses a cached) task, then
+    streams Server-Sent Events until the task is terminal:
+
+      - ``task``        the created task descriptor (keep external_id to
+                        reconnect to /stream if the connection drops);
+      - ``task_event``  per pipeline event;
+      - ``status``      on status changes;
+      - ``geojson``     the classified result FeatureCollection when finished;
+      - ``report``      the object-zone-fit summary when finished;
+      - ``done``        terminal marker; the stream then closes.
+
+    Request setup errors (e.g. invalid year/source -> 422) are returned as a
+    normal HTTP status BEFORE the stream starts; only in-flight problems are
+    delivered as an ``error`` event.
+
+    Note: native EventSource cannot POST or set Authorization — use a
+    fetch-based SSE client.
+    """
+    if group_by not in ("zone", "object"):
+        raise HTTPException(status_code=422, detail="group_by must be 'zone' or 'object'")
+
+    task = await _build_scenario_classification_task(
+        scenario_id=scenario_id,
+        year=year,
+        source=source,
+        physical_object_type_id=physical_object_type_id,
+        priority=priority,
+        force_recompute=force_recompute,
+        idempotency_key_form=idempotency_key_form,
+        idempotency_key_header=idempotency_key_header,
+        token=token,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+    )
+    # Commit so the streaming generator (its own DB session) sees the task and
+    # the Celery worker can pick it up.
+    session.commit()
+    initial = TaskOut.model_validate(task).model_dump(mode="json")
+    return EventSourceResponse(
+        task_stream_with_report_generator(
+            task.external_id,
+            group_by=group_by,
+            poll_interval=poll_interval,
+            request=request,
+            app_settings=app_settings,
+            initial=initial,
+        )
+    )
 
 
 @router.get("/{scenario_id}/zones-info")

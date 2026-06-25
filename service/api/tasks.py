@@ -286,6 +286,94 @@ async def _task_sse_generator(
         await asyncio.sleep(poll_interval)
 
 
+async def task_stream_with_report_generator(
+    external_id: str,
+    *,
+    group_by: str,
+    poll_interval: float,
+    request: Request,
+    app_settings: Settings,
+    initial: dict[str, Any],
+    include_report: bool = True,
+) -> AsyncIterator[ServerSentEvent]:
+    """Stream a task's lifecycle and, on success, the object-zone-fit report.
+
+    Used by the combined "create + stream" scenario endpoint. Emits:
+      - ``task``        once, upfront, with the created task descriptor (so a
+                        client that drops can reconnect to /stream by external_id);
+      - ``task_event``  per new pipeline event;
+      - ``status``      on each status change;
+      - ``geojson``     the classified result FeatureCollection (geometry +
+                        verdict properties) when the task finishes;
+      - ``report``      the object-zone-fit summary when finished (skipped when
+                        ``include_report`` is False, e.g. classify-only runs
+                        that have no zones);
+      - ``done``        terminal marker, then the stream closes.
+    """
+    yield ServerSentEvent(data=json.dumps(initial), event="task")
+
+    last_event_id = 0
+    last_status: TaskStatus | None = None
+    while True:
+        if await request.is_disconnected():
+            break
+
+        with session_scope() as session:
+            task = session.execute(
+                select(PipelineTask).where(PipelineTask.external_id == external_id)
+            ).scalar_one_or_none()
+            if task is None:
+                yield ServerSentEvent(data=json.dumps({"error": "Task not found"}), event="error")
+                break
+
+            new_events = session.execute(
+                select(TaskEvent)
+                .where(TaskEvent.task_id == task.id, TaskEvent.id > last_event_id)
+                .order_by(TaskEvent.id.asc())
+            ).scalars().all()
+            for ev in new_events:
+                last_event_id = ev.id
+                yield ServerSentEvent(
+                    data=json.dumps(TaskEventOut.model_validate(ev).model_dump(mode="json")),
+                    event="task_event",
+                )
+
+            current_status = task.status
+            if current_status != last_status:
+                last_status = current_status
+                yield ServerSentEvent(
+                    data=json.dumps(TaskOut.model_validate(task).model_dump(mode="json")),
+                    event="status",
+                )
+
+            if current_status in _TERMINAL_STATUSES:
+                if current_status == TaskStatus.finished:
+                    try:
+                        if task.result_path:
+                            geojson = _load_result_geojson(
+                                task.result_path, app_settings.outputs_dir
+                            )
+                            yield ServerSentEvent(
+                                data=json.dumps(geojson), event="geojson"
+                            )
+                        if include_report:
+                            report = build_object_zone_fit_response(
+                                task, external_id, group_by, app_settings
+                            )
+                            yield ServerSentEvent(data=json.dumps(report), event="report")
+                    except HTTPException as exc:
+                        yield ServerSentEvent(
+                            data=json.dumps({"error": exc.detail}), event="error"
+                        )
+                yield ServerSentEvent(
+                    data=json.dumps({"status": current_status.value}),
+                    event="done",
+                )
+                break
+
+        await asyncio.sleep(poll_interval)
+
+
 @router.get("/tasks/{external_id}/stream")
 async def stream_task_status_endpoint(
     request: Request,
