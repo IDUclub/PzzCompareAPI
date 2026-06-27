@@ -13,6 +13,19 @@ def _get_required_env(config: Config, key: str) -> str:
     return value
 
 
+def _get_optional_env(config: Config, key: str, default: str = "") -> str:
+    """Return an env value, or ``default`` when the key is absent.
+
+    ``iduconfig.Config.get`` raises on a missing key; new optional settings
+    must not require every deployment's ``.env`` to define them.
+    """
+    try:
+        value = config.get(key)
+    except ValueError:
+        return default
+    return value if value not in (None, "") else default
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment and .env file."""
 
@@ -99,6 +112,33 @@ class Settings(BaseSettings):
     top_k: int = Field(default=10)
     embed_batch_size: int = Field(default=32)
 
+    # ── ChatStorage integration (IDUclub ChatStorage service) ────────────────
+    # Persists assistant chat history. Leave CHAT_STORAGE_BASE_URL empty to
+    # disable persistence (the conversational flow still streams the answer).
+    chat_storage_base_url: str = Field(default="")
+    chat_storage_timeout_seconds: float = Field(default=10.0)
+
+    # ── Conversational answer (Ollama /api/chat streaming) ───────────────────
+    # A natural-language answer generated over the classification results and
+    # streamed back to the user. Mirrors gMART: one Ollama host (reuses
+    # ``ollama_base_url``), the model is chosen per request. ``chat_model`` is
+    # the default model when the request doesn't specify one (falls back to
+    # ``generate_model``).
+    chat_model: str = Field(default="")
+    chat_temperature: float = Field(default=0.3)
+    chat_request_timeout_seconds: float = Field(default=900.0)
+    chat_system_prompt_path: str = Field(default="data/chat_system_prompt.txt")
+
+    # ── Geo-layer download links ─────────────────────────────────────────────
+    # Result GeoJSON layers are offered as links instead of inline payloads.
+    # The durable link points at ``/files/result/{external_id}`` and redirects
+    # (302) to a fresh presigned MinIO URL, so it never expires (good for chat
+    # history) while big files download straight from object storage.
+    # ``public_base_url`` makes the stored link absolute; when empty a relative
+    # path is used (the frontend resolves it against the API base).
+    public_base_url: str = Field(default="")
+    geo_layer_url_ttl_seconds: int = Field(default=3600)
+
     model_config = SettingsConfigDict(
         env_file=".env.development",
         env_file_encoding="utf-8",
@@ -124,6 +164,14 @@ def get_settings() -> Settings:
         generate_model=_get_required_env(config, "GENERATE_MODEL"),
         urban_api_base_url=(config.get("URBAN_API_BASE_URL") or "").rstrip("/"),
         urban_api_timeout_seconds=float(config.get("URBAN_API_TIMEOUT_SECONDS") or "30"),
+        chat_storage_base_url=_get_optional_env(config, "CHAT_STORAGE_BASE_URL").rstrip("/"),
+        chat_storage_timeout_seconds=float(_get_optional_env(config, "CHAT_STORAGE_TIMEOUT_SECONDS", "10")),
+        chat_model=_get_optional_env(config, "CHAT_MODEL"),
+        chat_temperature=float(_get_optional_env(config, "CHAT_TEMPERATURE", "0.3")),
+        chat_request_timeout_seconds=float(_get_optional_env(config, "CHAT_REQUEST_TIMEOUT_SECONDS", "900")),
+        chat_system_prompt_path=_get_optional_env(config, "CHAT_SYSTEM_PROMPT_PATH", "data/chat_system_prompt.txt"),
+        public_base_url=_get_optional_env(config, "PUBLIC_BASE_URL").rstrip("/"),
+        geo_layer_url_ttl_seconds=int(_get_optional_env(config, "GEO_LAYER_URL_TTL_SECONDS", "3600")),
         fileserver_endpoint=config.get("FILESERVER_ENDPOINT") or "",
         fileserver_access_key=config.get("FILESERVER_ACCESS_KEY") or "",
         fileserver_secret_key=config.get("FILESERVER_SECRET_KEY") or "",
