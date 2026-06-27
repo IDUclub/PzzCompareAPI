@@ -19,16 +19,14 @@ from typing import Any, AsyncIterator
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Path as FastPath, Query, Request as FastRequest
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 from starlette.responses import FileResponse
 
 from ..application.use_cases.create_task import create_task
-from ..auth.exceptions import AuthError
 from ..db import session_scope
-from ..dependencies import get_app_settings, get_auth_client, get_db, get_event_repo, get_task_repo
+from ..dependencies import get_app_settings, get_db, get_event_repo, get_task_repo
 from ..domain.ports.event_repository import EventRepository
 from ..domain.ports.task_repository import TaskRepository
 from ..infrastructure.pzz_mapping import (
@@ -54,55 +52,19 @@ from .tasks import (
     build_task_events_response,
     build_task_result_response,
     get_task_or_404,
+    task_stream_with_chat_generator,
     task_stream_with_report_generator,
 )
+from .security import verify_token
 from .utils import api_log
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
-http_bearer = HTTPBearer()
 
 
 _CADASTRAL_VRI_COL = "vri_text"
 _PZZ_ZONE_CODE_COL = "zone_code"
 _PZZ_ZONE_NAME_COL = "zone_name"
 _SCENARIO_IDEMPOTENCY_PREFIX = "sc:"
-
-
-def _get_token_from_header(credentials: HTTPAuthorizationCredentials) -> str:
-    if not credentials:
-        raise HTTPException(
-            status_code=401,
-            detail="Authorization header missing",
-        )
-
-    token = credentials.credentials
-    if not token:
-        raise HTTPException(
-            status_code=400,
-            detail="Token is missing in the authorization header",
-        )
-
-    return token
-
-
-async def verify_token(
-    credentials: HTTPAuthorizationCredentials = Depends(http_bearer),
-) -> str:
-    """Extract the Bearer token and verify it (Keycloak JWT) when enabled.
-
-    When ``AUTH_VERIFY`` is false the token is accepted as-is (urban_api
-    validates it downstream). When true, the signature + claims are checked
-    against the realm JWKS; a rejected token yields 401 so the caller can
-    refresh it.
-    """
-    token = _get_token_from_header(credentials)
-    auth_client = get_auth_client()
-    if auth_client.config.verify:
-        try:
-            await auth_client.get_user_from_token(token)
-        except AuthError as exc:
-            raise HTTPException(status_code=401, detail=exc.detail) from exc
-    return token
 
 
 def _scenario_id_from_idempotency_key(key: str | None) -> int | None:
@@ -548,6 +510,116 @@ async def classify_scenario_stream_endpoint(
             request=request,
             app_settings=app_settings,
             initial=initial,
+        )
+    )
+
+
+async def _fetch_project_id(
+    scenario_id: int,
+    token: str,
+    app_settings: Settings,
+) -> int | str | None:
+    """Resolve the scenario's project_id from urban_api (best-effort).
+
+    Used to tag the ChatStorage chat with its project. Returns None when
+    urban_api is not configured or the id can't be found — chat persistence
+    still works, just without project_id.
+    """
+    if not app_settings.urban_api_base_url:
+        return None
+    try:
+        async with UrbanApiClient(
+            base_url=app_settings.urban_api_base_url,
+            timeout_seconds=app_settings.urban_api_timeout_seconds,
+        ) as urban:
+            info = await urban.get_scenario_info(scenario_id, token=token)
+    except UrbanApiError:
+        return None
+
+    info = info or {}
+    project_id = info.get("project_id")
+    if project_id is None:
+        project = info.get("project")
+        if isinstance(project, dict):
+            project_id = project.get("project_id") or project.get("id")
+    return project_id
+
+
+@router.post("/{scenario_id}/chat/stream")
+async def scenario_chat_stream_endpoint(
+    request: FastRequest,
+    scenario_id: int = FastPath(..., ge=1),
+    user_query: str = Form(..., min_length=1),
+    year: int = Form(..., ge=1900, le=2100),
+    source: str = Form(..., min_length=1),
+    chat_id: str | None = Form(default=None),
+    physical_object_type_id: int = Form(4),
+    priority: int = Form(1, ge=1, le=10),
+    force_recompute: bool = Form(False),
+    group_by: str = Form("zone"),
+    model: str | None = Form(default=None),
+    temperature: float | None = Form(default=None),
+    poll_interval: float = Query(2.0, ge=0.5, le=10.0),
+    idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    token: str = Depends(verify_token),
+    app_settings: Settings = Depends(get_app_settings),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    event_repo: EventRepository = Depends(get_event_repo),
+    session: Session = Depends(get_db),
+) -> EventSourceResponse:
+    """Classify a scenario, then stream a grounded conversational answer.
+
+    One call: builds (or reuses a cached) classification task, waits for it to
+    finish, then streams an LLM answer to ``user_query`` grounded in the
+    object-zone-fit report — and persists the user+assistant turn to
+    ChatStorage. ``chat_id`` is optional: when omitted, a new chat is created
+    and announced via a ``chat_created`` SSE event so the frontend can store it.
+
+    SSE events: ``task``, ``task_event``, ``status``, ``object_zone_fit``,
+    ``chat_created``, ``token``, ``error``, ``done``.
+
+    Note: native EventSource cannot POST or set Authorization — use a
+    fetch-based SSE client.
+    """
+    if group_by not in ("zone", "object"):
+        raise HTTPException(status_code=422, detail="group_by must be 'zone' or 'object'")
+
+    project_id = await _fetch_project_id(scenario_id, token, app_settings)
+
+    task = await _build_scenario_classification_task(
+        scenario_id=scenario_id,
+        year=year,
+        source=source,
+        physical_object_type_id=physical_object_type_id,
+        priority=priority,
+        force_recompute=force_recompute,
+        idempotency_key_form=idempotency_key_form,
+        idempotency_key_header=idempotency_key_header,
+        token=token,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+    )
+    session.commit()
+    initial = TaskOut.model_validate(task).model_dump(mode="json")
+    return EventSourceResponse(
+        task_stream_with_chat_generator(
+            task.external_id,
+            group_by=group_by,
+            poll_interval=poll_interval,
+            request=request,
+            app_settings=app_settings,
+            initial=initial,
+            token=token,
+            user_query=user_query,
+            chat_id=chat_id,
+            scenario_id=scenario_id,
+            project_id=project_id,
+            chat_title=user_query[:256],
+            model=model,
+            temperature=temperature,
         )
     )
 
