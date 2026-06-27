@@ -11,6 +11,8 @@ from .db import session_scope
 from .domain.ports.config_repository import ConfigRepository
 from .domain.ports.event_repository import EventRepository
 from .domain.ports.task_repository import TaskRepository
+from .infrastructure.chat_storage_client import ChatStorageClient
+from .infrastructure.ollama_chat_client import OllamaChatClient
 from .infrastructure.repositories.sqlalchemy_config_repository import SqlAlchemyConfigRepository
 from .infrastructure.repositories.sqlalchemy_event_repository import SqlAlchemyEventRepository
 from .infrastructure.repositories.sqlalchemy_task_repository import SqlAlchemyTaskRepository
@@ -21,6 +23,35 @@ from .settings import Settings, get_settings
 def get_auth_client() -> AuthenticationClient:
     """Process-singleton auth client built from settings (JWKS cache shared)."""
     return AuthenticationClient(build_auth_config(get_settings()))
+
+
+def build_chat_storage_client(settings: Settings | None = None) -> ChatStorageClient:
+    """Build a fresh ChatStorage client. Caller owns it via ``async with``.
+
+    Not a singleton: the client holds an ``httpx.AsyncClient`` bound to the
+    request's event loop, mirroring how ``UrbanApiClient`` is instantiated
+    per request.
+    """
+    settings = settings or get_settings()
+    return ChatStorageClient(
+        base_url=settings.chat_storage_base_url,
+        timeout_seconds=settings.chat_storage_timeout_seconds,
+    )
+
+
+def build_ollama_chat_client(settings: Settings | None = None) -> OllamaChatClient:
+    """Build a fresh streaming Ollama chat client. Caller owns it via ``async with``.
+
+    Mirrors gMART: one Ollama host (``ollama_base_url``); the model is chosen
+    per request, with ``chat_model`` (or ``generate_model``) as the default.
+    """
+    settings = settings or get_settings()
+    return OllamaChatClient(
+        base_url=settings.ollama_base_url,
+        default_model=settings.chat_model or settings.generate_model,
+        timeout_seconds=settings.chat_request_timeout_seconds,
+        temperature=settings.chat_temperature,
+    )
 
 
 def init_dependencies(app: FastAPI) -> None:

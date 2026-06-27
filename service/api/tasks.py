@@ -10,10 +10,22 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, RedirectResponse
 
+from ..application.use_cases.chat_answer import (
+    build_classification_context,
+    load_system_prompt,
+    stream_chat_answer,
+)
 from ..db import session_scope
-from ..dependencies import get_app_settings, get_db, get_event_repo, get_task_repo
+from ..dependencies import (
+    build_chat_storage_client,
+    build_ollama_chat_client,
+    get_app_settings,
+    get_db,
+    get_event_repo,
+    get_task_repo,
+)
 from ..domain.ports.event_repository import EventRepository
 from ..domain.ports.task_repository import TaskRepository
 from ..domain.task_state import ensure_transition
@@ -297,12 +309,15 @@ async def task_stream_with_report_generator(
     app_settings: Settings,
     initial: dict[str, Any],
     include_report: bool = True,
+    emit_input_files: bool = False,
 ) -> AsyncIterator[ServerSentEvent]:
     """Stream a task's lifecycle and, on success, the object-zone-fit report.
 
     Used by the combined "create + stream" scenario endpoint. Emits:
       - ``task``        once, upfront, with the created task descriptor (so a
                         client that drops can reconnect to /stream by external_id);
+      - ``file``        (upload flow) links to uploaded input layers, once,
+                        early; and the result layer when finished;
       - ``task_event``  per new pipeline event;
       - ``status``      on each status change;
       - ``geojson``     the classified result FeatureCollection (geometry +
@@ -316,6 +331,7 @@ async def task_stream_with_report_generator(
 
     last_event_id = 0
     last_status: TaskStatus | None = None
+    inputs_emitted = False
     while True:
         if await request.is_disconnected():
             break
@@ -327,6 +343,14 @@ async def task_stream_with_report_generator(
             if task is None:
                 yield ServerSentEvent(data=json.dumps({"error": "Task not found"}), event="error")
                 break
+
+            if emit_input_files and not inputs_emitted:
+                inputs_emitted = True
+                for layer in build_input_geo_layers(task, external_id, app_settings, request):
+                    yield ServerSentEvent(
+                        data=json.dumps({"type": "file", "content": layer}),
+                        event="file",
+                    )
 
             new_events = session.execute(
                 select(TaskEvent)
@@ -367,6 +391,14 @@ async def task_stream_with_report_generator(
                         yield ServerSentEvent(
                             data=json.dumps({"error": exc.detail}), event="error"
                         )
+                    # Durable link to the result layer (alongside inline geojson,
+                    # so the frontend can switch to download-by-link for big files).
+                    layer = build_result_geo_layer(task, external_id, app_settings, request)
+                    if layer is not None:
+                        yield ServerSentEvent(
+                            data=json.dumps({"type": "file", "content": layer}),
+                            event="file",
+                        )
                 yield ServerSentEvent(
                     data=json.dumps({"status": current_status.value}),
                     event="done",
@@ -374,6 +406,266 @@ async def task_stream_with_report_generator(
                 break
 
         await asyncio.sleep(poll_interval)
+
+
+async def _stream_chat_answer_managed(
+    app_settings: Settings,
+    *,
+    token: str | None,
+    user_query: str,
+    classification_context: str,
+    chat_id: str | None,
+    scenario_id: int | str | None = None,
+    project_id: int | str | None = None,
+    chat_title: str | None = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    assistant_file_parts: list[dict[str, Any]] | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Open the chat clients and delegate to ``stream_chat_answer``.
+
+    Persistence is enabled only when a ChatStorage base URL is configured and
+    a token is present; otherwise the answer streams without being stored.
+    The endpoint layer owns client lifetimes via ``async with`` here so the
+    use-case stays pure and testable.
+    """
+    system_prompt = load_system_prompt(app_settings.chat_system_prompt_path)
+    persist = bool(app_settings.chat_storage_base_url) and bool(token)
+
+    async with build_ollama_chat_client(app_settings) as ollama_client:
+        chat_storage_client = (
+            build_chat_storage_client(app_settings) if persist else None
+        )
+        try:
+            async for event in stream_chat_answer(
+                ollama_client=ollama_client,
+                chat_storage_client=chat_storage_client,
+                token=token,
+                system_prompt=system_prompt,
+                user_query=user_query,
+                classification_context=classification_context,
+                chat_id=chat_id,
+                scenario_id=scenario_id,
+                project_id=project_id,
+                chat_title=chat_title,
+                model=model,
+                temperature=temperature,
+                assistant_file_parts=assistant_file_parts,
+            ):
+                yield event
+        finally:
+            if chat_storage_client is not None:
+                await chat_storage_client.__aexit__(None, None, None)
+
+
+def _chat_event_to_sse(event: dict[str, Any]) -> ServerSentEvent | None:
+    """Map an abstract chat-answer event to a gMART-format SSE event.
+
+    Uses gMART's ``{"type", "content"}`` envelope. Returns None for events that
+    don't map to an SSE message (``done`` is folded into the generator's own
+    terminal ``done`` event).
+    """
+    kind = event["type"]
+    if kind == "chat_created":
+        return ServerSentEvent(
+            data=json.dumps(
+                {
+                    "type": "service_event",
+                    "content": {
+                        "event_type": "storage_event",
+                        "event": {
+                            "storage_event_type": "chat_created",
+                            "chat_id": event.get("chat_id"),
+                            "chat_title": event.get("title"),
+                        },
+                    },
+                }
+            ),
+            event="service_event",
+        )
+    if kind == "token":
+        return ServerSentEvent(
+            data=json.dumps(
+                {"type": "chunk", "content": {"text": event["content"], "done": False}}
+            ),
+            event="chunk",
+        )
+    if kind == "error":
+        return ServerSentEvent(
+            data=json.dumps(
+                {
+                    "type": "error",
+                    "content": {"message": event.get("detail"), "stage": event.get("stage")},
+                }
+            ),
+            event="error",
+        )
+    return None
+
+
+def _final_answer_chunk_sse() -> ServerSentEvent:
+    """gMART-style end-of-answer marker: an empty chunk with ``done: true``."""
+    return ServerSentEvent(
+        data=json.dumps({"type": "chunk", "content": {"text": "", "done": True}}),
+        event="chunk",
+    )
+
+
+async def task_stream_with_chat_generator(
+    external_id: str,
+    *,
+    group_by: str,
+    poll_interval: float,
+    request: Request,
+    app_settings: Settings,
+    initial: dict[str, Any],
+    token: str | None,
+    user_query: str,
+    chat_id: str | None = None,
+    scenario_id: int | str | None = None,
+    project_id: int | str | None = None,
+    chat_title: str | None = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    include_report: bool = True,
+    emit_input_files: bool = False,
+) -> AsyncIterator[ServerSentEvent]:
+    """Stream a task to completion, then a grounded LLM answer over its report.
+
+    Like ``task_stream_with_report_generator``, but on success it also builds
+    the object-zone-fit report into a grounding context and streams a
+    conversational answer (Ollama ``/api/chat``), persisting the user+assistant
+    turn to ChatStorage.
+
+    The conversational part mirrors gMART's frontend contract: events carry a
+    ``{"type", "content"}`` envelope in the SSE ``data`` field. Emitted, in order:
+
+      - ``task`` / ``task_event`` / ``status`` — task lifecycle (existing
+        named SSE events, unchanged);
+      - ``object_zone_fit`` — the report when the task finishes;
+      - ``service_event`` — ``{event_type: "storage_event", event:
+        {storage_event_type: "chat_created", chat_id, chat_title}}`` when a new
+        chat was created;
+      - ``chunk`` — ``{text, done}`` assistant deltas; a final ``{text: "",
+        done: true}`` marks the end of the answer;
+      - ``error`` — ``{message, stage}`` non-fatal LLM/persistence problems;
+      - ``done`` — ``{status, chat_id}`` terminal marker; the stream closes.
+    """
+    yield ServerSentEvent(data=json.dumps(initial), event="task")
+
+    last_event_id = 0
+    last_status: TaskStatus | None = None
+    classification_context = ""
+    geo_layer: dict[str, Any] | None = None
+    inputs_emitted = False
+    while True:
+        if await request.is_disconnected():
+            break
+
+        with session_scope() as session:
+            task = session.execute(
+                select(PipelineTask).where(PipelineTask.external_id == external_id)
+            ).scalar_one_or_none()
+            if task is None:
+                yield ServerSentEvent(data=json.dumps({"error": "Task not found"}), event="error")
+                break
+
+            if emit_input_files and not inputs_emitted:
+                inputs_emitted = True
+                for layer in build_input_geo_layers(task, external_id, app_settings, request):
+                    yield ServerSentEvent(
+                        data=json.dumps({"type": "file", "content": layer}),
+                        event="file",
+                    )
+
+            new_events = session.execute(
+                select(TaskEvent)
+                .where(TaskEvent.task_id == task.id, TaskEvent.id > last_event_id)
+                .order_by(TaskEvent.id.asc())
+            ).scalars().all()
+            for ev in new_events:
+                last_event_id = ev.id
+                yield ServerSentEvent(
+                    data=json.dumps(TaskEventOut.model_validate(ev).model_dump(mode="json")),
+                    event="task_event",
+                )
+
+            current_status = task.status
+            if current_status != last_status:
+                last_status = current_status
+                yield ServerSentEvent(
+                    data=json.dumps(TaskOut.model_validate(task).model_dump(mode="json")),
+                    event="status",
+                )
+
+            if current_status not in _TERMINAL_STATUSES:
+                await asyncio.sleep(poll_interval)
+                continue
+
+            # Terminal: build the grounding context + the result layer link
+            # inside the session scope (need the task row), then stream the
+            # answer outside any I/O on it.
+            if current_status == TaskStatus.finished:
+                geo_layer = build_result_geo_layer(task, external_id, app_settings, request)
+                if include_report:
+                    try:
+                        report = build_object_zone_fit_response(
+                            task, external_id, group_by, app_settings
+                        )
+                        yield ServerSentEvent(
+                            data=json.dumps(report), event="object_zone_fit"
+                        )
+                        classification_context = build_classification_context(
+                            chat_message=report.get("chat_message"),
+                            object_zone_fit=report,
+                        )
+                    except HTTPException as exc:
+                        yield ServerSentEvent(
+                            data=json.dumps({"error": exc.detail}), event="error"
+                        )
+                if geo_layer is not None:
+                    yield ServerSentEvent(
+                        data=json.dumps({"type": "file", "content": geo_layer}),
+                        event="file",
+                    )
+            break
+
+    # Outside the poll loop / session scope: generate + stream the answer.
+    # Conversational events use gMART's {"type", "content"} envelope.
+    chat_id_final = chat_id
+    streamed_answer = False
+    assistant_file_parts = [geo_layer_to_file_part(geo_layer)] if geo_layer else None
+    if last_status == TaskStatus.finished:
+        async for event in _stream_chat_answer_managed(
+            app_settings,
+            token=token,
+            assistant_file_parts=assistant_file_parts,
+            user_query=user_query,
+            classification_context=classification_context,
+            chat_id=chat_id,
+            scenario_id=scenario_id,
+            project_id=project_id,
+            chat_title=chat_title,
+            model=model,
+            temperature=temperature,
+        ):
+            kind = event["type"]
+            if kind == "token":
+                streamed_answer = True
+            elif kind in ("chat_created", "done"):
+                chat_id_final = event.get("chat_id") or chat_id_final
+            sse = _chat_event_to_sse(event)
+            if sse is not None:
+                yield sse
+
+        if streamed_answer:
+            yield _final_answer_chunk_sse()
+
+    terminal = last_status.value if last_status is not None else "unknown"
+    yield ServerSentEvent(
+        data=json.dumps({"status": terminal, "chat_id": chat_id_final}),
+        event="done",
+    )
 
 
 @router.get("/tasks/{external_id}/stream")
@@ -454,6 +746,183 @@ def build_task_result_response(
         path=str(resolved_path),
         media_type="application/geo+json",
         filename=f"{external_id}.geojson",
+    )
+
+
+# Download "slots" exposed via /files/{slot}/{external_id}. Each maps to a task
+# column holding the stored path. ``result`` is gated on a finished task; the
+# input layers are available as soon as the task exists.
+_FILE_SLOTS: dict[str, str] = {
+    "result": "result_path",
+    "cadastral": "cadastral_data_path",
+    "zones": "pzz_zones_data_path",
+}
+
+
+def _file_durable_url(
+    slot: str,
+    external_id: str,
+    app_settings: Settings,
+    request: Request | None = None,
+) -> str:
+    """Stable, never-expiring URL for a task's file slot.
+
+    Absolute when ``PUBLIC_BASE_URL`` is set (best for storing in chat history),
+    otherwise derived from the request, else a relative path.
+    """
+    path = f"/files/{slot}/{external_id}"
+    if app_settings.public_base_url:
+        return f"{app_settings.public_base_url}{path}"
+    if request is not None:
+        return str(request.base_url).rstrip("/") + path
+    return path
+
+
+def _build_geo_layer(
+    *,
+    slot: str,
+    name: str,
+    role: str,
+    stored_path: str | None,
+    external_id: str,
+    app_settings: Settings,
+    request: Request | None,
+) -> dict[str, Any] | None:
+    """Build one geo-layer link descriptor, or None when there's no file."""
+    if not stored_path:
+        return None
+    download_url: str | None = None
+    if is_remote_path(stored_path):
+        download_url = get_object_storage().presigned_url(
+            stored_path, app_settings.geo_layer_url_ttl_seconds
+        )
+    return {
+        "name": name,
+        "role": role,
+        "url": _file_durable_url(slot, external_id, app_settings, request),
+        "download_url": download_url,
+        "filename": f"{external_id}_{slot}.geojson" if slot != "result" else f"{external_id}.geojson",
+        "mime_type": "application/geo+json",
+        "source_service": app_settings.app_name,
+    }
+
+
+def build_result_geo_layer(
+    task: PipelineTask,
+    external_id: str,
+    app_settings: Settings,
+    request: Request | None = None,
+) -> dict[str, Any] | None:
+    """Geo-layer link descriptor for a finished task's result GeoJSON, or None.
+
+    Single decision point for the result artefact — extend ``build_input_geo_layers``
+    / ``_FILE_SLOTS`` to add more.
+    """
+    if task.status != "finished":
+        return None
+    return _build_geo_layer(
+        slot="result",
+        name="classified_result",
+        role="result",
+        stored_path=task.result_path,
+        external_id=external_id,
+        app_settings=app_settings,
+        request=request,
+    )
+
+
+def build_input_geo_layers(
+    task: PipelineTask,
+    external_id: str,
+    app_settings: Settings,
+    request: Request | None = None,
+) -> list[dict[str, Any]]:
+    """Geo-layer link descriptors for a task's uploaded input layers.
+
+    Covers the cadastral parcels and PZZ zones the user uploaded (both stored
+    per-task under ``inputs/``). Optional config files (labels/classifier) are
+    intentionally excluded — they're often static defaults, not user uploads.
+    """
+    specs = (
+        ("cadastral", "cadastral_data_path", "input_cadastral"),
+        ("zones", "pzz_zones_data_path", "input_zones"),
+    )
+    layers: list[dict[str, Any]] = []
+    for slot, column, name in specs:
+        layer = _build_geo_layer(
+            slot=slot,
+            name=name,
+            role="input",
+            stored_path=getattr(task, column, None),
+            external_id=external_id,
+            app_settings=app_settings,
+            request=request,
+        )
+        if layer is not None:
+            layers.append(layer)
+    return layers
+
+
+def geo_layer_to_file_part(layer: dict[str, Any]) -> dict[str, Any]:
+    """ChatStorage ``file`` part payload from a layer descriptor.
+
+    Stores only the durable ``url`` — the presigned ``download_url`` is
+    ephemeral and must not be persisted into permanent chat history.
+    """
+    return {
+        "url": layer["url"],
+        "filename": layer.get("filename"),
+        "mime_type": layer.get("mime_type"),
+        "source_service": layer.get("source_service"),
+    }
+
+
+@router.get("/files/{slot}/{external_id}")
+def get_task_file_redirect(
+    slot: str,
+    external_id: str,
+    task_repo: TaskRepository = Depends(get_task_repo),
+    app_settings: Settings = Depends(get_app_settings),
+):
+    """Durable, open download link for a task's file (result or uploaded input).
+
+    Redirects (307) to a fresh presigned MinIO URL so the link never expires
+    (big files download straight from object storage); falls back to streaming
+    the file when storage is local. Intentionally unauthenticated so links saved
+    in chat history keep working — the ``external_id`` (a uuid) is the capability.
+    """
+    column = _FILE_SLOTS.get(slot)
+    if column is None:
+        raise HTTPException(status_code=404, detail=f"Unknown file slot '{slot}'")
+    task = get_task_or_404(external_id, task_repo)
+    if slot == "result" and task.status != "finished":
+        raise HTTPException(status_code=404, detail="Task result not available yet")
+    stored_path = getattr(task, column, None)
+    if not stored_path:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if is_remote_path(stored_path):
+        url = get_object_storage().presigned_url(
+            stored_path, app_settings.geo_layer_url_ttl_seconds
+        )
+        if url:
+            return RedirectResponse(url, status_code=307)
+
+    if slot == "result":
+        return build_task_result_response(task, external_id, app_settings)
+    # Local storage fallback for input layers: serve the file under task_inputs.
+    local_path = Path(stored_path).resolve()
+    inputs_root = Path(app_settings.task_inputs_dir).resolve()
+    try:
+        local_path.relative_to(inputs_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="File path is outside inputs directory") from exc
+    if not local_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(
+        path=str(local_path),
+        media_type="application/geo+json",
+        filename=f"{external_id}_{slot}.geojson",
     )
 
 

@@ -25,11 +25,18 @@ from ..application.use_cases.create_task import create_task
 from ..dependencies import get_app_settings, get_db, get_event_repo, get_task_repo
 from ..domain.ports.event_repository import EventRepository
 from ..domain.ports.task_repository import TaskRepository
+from ..infrastructure.geo_ingest import (
+    GeoIngestError,
+    geo_file_to_geojson_dict,
+    is_geojson_filename,
+    supported_extensions,
+)
 from ..infrastructure.storage import get_object_storage
 from ..schemas import TaskCreate, TaskOut
 from ..settings import Settings
 from ..tasks import celery_app, enqueue_pipeline_task, execute_pipeline_task
-from .tasks import task_stream_with_report_generator
+from .security import verify_token
+from .tasks import task_stream_with_chat_generator, task_stream_with_report_generator
 from .utils import api_log
 
 router = APIRouter(prefix="/tasks", tags=["classifier"])
@@ -113,6 +120,51 @@ def _ingest_upload(
     return stored
 
 
+def _ingest_geo_upload(
+    upload: UploadFile,
+    task_dir: Path,
+    filename: str,
+    field_name: str,
+    max_bytes: int,
+    external_id: str,
+    storage,
+) -> str:
+    """Ingest a geo upload, converting non-GeoJSON formats to GeoJSON first.
+
+    GeoJSON (``.geojson`` / ``.json`` / no extension) takes the existing
+    stream → validate-as-dict → persist path. Other vector formats
+    (GeoPackage, GML, KML, GeoParquet) are streamed to a temp file, read via
+    geopandas, reprojected to EPSG:4326, and persisted as GeoJSON — so the
+    stored artefact and the worker path are identical to the upload case.
+    """
+    if is_geojson_filename(upload.filename):
+        return _ingest_upload(
+            upload, task_dir, filename, dict, field_name, max_bytes, external_id, storage
+        )
+
+    suffix = Path(upload.filename or "").suffix.lower()
+    if suffix not in supported_extensions():
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                f"{field_name}: unsupported format '{suffix}'. Supported: "
+                + ", ".join(sorted(supported_extensions()))
+            ),
+        )
+
+    raw_path = task_dir / f"{Path(filename).stem}{suffix}"
+    _stream_upload_to_file(upload, raw_path, max_bytes, field_name)
+    try:
+        feature_collection = geo_file_to_geojson_dict(raw_path)
+    except GeoIngestError as exc:
+        raw_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"{field_name}: {exc}") from exc
+    finally:
+        raw_path.unlink(missing_ok=True)
+
+    return persist_geojson_dict(feature_collection, task_dir, filename, external_id, storage)
+
+
 def persist_geojson_dict(
     data: dict[str, Any] | list[dict[str, Any]],
     task_dir: Path,
@@ -166,16 +218,16 @@ def _create_pipeline_task(
     task_dir = Path(app_settings.task_inputs_dir) / external_id
     storage = get_object_storage()
 
-    stored_cadastral = _ingest_upload(
+    stored_cadastral = _ingest_geo_upload(
         cadastral_file, task_dir, "cadastral_feature_collection.geojson",
-        dict, "cadastral_feature_collection_file",
+        "cadastral_feature_collection_file",
         app_settings.max_upload_bytes, external_id, storage,
     )
 
     if pzz_zones_file is not None:
-        stored_pzz_zones = _ingest_upload(
+        stored_pzz_zones = _ingest_geo_upload(
             pzz_zones_file, task_dir, "pzz_zones_feature_collection.geojson",
-            dict, "pzz_zones_feature_collection_file",
+            "pzz_zones_feature_collection_file",
             app_settings.max_upload_bytes, external_id, storage,
         )
     else:
@@ -419,6 +471,7 @@ async def create_pzz_check_stream_endpoint(
             app_settings=app_settings,
             initial=task_out.model_dump(mode="json"),
             include_report=False,
+            emit_input_files=True,
         )
     )
 
@@ -478,5 +531,91 @@ async def create_classify_only_stream_endpoint(
             app_settings=app_settings,
             initial=task_out.model_dump(mode="json"),
             include_report=False,
+            emit_input_files=True,
+        )
+    )
+
+
+@router.post("/chat/stream")
+async def create_chat_stream_endpoint(
+    request: Request,
+    cadastral_feature_collection_file: UploadFile = File(...),
+    pzz_zones_feature_collection_file: UploadFile = File(...),
+    pzz_zone_vri_labels_file: UploadFile | None = File(default=None),
+    vri_classifier_file: UploadFile | None = File(default=None),
+    user_query: str = Form(..., min_length=1),
+    cadastral_vri_col: str = Form(..., min_length=1),
+    pzz_zone_code_col: str = Form(..., min_length=1),
+    pzz_zone_name_col: str = Form(..., min_length=1),
+    chat_id: str | None = Form(default=None),
+    group_by: str = Form("zone"),
+    model: str | None = Form(default=None),
+    temperature: float | None = Form(default=None),
+    priority: int = Form(1, ge=1, le=10),
+    force_recompute: bool = Form(False),
+    poll_interval: float = Query(2.0, ge=0.5, le=10.0),
+    idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    token: str = Depends(verify_token),
+    app_settings: Settings = Depends(get_app_settings),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    event_repo: EventRepository = Depends(get_event_repo),
+    session: Session = Depends(get_db),
+) -> EventSourceResponse:
+    """Run a full PZZ check on uploaded files, then stream a conversational answer.
+
+    The file-upload counterpart of ``POST /scenarios/{id}/chat/stream``. Both
+    cadastral parcels and PZZ zones are required (the answer is grounded in the
+    object-zone-fit report). Uploads may be any supported geo format (GeoJSON,
+    GeoPackage, GML, KML, GeoParquet); they're stored as GeoJSON.
+
+    A Bearer token is REQUIRED — chat history is persisted to ChatStorage under
+    the token's user. ``chat_id`` is optional: when omitted a new chat is
+    created and announced via a ``chat_created`` SSE event.
+
+    SSE events: ``task``, ``task_event``, ``status``, ``object_zone_fit``,
+    ``chat_created``, ``token``, ``error``, ``done``. Use a fetch-based SSE
+    client (native EventSource cannot POST multipart or set Authorization).
+    """
+    if group_by not in ("zone", "object"):
+        raise HTTPException(status_code=422, detail="group_by must be 'zone' or 'object'")
+
+    task_out = await run_in_threadpool(
+        _create_pipeline_task,
+        cadastral_file=cadastral_feature_collection_file,
+        pzz_zones_file=pzz_zones_feature_collection_file,
+        labels_file=pzz_zone_vri_labels_file,
+        classifier_file=vri_classifier_file,
+        include_pzz_check=True,
+        cadastral_vri_col=cadastral_vri_col,
+        pzz_zone_code_col=pzz_zone_code_col,
+        pzz_zone_name_col=pzz_zone_name_col,
+        priority=priority,
+        retry_failed=False,
+        force_recompute=force_recompute,
+        idempotency_key=idempotency_key_header or idempotency_key_form,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+    )
+    session.commit()
+    return EventSourceResponse(
+        task_stream_with_chat_generator(
+            task_out.external_id,
+            group_by=group_by,
+            poll_interval=poll_interval,
+            request=request,
+            app_settings=app_settings,
+            initial=task_out.model_dump(mode="json"),
+            token=token,
+            user_query=user_query,
+            chat_id=chat_id,
+            scenario_id=None,
+            project_id=None,
+            chat_title=user_query[:256],
+            model=model,
+            temperature=temperature,
+            emit_input_files=True,
         )
     )

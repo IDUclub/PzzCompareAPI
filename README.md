@@ -101,15 +101,32 @@ docker compose -f docker-compose.yml up -d --build
 **Файловый флоу**
 - `POST /tasks/pzz-check` — полная проверка ПЗЗ (кадастр + зоны)
 - `POST /tasks/classify-only` — только классификация ВРИ по классификатору
+- `POST /tasks/chat/stream` — проверка + стрим разговорного ответа LLM (SSE, требует Bearer)
 - `GET /tasks/{id}` · `GET /tasks_list` · `GET /tasks/{id}/result`
+- `GET /files/{slot}/{id}` — долговечная ссылка на геослой (`slot`: `result`/`cadastral`/`zones`; 307 → presigned MinIO)
 - `GET /tasks/{id}/object-zone-fit?group_by=zone|object` — структурированный отчёт + `chat_message`
 - `GET /tasks/{id}/events` · `DELETE /tasks/{id}` · `POST /tasks/{id}/recompute`
 
+Загрузки кадастра/зон принимают GeoJSON, а также GeoPackage `.gpkg`, GML, KML и
+GeoParquet — не-GeoJSON форматы конвертируются в GeoJSON (EPSG:4326) на входе.
+
 **Сценарный флоу** (требует `Authorization: Bearer <jwt>`)
 - `POST /scenarios/{id}/classify` — запуск по данным urban_api
+- `POST /scenarios/{id}/chat/stream` — запуск + стрим разговорного ответа LLM (SSE)
 - `GET /scenarios/{id}/zones-info` — зоны + справка «что можно строить»
 - `GET /scenarios/{id}/tasks/{external_id}` (+ `/result`, `/object-zone-fit`, `/events`)
 - `DELETE` / `POST .../recompute`
+
+Чат-ручки `*/chat/stream` дожидаются завершения классификации, затем стримят (в формате gMART:
+конверт `{type, content}`) `object_zone_fit` → `service_event/chat_created` (если не передан
+`chat_id`) → `chunk`* → `done`, и сохраняют диалог (user + assistant) в **ChatStorage**.
+Разговорный ответ генерирует Ollama `/api/chat` (`OLLAMA_BASE_URL`); модель — параметр запроса
+`model` (дефолт `CHAT_MODEL`/`GENERATE_MODEL`).
+
+Большой GeoJSON-результат в чат-стриме отдаётся **ссылкой** (событие `file`), а не инлайном:
+долговечный `url = /files/result/{id}` (307 → свежий presigned MinIO, не протухает) сохраняется в
+ChatStorage как `file`-часть сообщения; временный `download_url` — для мгновенной выгрузки.
+Настройки: `PUBLIC_BASE_URL` (абсолютные ссылки), `GEO_LAYER_URL_TTL_SECONDS`.
 
 **Системное**: `GET /health`, `GET /readiness`, `GET /metrics`
 
@@ -233,4 +250,6 @@ CI-пайплайн [`.github/workflows/deploy.yml`](.github/workflows/deploy.ym
 Все настройки — через переменные окружения / `.env.development`
 (см. `service/settings.py` и `.env.example`). Ключевое: `DATABASE_URL`,
 `REDIS_URL`, `LLM_BACKEND` + модели, `FILESERVER_*` (MinIO), `URBAN_API_BASE_URL`.
+Для чат-ручек: `CHAT_STORAGE_BASE_URL` (история диалогов; пусто — персист выключен),
+`CHAT_MODEL` (дефолтная модель чата на `OLLAMA_BASE_URL`), `CHAT_SYSTEM_PROMPT_PATH`.
 Секреты в репозиторий не коммитятся.

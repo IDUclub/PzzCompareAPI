@@ -35,12 +35,22 @@ jobs:
             cp "$KEYS_PATH"/* ./ || echo "No keys to copy"
           fi
 
-      - name: Copy env file
+      - name: Write env file
         env:
+          # Preferred: store the whole .env.development as a single repo secret
+          # (Settings -> Secrets and variables -> Actions -> New secret -> ENV_FILE,
+          # paste the full file content). Edit it in the GitHub UI to change config.
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+          # Fallback (legacy): a .env.development sitting on the runner host.
           ENV_PATH: ${{ secrets.ENV_PATH }}
         run: |
-          if [ -n "$ENV_PATH" ]; then
-            cp "$ENV_PATH/.env.development" ./ || echo "No env file to copy"
+          if [ -n "$ENV_FILE" ]; then
+            printf '%s\n' "$ENV_FILE" > .env.development
+            echo "Wrote .env.development from ENV_FILE secret ($(wc -l < .env.development) lines)"
+          elif [ -n "$ENV_PATH" ]; then
+            cp "$ENV_PATH/.env.development" ./ && echo "Copied .env.development from ENV_PATH (fallback)" || echo "No env file to copy"
+          else
+            echo "::warning::No ENV_FILE secret and no ENV_PATH - .env.development not provided"
           fi
 
       - name: Generate image tag
