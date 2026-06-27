@@ -23,6 +23,7 @@ python-multipart==0.0.26
 prometheus-client==0.24.1
 minio==7.2.7
 httpx==0.28.1
+pyarrow==18.1.0
 fastmcp==3.3.1
 alembic==1.16.1
 python-jose[cryptography]==3.3.0

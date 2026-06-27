@@ -44,6 +44,14 @@ class ObjectStorage(ABC):
     def delete(self, stored_path: str) -> None:
         """Best-effort delete; never raises."""
 
+    def presigned_url(self, stored_path: str, expires_seconds: int = 3600) -> str | None:
+        """Return a time-limited direct download URL, or None if unsupported.
+
+        Only the remote (MinIO) backend can mint one; local storage returns
+        None so callers fall back to a backend-served download.
+        """
+        return None
+
 
 class LocalStorage(ObjectStorage):
     """Filesystem-backed storage that preserves the legacy behaviour."""
@@ -118,6 +126,17 @@ class MinioStorage(ObjectStorage):
             self._client.remove_object(self._bucket, object_key)
         except Exception:  # noqa: BLE001 — delete is best-effort
             pass
+
+    def presigned_url(self, stored_path: str, expires_seconds: int = 3600) -> str | None:
+        from datetime import timedelta
+
+        object_key = self._strip_scheme(stored_path)
+        try:
+            return self._client.presigned_get_object(
+                self._bucket, object_key, expires=timedelta(seconds=expires_seconds)
+            )
+        except Exception:  # noqa: BLE001 — presign failure shouldn't break the stream
+            return None
 
 
 @lru_cache(maxsize=1)
