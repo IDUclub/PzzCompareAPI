@@ -2,7 +2,7 @@
 
 ## Что это и зачем
 
-Бэкенд классифицирует кадастровые участки против Правил Землепользования и Застройки (ПЗЗ): для каждого участка определяет «в правильной ли зоне он стоит» и подбирает наиболее подходящий вид разрешённого использования (ВРИ).
+Бэкенд классифицирует кадастровые участки против Правил Землепользования и Застройки (ПЗЗ): для каждого участка определяет «в правильной ли зоне он стоит» и подбирает наиболее подходящий вид разрешённого использования (ВРИ). Поверх классификации есть **чат-режим**: пользователь задаёт вопрос — сервис стримит текстовый ответ ИИ и сохраняет диалог.
 
 Классификация **асинхронная** — все ручки создания задач возвращают сразу с `status: "queued"`, реальный расчёт идёт в фоне (от нескольких секунд до часов, зависит от объёма данных и нагрузки LLM).
 
@@ -12,18 +12,21 @@
 |---|---|
 | **Base URL** | `http://<host>:8000` |
 | **Swagger UI** | `GET /docs` |
-| **Auth** | Сейчас отсутствует; для `/scenarios/*` нужен `Authorization: Bearer <jwt>` (пробрасывается в urban_api) |
+| **Auth** | `Authorization: Bearer <jwt>` обязателен для `/scenarios/*` (пробрасывается в urban_api) и для всех чат-ручек `*/chat/stream` (под этим пользователем пишется история чата). Остальные файловые ручки токен не требуют. |
 | **Content-Type** | `multipart/form-data` для создания задач (файлы), `application/json` для остального |
 
 ---
 
-## Два сценария использования
+## Сценарии использования
 
-### Сценарий A: «У юзера свои GeoJSON-файлы»
-Юзер вручную грузит GeoJSON кадастровых участков (+ опционально PZZ-зон) → классификация.
+### Сценарий A: «У юзера свои файлы»
+Юзер вручную грузит геоданные кадастровых участков (+ опционально PZZ-зон) → классификация. Принимается GeoJSON, а также GeoPackage/GML/KML/GeoParquet (см. [B1](#b1-post-taskspzz-check--полная-проверка-с-pzz)).
 
 ### Сценарий B: «У юзера есть scenario_id в urban_api»
 Бэкенд сам тянет данные из urban_api по `scenario_id` + `(year, source)` → классификация. Никаких ручных загрузок.
+
+### Сценарий C: «Чат с ИИ»
+Поверх A или B — пользователь задаёт вопрос (`user_query`), сервис классифицирует, **стримит текстовый ответ** и сохраняет диалог в ChatStorage. Ручки `*/chat/stream`, см. [раздел H](#h-чат-ответ-llm-поверх-классификации-sse).
 
 ---
 
@@ -69,8 +72,8 @@ Swagger UI с полной OpenAPI-схемой.
 
 | Поле | Тип | Обязательно | Описание |
 |------|-----|-------------|----------|
-| `cadastral_feature_collection_file` | File | да | GeoJSON кадастровых участков в **EPSG:4326** |
-| `pzz_zones_feature_collection_file` | File | да | GeoJSON PZZ-зон в **EPSG:4326** |
+| `cadastral_feature_collection_file` | File | да | Кадастровые участки. GeoJSON в **EPSG:4326**, либо любой гео-формат (см. ниже) |
+| `pzz_zones_feature_collection_file` | File | да | PZZ-зоны. GeoJSON в **EPSG:4326**, либо любой гео-формат |
 | `pzz_zone_vri_labels_file` | File | – | Свой JSON с описанием зон (если нет — используется дефолт) |
 | `vri_classifier_file` | File | – | Свой классификатор Росреестра (если нет — дефолт) |
 | `cadastral_vri_col` | string | да | Имя поля в кадастре с текстом ВРИ (например `"Вид разреш"`) |
@@ -100,8 +103,16 @@ Swagger UI с полной OpenAPI-схемой.
 
 **Что делать дальше:** запомнить `external_id`, поллить `GET /tasks/{external_id}`.
 
+**Поддерживаемые форматы файлов** (для `cadastral_*` и `pzz_zones_*`): `.geojson` / `.json`
+(должны быть в EPSG:4326), а также `.gpkg` (GeoPackage), `.gml`, `.kml`, `.geoparquet` / `.parquet`.
+Не-GeoJSON форматы бэкенд читает через geopandas, **репроецирует в EPSG:4326** и хранит
+как GeoJSON. CRS берётся из самого файла; если в файле CRS не задан — данные считаются уже
+в EPSG:4326.
+
 **Возможные ошибки:**
 - `422` — GeoJSON некорректный или не в EPSG:4326
+- `415` — неподдерживаемое расширение файла
+- `400` — гео-файл не читается / не конвертируется
 - `413` — файл больше лимита (200 МБ)
 
 ---
@@ -410,6 +421,104 @@ fetch('/tasks/pzz-check', {
 
 ---
 
+## H. Чат-ответ (LLM поверх классификации, SSE)
+
+Две ручки одним вызовом запускают классификацию, **дожидаются её завершения**, затем
+**стримят разговорный ответ** LLM на запрос пользователя (`user_query`), опираясь на отчёт
+object-zone-fit. Параллельно история диалога сохраняется в сервис **ChatStorage** под
+пользователем из токена.
+
+| Флоу | Ручка |
+|------|-------|
+| По сценарию urban_api | `POST /scenarios/{scenario_id}/chat/stream` |
+| По загруженным файлам | `POST /tasks/chat/stream` |
+
+**Auth:** `Authorization: Bearer <jwt>` **обязателен** (без токена история не пишется —
+`user_id` берётся из токена на стороне ChatStorage; `project_id` бэкенд сам тянет из urban_api).
+
+**Тело (multipart/form-data):** как у соответствующего `classify` / `pzz-check`, плюс:
+
+| Поле | Тип | Обязательно | Описание |
+|------|-----|-------------|----------|
+| `user_query` | string | да | Текст запроса пользователя (как в gMART) |
+| `chat_id` | string | – | UUID существующего чата. Если не передан — бэкенд создаст новый и пришлёт `service_event`/`chat_created` |
+| `group_by` | `zone`\|`object` | – | По умолчанию `zone` |
+| `model` | string | – | Имя модели Ollama. По умолчанию — `CHAT_MODEL`/`GENERATE_MODEL` бэкенда |
+| `temperature` | float | – | Переопределить температуру модели |
+
+**Транспорт:** Server-Sent Events. Используйте **fetch-based SSE-клиент** — нативный
+`EventSource` не умеет POST/multipart и не ставит `Authorization`.
+
+**Поток событий (в порядке).** События чат-части идут в формате gMART — JSON-конверт
+`{ "type", "content" }` в поле `data`:
+
+| `data.type` (или SSE event) | data | Когда |
+|-------|------|-------|
+| `task` | `TaskOut` | сразу, дескриптор созданной задачи (сохраните `external_id`) |
+| `task_event` | событие пайплайна | по мере выполнения |
+| `status` | `TaskOut` | при смене статуса |
+| `object_zone_fit` | отчёт (см. D2) | когда задача `finished` |
+| `file` | `{ "name", "url", "download_url", "filename", "mime_type", "source_service" }` | ссылка на геослой-результат (см. ниже) |
+| `service_event` | `{ "event_type": "storage_event", "event": { "storage_event_type": "chat_created", "chat_id", "chat_title" } }` | только если `chat_id` не был передан — **сохраните `chat_id`** |
+| `chunk` | `{ "text": "...", "done": false }` | дельты ответа LLM; финальный `{ "text": "", "done": true }` — конец ответа |
+| `error` | `{ "message", "stage" }` | не фатально (сбой LLM/ChatStorage) — поток продолжается |
+| `done` | `{ "status", "chat_id" }` | терминал, поток закрывается |
+
+Собирайте ответ ассистента, конкатенируя `content.text` из событий `chunk` (до `done: true`).
+Полный ответ бэкенд сам сохранит в ChatStorage как `role: "assistant"`, а `user_query` —
+как `role: "user"`.
+
+### Геослои как ссылки (`file`)
+
+Большие GeoJSON **не** приходят инлайном — вместо этого приходит событие `file` со ссылками.
+Поле `role` различает результат и входные слои:
+
+```json
+{ "type": "file", "content": {
+  "name": "classified_result",          // или input_cadastral / input_zones
+  "role": "result",                      // "result" | "input"
+  "url": "https://<api>/files/result/<external_id>",   // долговечная ссылка (не протухает)
+  "download_url": "https://<minio>/...?X-Amz-Signature=...", // presigned для мгновенной выгрузки (может быть null)
+  "filename": "<external_id>.geojson",
+  "mime_type": "application/geo+json",
+  "source_service": "PZZ Pipeline Service"
+} }
+```
+
+Какие `file`-события приходят:
+- `role: "result"` — итоговый классифицированный слой (когда задача `finished`). Приходит во всех
+  стримах (чат и обычные `*/classify/stream`, `*/pzz-check/stream`).
+- `role: "input"` — **загруженные** входные слои (`input_cadastral`, `input_zones`). Приходят
+  **только в upload-флоу** (`/tasks/chat/stream`, `/tasks/pzz-check/stream`,
+  `/tasks/classify-only/stream`), сразу в начале (можно качать, не дожидаясь завершения).
+  В сценарном флоу их нет (входные данные тянутся из urban_api).
+
+Как пользоваться ссылками:
+- **мгновенная** выгрузка → `download_url` (если не `null`);
+- **постоянная** ссылка (карточка в истории, шаринг) → `url` — это `GET /files/{slot}/{external_id}`
+  (`slot` ∈ `result` / `cadastral` / `zones`), которая на каждый заход редиректит (307) на свежий
+  presigned MinIO. Не протухает, авторизация не нужна, большой файл качается прямо из MinIO.
+
+В ChatStorage сохраняется только **result**-ссылка — как `kind: "file"` часть сообщения ассистента
+(`payload.url` = долговечный `url`). Входные слои в историю не пишутся (приходят только в стриме).
+`download_url` нигде не сохраняется (он временный).
+
+**Пример (frontend):**
+```js
+const res = await fetch(`/scenarios/843/chat/stream`, {
+  method: "POST",
+  headers: { Authorization: `Bearer ${token}` },
+  body: formData, // user_query, year, source, [chat_id], ...
+});
+const reader = res.body.getReader();
+// ...парсинг SSE: на 'chat_created' сохранить chat_id, на 'token' дописать в пузырь ответа
+```
+
+История чатов (список, открытие, удаление) живёт в самом ChatStorage — см. его собственный
+фронт-гайд; этот сервис только пишет в него user/assistant сообщения.
+
+---
+
 # Типовые сценарии работы фронта
 
 ## Сценарий 1: Юзер грузит файлы и ждёт результат
@@ -451,5 +560,21 @@ fetch('/tasks/pzz-check', {
 1. Фронт: POST /tasks/{external_id}/recompute
    ← TaskOut со status: "queued"
 2. Возвращается к поллингу
+```
+
+## Сценарий 4: Чат с ИИ по проекту
+
+```
+1. Юзер вводит вопрос (user_query) на странице чата
+2. Фронт (fetch-based SSE): POST /scenarios/{id}/chat/stream  (или /tasks/chat/stream)
+   { Authorization: Bearer <jwt> }
+3. Ловит события:
+   ← task               → сохранить external_id
+   ← object_zone_fit    → KPI/отчёт
+   ← file (result)      → ссылка на слой для карты/скачивания
+   ← service_event      → сохранить chat_id (если новый чат)
+   ← chunk*             → дописывать текст ответа ассистента (до done:true)
+   ← done               → закрыть поток
+4. Следующий вопрос в том же диалоге — передать chat_id (история подтянется).
 ```
 ---
