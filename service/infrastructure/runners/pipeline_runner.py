@@ -66,6 +66,20 @@ class SubprocessPipelineRunner(PipelineRunner):
         output_dir = Path(request.outputs_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Pull the latest runtime config overrides into this worker's env, then
+        # read settings *after* so the explicit assignments below reflect live
+        # config (otherwise a stale self._settings would clobber the overrides
+        # the subprocess inherits via os.environ).
+        settings = self._settings
+        try:
+            from service.infrastructure.config_runtime import apply_overrides
+            from service.settings import get_settings
+
+            apply_overrides()
+            settings = get_settings()
+        except Exception:  # noqa: BLE001 — overrides must never block a pipeline run
+            pass
+
         env = os.environ.copy()
         env["CADASTRAL_FEATURES_PATH"] = request.cadastral_data_path
         env["PZZ_ZONES_FEATURES_PATH"] = request.pzz_zones_data_path
@@ -78,18 +92,18 @@ class SubprocessPipelineRunner(PipelineRunner):
         env["TASK_EXTERNAL_ID"] = request.task_external_id
         env["OUTPUTS_DIR"] = str(output_dir)
 
-        env["OLLAMA_BASE_URL"] = self._settings.ollama_base_url
-        env["LLM_BACKEND"] = self._settings.llm_backend
-        env["VLLM_BASE_URL"] = self._settings.vllm_base_url
-        env["VLLM_API_KEY"] = self._settings.vllm_api_key
-        env["EMBED_MODEL"] = self._settings.embed_model
-        env["GENERATE_MODEL"] = self._settings.generate_model
-        env["TOP_K"] = str(self._settings.top_k)
-        env["EMBED_BATCH_SIZE"] = str(self._settings.embed_batch_size)
-        env["PIPELINE_CALLABLE"] = self._settings.pipeline_callable
+        env["OLLAMA_BASE_URL"] = settings.ollama_base_url
+        env["LLM_BACKEND"] = settings.llm_backend
+        env["VLLM_BASE_URL"] = settings.vllm_base_url
+        env["VLLM_API_KEY"] = settings.vllm_api_key
+        env["EMBED_MODEL"] = settings.embed_model
+        env["GENERATE_MODEL"] = settings.generate_model
+        env["TOP_K"] = str(settings.top_k)
+        env["EMBED_BATCH_SIZE"] = str(settings.embed_batch_size)
+        env["PIPELINE_CALLABLE"] = settings.pipeline_callable
 
         result = subprocess.run(
-            [sys.executable, "-m", self._settings.pipeline_module],
+            [sys.executable, "-m", settings.pipeline_module],
             env=env,
             stderr=subprocess.PIPE,
             text=True,

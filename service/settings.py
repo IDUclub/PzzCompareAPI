@@ -139,6 +139,12 @@ class Settings(BaseSettings):
     public_base_url: str = Field(default="")
     geo_layer_url_ttl_seconds: int = Field(default=3600)
 
+    # ── Admin config API ─────────────────────────────────────────────────────
+    # Shared secret guarding the runtime config endpoints (/admin/config/*),
+    # passed as the ``X-Admin-Token`` header. Empty => the admin API is disabled
+    # (returns 503). Lives in ENV_SECRET, never overridable at runtime.
+    admin_api_token: str = Field(default="")
+
     model_config = SettingsConfigDict(
         env_file=".env.development",
         env_file_encoding="utf-8",
@@ -147,8 +153,13 @@ class Settings(BaseSettings):
 
 
 @lru_cache(maxsize=1)
-def get_settings() -> Settings:
-    """Return cached settings instance."""
+def _build_settings_cached() -> Settings:
+    """Build Settings from the current process env (cached).
+
+    The cache is cleared by ``config_runtime.apply_overrides`` whenever a runtime
+    override changes the env, so the next ``get_settings`` rebuilds with the new
+    values. Read config through ``get_settings`` — not this — so overrides apply.
+    """
     if not os.getenv("APP_ENV"):
         os.environ["APP_ENV"] = "development"
 
@@ -177,4 +188,21 @@ def get_settings() -> Settings:
         fileserver_secret_key=config.get("FILESERVER_SECRET_KEY") or "",
         fileserver_bucket_name=config.get("FILESERVER_BUCKET_NAME") or "",
         fileserver_secure=(config.get("FILESERVER_SECURE") or "").lower() in {"1", "true", "yes", "on"},
+        admin_api_token=_get_optional_env(config, "ADMIN_API_TOKEN"),
     )
+
+
+def get_settings() -> Settings:
+    """Return the effective settings, applying any runtime config overrides first.
+
+    Overrides are synced from the shared store into ``os.environ`` (TTL-gated, so
+    this stays cheap on hot paths); a change busts ``_build_settings_cached`` so
+    the returned instance reflects live config without a redeploy.
+    """
+    try:
+        from .infrastructure.config_runtime import apply_overrides
+
+        apply_overrides()
+    except Exception:  # noqa: BLE001 — never let the override layer break config
+        pass
+    return _build_settings_cached()

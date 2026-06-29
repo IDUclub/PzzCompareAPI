@@ -60,6 +60,25 @@ class ConfigEntry(Base):
     py_type: Mapped[str] = mapped_column(String(64), default="str")
 
 
+class ConfigOverride(Base):
+    """Runtime env override applied on top of the deployed config via the admin API.
+
+    Shared across api / worker / worker_llm; each process periodically syncs these
+    rows into its own ``os.environ`` (and busts the Settings cache) so app params
+    and service URLs can change without a redeploy. Credentials and boot-only keys
+    are never stored here — see ``config_runtime._DENY``.
+    """
+
+    __tablename__ = "config_override"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+    updated_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
 class TaskIdempotencyKey(Base):
     __tablename__ = "task_idempotency_keys"
 

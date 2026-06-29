@@ -118,6 +118,19 @@ GeoParquet — не-GeoJSON форматы конвертируются в GeoJS
 - `GET /scenarios/{id}/tasks/{external_id}` (+ `/result`, `/object-zone-fit`, `/events`)
 - `DELETE` / `POST .../recompute`
 
+**Админ: рантайм-конфиг** (заголовок `X-Admin-Token: <ADMIN_API_TOKEN>`; пусто → 503)
+- `GET /admin/config/settings` — текущие эффективные настройки (секреты замаскированы)
+- `GET /admin/config/overrides` — активные оверрайды
+- `GET /admin/config/{key}` — эффективное значение + статус оверрайда
+- `PUT /admin/config/{key}` `{value, updated_by?}` — задать оверрайд (валидируется; кред/boot-only/неизвестные ключи → 400)
+- `DELETE /admin/config/{key}` — снять оверрайд (вернуть деплой-значение)
+- `POST /admin/config/reload` — форс-ресинк оверрайдов в этом процессе
+
+  Оверрайды хранятся в таблице `config_override` (общая для всех контейнеров) и синкаются в
+  `os.environ` каждого процесса (TTL ~5с) + сбрасывают кэш `Settings` — меняются **без редеплоя**,
+  на всём флоте, включая subprocess пайплайна. Секреты (`ENV_SECRET`) и boot-only ключи менять
+  нельзя. `ADMIN_API_TOKEN` живёт в `ENV_SECRET`.
+
 Чат-ручки `*/chat/stream` дожидаются завершения классификации, затем стримят (в формате gMART:
 конверт `{type, content}`) отчёт (`object_zone_fit` для pzz-check, `classify_summary` для
 classify-only) → `service_event/chat_created` (если не передан `chat_id`) → `chunk`* → `done`,
