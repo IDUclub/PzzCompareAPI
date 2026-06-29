@@ -27,14 +27,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Copy keys
-        env:
-          KEYS_PATH: ${{ secrets.KEYS_PATH }}
-        run: |
-          if [ -n "$KEYS_PATH" ]; then
-            cp "$KEYS_PATH"/* ./ || echo "No keys to copy"
-          fi
-
       - name: Write env file
         env:
           # Preferred: split config across two Actions *variables* (non-sensitive,

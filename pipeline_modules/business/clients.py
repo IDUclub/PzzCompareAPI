@@ -11,6 +11,20 @@ from .text_utils import normalize_text, safe_json_loads
 
 config = Config()
 
+
+def _config_optional(key: str) -> str | None:
+    """``config.get`` that returns None for an unset key.
+
+    ``iduconfig.Config.get`` raises on a missing key; this lets optional config
+    (e.g. mTLS cert paths, only used for https endpoints) be omitted from env.
+    """
+    try:
+        value = config.get(key)
+    except Exception:  # noqa: BLE001
+        return None
+    return value or None
+
+
 class VLLMEmptyContentError(ValueError):
     """Raised when vLLM returned no final assistant content."""
 
@@ -387,10 +401,12 @@ def build_llm_client(*, backend: str, timeout: int, default_model: Optional[str]
 
 vectorizer = VectorizerClient(
     url=config.get("VECTORIZER_URL"),
-    model=config.get("VECTORIZER_MODEL"),
-    client_cert_path=config.get("CLIENT_CERT_PATH"),
-    client_key_path=config.get("CLIENT_KEY_PATH"),
-    ca_cert_path=config.get("CA_CERT_PATH"),
+    # Same embedding model as the rest of the pipeline — no separate var needed.
+    model=config.get("EMBED_MODEL"),
+    # mTLS material is optional: only used for https endpoints (ignored over http).
+    client_cert_path=_config_optional("CLIENT_CERT_PATH"),
+    client_key_path=_config_optional("CLIENT_KEY_PATH"),
+    ca_cert_path=_config_optional("CA_CERT_PATH"),
     timeout=int(config.get("REQUEST_TIMEOUT_EMBED")),
 )
 
