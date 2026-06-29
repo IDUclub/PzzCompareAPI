@@ -174,7 +174,7 @@ def _build_settings_cached() -> Settings:
         embed_model=_get_required_env(config, "EMBED_MODEL"),
         generate_model=_get_required_env(config, "GENERATE_MODEL"),
         urban_api_base_url=(config.get("URBAN_API_BASE_URL") or "").rstrip("/"),
-        urban_api_timeout_seconds=float(config.get("URBAN_API_TIMEOUT_SECONDS") or "30"),
+        urban_api_timeout_seconds=float("600"),
         chat_storage_base_url=_get_optional_env(config, "CHAT_STORAGE_BASE_URL").rstrip("/"),
         chat_storage_timeout_seconds=float(_get_optional_env(config, "CHAT_STORAGE_TIMEOUT_SECONDS", "10")),
         chat_model=_get_optional_env(config, "CHAT_MODEL"),
