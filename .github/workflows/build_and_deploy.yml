@@ -37,20 +37,35 @@ jobs:
 
       - name: Write env file
         env:
-          # Preferred: store the whole .env.development as a single repo secret
-          # (Settings -> Secrets and variables -> Actions -> New secret -> ENV_FILE,
-          # paste the full file content). Edit it in the GitHub UI to change config.
+          # Preferred: split config across two Actions *variables* (non-sensitive,
+          # editable inline in the UI) and one *secret* (credentials only).
+          #   Settings -> Secrets and variables -> Actions
+          #     Variables tab -> ENV_APP   (app params: thresholds, flags, models, timeouts)
+          #     Variables tab -> ENV_URLS  (service addresses: *_URL / *_HOST / *_PORT)
+          #     Secrets tab   -> ENV_SECRET (credentials: api keys, tokens, DATABASE_URL)
+          # .env.development = ENV_APP + ENV_URLS + ENV_SECRET (concatenated in that
+          # order). ENV_SECRET comes last so a credential always wins on any dup.
+          ENV_APP: ${{ vars.ENV_APP }}
+          ENV_URLS: ${{ vars.ENV_URLS }}
+          ENV_SECRET: ${{ secrets.ENV_SECRET }}
+          # Legacy fallback: the whole .env.development as one secret (ENV_FILE).
           ENV_FILE: ${{ secrets.ENV_FILE }}
-          # Fallback (legacy): a .env.development sitting on the runner host.
+          # Legacy fallback: a .env.development sitting on the runner host.
           ENV_PATH: ${{ secrets.ENV_PATH }}
         run: |
-          if [ -n "$ENV_FILE" ]; then
+          if [ -n "$ENV_APP" ] || [ -n "$ENV_URLS" ] || [ -n "$ENV_SECRET" ]; then
+            : > .env.development
+            [ -n "$ENV_APP" ] && printf '%s\n' "$ENV_APP" >> .env.development
+            [ -n "$ENV_URLS" ] && printf '%s\n' "$ENV_URLS" >> .env.development
+            [ -n "$ENV_SECRET" ] && printf '%s\n' "$ENV_SECRET" >> .env.development
+            echo "Wrote .env.development from ENV_APP + ENV_URLS (vars) + ENV_SECRET (secret) ($(wc -l < .env.development) lines)"
+          elif [ -n "$ENV_FILE" ]; then
             printf '%s\n' "$ENV_FILE" > .env.development
             echo "Wrote .env.development from ENV_FILE secret ($(wc -l < .env.development) lines)"
           elif [ -n "$ENV_PATH" ]; then
             cp "$ENV_PATH/.env.development" ./ && echo "Copied .env.development from ENV_PATH (fallback)" || echo "No env file to copy"
           else
-            echo "::warning::No ENV_FILE secret and no ENV_PATH - .env.development not provided"
+            echo "::warning::No ENV_APP/ENV_URLS/ENV_SECRET, ENV_FILE or ENV_PATH - .env.development not provided"
           fi
 
       - name: Generate image tag
