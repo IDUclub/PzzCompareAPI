@@ -390,13 +390,13 @@ def build_llm_client(*, backend: str, timeout: int, default_model: Optional[str]
         mode=config.get("LLM_API_MODE"),
         timeout=timeout,
         default_model=default_model,
-        keep_alive=config.get("15m"),
+        keep_alive="15m",
         temperature=temperature,
         num_ctx=num_ctx,
         num_predict=num_predict,
         think=think,
-        runtime_presets=json.loads(config.get('{"gpt-oss":{"mode":"chat","think":"low"},"qwen3":{"mode":"chat",'
-                                              '"think":false},"llama3.1":{"mode":"chat","think":false}}')),
+        runtime_presets=json.loads('{"gpt-oss":{"mode":"chat","think":"low"},"qwen3":{"mode":"chat",'
+                                              '"think":false},"llama3.1":{"mode":"chat","think":false}}'),
     )
 
 
@@ -413,26 +413,26 @@ vectorizer = VectorizerClient(
 
 llm_client = build_llm_client(
     backend=config.get("LLM_BACKEND"),
-    timeout=int(config.get("900")),
+    timeout=900,
     default_model=config.get("GENERATE_MODEL"),
     temperature=float(config.get("LLM_TEMPERATURE")),
     num_ctx=int(config.get("LLM_NUM_CTX")),
     num_predict=int(config.get("LLM_NUM_PREDICT")),
     think=config.get("LLM_THINK"),
-    runtime_presets=json.loads(config.get('{"gpt-oss":{"mode":"chat","think":"low"},"qwen3":{"mode":"chat",'
-                                          '"think":false},"llama3.1":{"mode":"chat","think":false}}')),
+    runtime_presets=json.loads('{"gpt-oss":{"mode":"chat","think":"low"},"qwen3":{"mode":"chat",'
+                                          '"think":false},"llama3.1":{"mode":"chat","think":false}}'),
 )
 
 not_allowed_rerank_llm_client = build_llm_client(
     backend=config.get("LLM_BACKEND"),
-    timeout=int(config.get("900")),
+    timeout=900,
     default_model=config.get("GENERATE_MODEL"),
     temperature=float(config.get("LLM_TEMPERATURE")),
     num_ctx=int(config.get("NOT_ALLOWED_LLM_RERANK_NUM_CTX")),
     num_predict=int(config.get("NOT_ALLOWED_LLM_RERANK_NUM_PREDICT")),
     think=parse_think_value(config.get("NOT_ALLOWED_LLM_RERANK_THINK")),
-    runtime_presets=json.loads(config.get('{"gpt-oss":{"mode":"chat","think":"low"},"qwen3":{"mode":"chat",'
-                                          '"think":false},"llama3.1":{"mode":"chat","think":false}}')),
+    runtime_presets=json.loads('{"gpt-oss":{"mode":"chat","think":"low"},"qwen3":{"mode":"chat",'
+                                          '"think":false},"llama3.1":{"mode":"chat","think":false}}'),
 )
 
 # Backward-compatible aliases used in business layers.
