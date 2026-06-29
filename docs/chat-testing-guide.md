@@ -9,7 +9,8 @@
 ручки (SSE):
 
 - `POST /scenarios/{id}/chat/stream` — классификация по urban_api → стрим ответа LLM.
-- `POST /tasks/chat/stream` — то же по загруженным файлам.
+- `POST /tasks/pzz-check/chat/stream` — проверка ПЗЗ по загруженным файлам → стрим ответа LLM.
+- `POST /tasks/classify-only/chat/stream` — только классификация ВРИ по загруженным файлам → стрим ответа LLM.
 
 Ключевые файлы: `service/infrastructure/{chat_storage_client,ollama_chat_client,geo_ingest}.py`,
 `service/application/use_cases/chat_answer.py`, `service/api/{tasks,scenarios,classifier,security}.py`,
@@ -51,7 +52,7 @@ geo-конверсию, загрузку истории чата.
 print([r.path for r in s.router.routes if 'chat' in r.path], [r.path for r in c.router.routes if 'chat' in r.path])"
 ```
 
-Ожидание: `['/scenarios/{scenario_id}/chat/stream'] ['/tasks/chat/stream']`.
+Ожидание: `['/scenarios/{scenario_id}/chat/stream'] ['/tasks/pzz-check/chat/stream', '/tasks/classify-only/chat/stream']`.
 
 ## 4. Функциональный тест чата (нужны живые сервисы)
 
@@ -80,7 +81,7 @@ curl -N -X POST "http://localhost:8000/scenarios/<SCENARIO_ID>/chat/stream" \
 ### 4c. Аплоуд-чат + gdf
 
 ```bash
-curl -N -X POST "http://localhost:8000/tasks/chat/stream" \
+curl -N -X POST "http://localhost:8000/tasks/pzz-check/chat/stream" \
   -H "Authorization: Bearer $TOKEN" \
   -F "cadastral_feature_collection_file=@parcels.gpkg" \
   -F "pzz_zones_feature_collection_file=@zones.gpkg" \

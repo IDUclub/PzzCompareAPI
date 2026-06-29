@@ -101,7 +101,8 @@ docker compose -f docker-compose.yml up -d --build
 **Файловый флоу**
 - `POST /tasks/pzz-check` — полная проверка ПЗЗ (кадастр + зоны)
 - `POST /tasks/classify-only` — только классификация ВРИ по классификатору
-- `POST /tasks/chat/stream` — проверка + стрим разговорного ответа LLM (SSE, требует Bearer)
+- `POST /tasks/pzz-check/chat/stream` — проверка ПЗЗ + стрим разговорного ответа LLM (SSE, требует Bearer)
+- `POST /tasks/classify-only/chat/stream` — классификация ВРИ + стрим разговорного ответа LLM (SSE, требует Bearer)
 - `GET /tasks/{id}` · `GET /tasks_list` · `GET /tasks/{id}/result`
 - `GET /files/{slot}/{id}` — долговечная ссылка на геослой (`slot`: `result`/`cadastral`/`zones`; 307 → presigned MinIO)
 - `GET /tasks/{id}/object-zone-fit?group_by=zone|object` — структурированный отчёт + `chat_message`
@@ -118,8 +119,9 @@ GeoParquet — не-GeoJSON форматы конвертируются в GeoJS
 - `DELETE` / `POST .../recompute`
 
 Чат-ручки `*/chat/stream` дожидаются завершения классификации, затем стримят (в формате gMART:
-конверт `{type, content}`) `object_zone_fit` → `service_event/chat_created` (если не передан
-`chat_id`) → `chunk`* → `done`, и сохраняют диалог (user + assistant) в **ChatStorage**.
+конверт `{type, content}`) отчёт (`object_zone_fit` для pzz-check, `classify_summary` для
+classify-only) → `service_event/chat_created` (если не передан `chat_id`) → `chunk`* → `done`,
+и сохраняют диалог (user + assistant) в **ChatStorage**.
 Разговорный ответ генерирует Ollama `/api/chat` (`OLLAMA_BASE_URL`); модель — параметр запроса
 `model` (дефолт `CHAT_MODEL`/`GENERATE_MODEL`).
 
