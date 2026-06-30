@@ -431,7 +431,8 @@ object-zone-fit. Параллельно история диалога сохра
 | Флоу | Ручка |
 |------|-------|
 | По сценарию urban_api | `POST /scenarios/{scenario_id}/chat/stream` |
-| По загруженным файлам | `POST /tasks/chat/stream` |
+| По загруженным файлам (проверка ПЗЗ) | `POST /tasks/pzz-check/chat/stream` |
+| По загруженным файлам (только классификация) | `POST /tasks/classify-only/chat/stream` |
 
 **Auth:** `Authorization: Bearer <jwt>` **обязателен** (без токена история не пишется —
 `user_id` берётся из токена на стороне ChatStorage; `project_id` бэкенд сам тянет из urban_api).
@@ -489,8 +490,9 @@ object-zone-fit. Параллельно история диалога сохра
 - `role: "result"` — итоговый классифицированный слой (когда задача `finished`). Приходит во всех
   стримах (чат и обычные `*/classify/stream`, `*/pzz-check/stream`).
 - `role: "input"` — **загруженные** входные слои (`input_cadastral`, `input_zones`). Приходят
-  **только в upload-флоу** (`/tasks/chat/stream`, `/tasks/pzz-check/stream`,
-  `/tasks/classify-only/stream`), сразу в начале (можно качать, не дожидаясь завершения).
+  **только в upload-флоу** (`/tasks/pzz-check/chat/stream`, `/tasks/classify-only/chat/stream`,
+  `/tasks/pzz-check/stream`, `/tasks/classify-only/stream`), сразу в начале (можно качать, не
+  дожидаясь завершения).
   В сценарном флоу их нет (входные данные тянутся из urban_api).
 
 Как пользоваться ссылками:
@@ -566,7 +568,7 @@ const reader = res.body.getReader();
 
 ```
 1. Юзер вводит вопрос (user_query) на странице чата
-2. Фронт (fetch-based SSE): POST /scenarios/{id}/chat/stream  (или /tasks/chat/stream)
+2. Фронт (fetch-based SSE): POST /scenarios/{id}/chat/stream  (или /tasks/pzz-check/chat/stream)
    { Authorization: Bearer <jwt> }
 3. Ловит события:
    ← task               → сохранить external_id

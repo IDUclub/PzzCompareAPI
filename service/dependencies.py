@@ -60,8 +60,13 @@ def init_dependencies(app: FastAPI) -> None:
 
 
 def get_app_settings(request: Request) -> Settings:
-    """Return settings from application state (one instance per process)."""
-    return request.app.state.settings
+    """Return the effective settings, including any live runtime overrides.
+
+    Delegates to ``get_settings`` (TTL-gated override sync + cached build) rather
+    than the startup snapshot in ``app.state.settings``, so config changed via the
+    admin API takes effect on subsequent requests without a redeploy.
+    """
+    return get_settings()
 
 
 def get_db() -> Generator[Session, None, None]:

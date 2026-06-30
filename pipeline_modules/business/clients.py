@@ -11,6 +11,20 @@ from .text_utils import normalize_text, safe_json_loads
 
 config = Config()
 
+
+def _config_optional(key: str) -> str | None:
+    """``config.get`` that returns None for an unset key.
+
+    ``iduconfig.Config.get`` raises on a missing key; this lets optional config
+    (e.g. mTLS cert paths, only used for https endpoints) be omitted from env.
+    """
+    try:
+        value = config.get(key)
+    except Exception:  # noqa: BLE001
+        return None
+    return value or None
+
+
 class VLLMEmptyContentError(ValueError):
     """Raised when vLLM returned no final assistant content."""
 
@@ -376,44 +390,49 @@ def build_llm_client(*, backend: str, timeout: int, default_model: Optional[str]
         mode=config.get("LLM_API_MODE"),
         timeout=timeout,
         default_model=default_model,
-        keep_alive=config.get("LLM_KEEP_ALIVE"),
+        keep_alive="15m",
         temperature=temperature,
         num_ctx=num_ctx,
         num_predict=num_predict,
         think=think,
-        runtime_presets=json.loads(config.get("LLM_MODEL_RUNTIME_PRESETS")),
+        runtime_presets=json.loads('{"gpt-oss":{"mode":"chat","think":"low"},"qwen3":{"mode":"chat",'
+                                              '"think":false},"llama3.1":{"mode":"chat","think":false}}'),
     )
 
 
 vectorizer = VectorizerClient(
     url=config.get("VECTORIZER_URL"),
-    model=config.get("VECTORIZER_MODEL"),
-    client_cert_path=config.get("CLIENT_CERT_PATH"),
-    client_key_path=config.get("CLIENT_KEY_PATH"),
-    ca_cert_path=config.get("CA_CERT_PATH"),
-    timeout=int(config.get("REQUEST_TIMEOUT_EMBED")),
+    # Same embedding model as the rest of the pipeline — no separate var needed.
+    model=config.get("EMBED_MODEL"),
+    # mTLS material is optional: only used for https endpoints (ignored over http).
+    client_cert_path=_config_optional("CLIENT_CERT_PATH"),
+    client_key_path=_config_optional("CLIENT_KEY_PATH"),
+    ca_cert_path=_config_optional("CA_CERT_PATH"),
+    timeout=600,
 )
 
 llm_client = build_llm_client(
     backend=config.get("LLM_BACKEND"),
-    timeout=int(config.get("REQUEST_TIMEOUT_CHAT")),
+    timeout=900,
     default_model=config.get("GENERATE_MODEL"),
     temperature=float(config.get("LLM_TEMPERATURE")),
     num_ctx=int(config.get("LLM_NUM_CTX")),
     num_predict=int(config.get("LLM_NUM_PREDICT")),
     think=config.get("LLM_THINK"),
-    runtime_presets=json.loads(config.get("LLM_MODEL_RUNTIME_PRESETS")),
+    runtime_presets=json.loads('{"gpt-oss":{"mode":"chat","think":"low"},"qwen3":{"mode":"chat",'
+                                          '"think":false},"llama3.1":{"mode":"chat","think":false}}'),
 )
 
 not_allowed_rerank_llm_client = build_llm_client(
     backend=config.get("LLM_BACKEND"),
-    timeout=int(config.get("REQUEST_TIMEOUT_CHAT")),
+    timeout=900,
     default_model=config.get("GENERATE_MODEL"),
     temperature=float(config.get("LLM_TEMPERATURE")),
     num_ctx=int(config.get("NOT_ALLOWED_LLM_RERANK_NUM_CTX")),
     num_predict=int(config.get("NOT_ALLOWED_LLM_RERANK_NUM_PREDICT")),
     think=parse_think_value(config.get("NOT_ALLOWED_LLM_RERANK_THINK")),
-    runtime_presets=json.loads(config.get("LLM_MODEL_RUNTIME_PRESETS")),
+    runtime_presets=json.loads('{"gpt-oss":{"mode":"chat","think":"low"},"qwen3":{"mode":"chat",'
+                                          '"think":false},"llama3.1":{"mode":"chat","think":false}}'),
 )
 
 # Backward-compatible aliases used in business layers.
