@@ -71,3 +71,68 @@ def test_scenario_chat_stream_requires_auth() -> None:
         data={"user_query": "q", "year": 2026, "source": "User"},
     )
     assert resp.status_code in (401, 403)
+
+
+def test_classify_only_chat_stream_requires_auth() -> None:
+    """The classify-only chat endpoint also depends on verify_token."""
+    from fastapi.testclient import TestClient
+
+    from service import app as app_module
+
+    client = TestClient(app_module.app)
+    resp = client.post(
+        "/tasks/classify-only/chat/stream",
+        data={"user_query": "q", "cadastral_vri_col": "vri"},
+    )
+    assert resp.status_code in (401, 403)
+
+
+def _classify_geojson():
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": None,
+                "properties": {
+                    "ВРИ_ЕГРН": "Магазин",
+                    "Топ1_возможный_ВРИ": "4.4 Магазины",
+                    "Топ5_возможных_ВРИ": "4.4 Магазины, 4.6 Общепит",
+                    "Причина": "string-match + embed",
+                },
+            },
+            {
+                "type": "Feature",
+                "geometry": None,
+                "properties": {
+                    "ВРИ_ЕГРН": "Нечто непонятное",
+                    "Топ1_возможный_ВРИ": None,
+                    "Топ5_возможных_ВРИ": None,
+                    "Причина": "Проверка по ПЗЗ отключена.",
+                },
+            },
+        ],
+    }
+
+
+def test_build_classify_summary_response(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from service.api import tasks as tasks_module
+
+    monkeypatch.setattr(
+        tasks_module, "_load_result_geojson", lambda *a, **k: _classify_geojson()
+    )
+    task = SimpleNamespace(status="finished", result_path="result.geojson")
+    app_settings = SimpleNamespace(outputs_dir="/tmp")
+
+    report = tasks_module.build_classify_summary_response(task, "ext-1", app_settings)
+
+    assert report["task_external_id"] == "ext-1"
+    assert report["summary"] == {"total": 2, "with_candidate": 1, "without_candidate": 1}
+    assert report["objects"][0]["matched_vri"] == "4.4 Магазины"
+    assert report["objects"][0]["fit"] == "matched"
+    assert report["objects"][1]["matched_vri"] is None
+    assert report["objects"][1]["fit"] == "unclear"
+    assert "Классифицировано объектов: 2." in report["chat_message"]
+    assert "С подобранным ВРИ: 1." in report["chat_message"]

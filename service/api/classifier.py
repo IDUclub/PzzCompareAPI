@@ -536,8 +536,17 @@ async def create_classify_only_stream_endpoint(
     )
 
 
-@router.post("/chat/stream")
-async def create_chat_stream_endpoint(
+# DEPRECATED alias: the endpoint was renamed /tasks/chat/stream ->
+# /tasks/pzz-check/chat/stream for symmetry with /tasks/classify-only/chat/stream.
+# The old path is kept temporarily so existing frontends keep working; remove it
+# once they migrate. Both decorators bind the same handler.
+@router.post(
+    "/chat/stream",
+    deprecated=True,
+    summary="[DEPRECATED] use POST /tasks/pzz-check/chat/stream",
+)
+@router.post("/pzz-check/chat/stream")
+async def create_pzz_check_chat_stream_endpoint(
     request: Request,
     cadastral_feature_collection_file: UploadFile = File(...),
     pzz_zones_feature_collection_file: UploadFile = File(...),
@@ -616,6 +625,84 @@ async def create_chat_stream_endpoint(
             chat_title=user_query[:256],
             model=model,
             temperature=temperature,
+            emit_input_files=True,
+        )
+    )
+
+
+@router.post("/classify-only/chat/stream")
+async def create_classify_only_chat_stream_endpoint(
+    request: Request,
+    cadastral_feature_collection_file: UploadFile = File(...),
+    vri_classifier_file: UploadFile | None = File(default=None),
+    user_query: str = Form(..., min_length=1),
+    cadastral_vri_col: str = Form(..., min_length=1),
+    chat_id: str | None = Form(default=None),
+    model: str | None = Form(default=None),
+    temperature: float | None = Form(default=None),
+    priority: int = Form(1, ge=1, le=10),
+    force_recompute: bool = Form(False),
+    poll_interval: float = Query(2.0, ge=0.5, le=10.0),
+    idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    token: str = Depends(verify_token),
+    app_settings: Settings = Depends(get_app_settings),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    event_repo: EventRepository = Depends(get_event_repo),
+    session: Session = Depends(get_db),
+) -> EventSourceResponse:
+    """Run a classify-only pass on uploaded files, then stream a conversational answer.
+
+    The classify-only counterpart of ``POST /tasks/pzz-check/chat/stream``: no PZZ zones
+    and no spatial overlay — the answer is grounded in the classifier-candidate
+    summary (top-1 / top-5 VRI per object) instead of the object-zone-fit
+    report. Uploads may be any supported geo format; they're stored as GeoJSON.
+
+    A Bearer token is REQUIRED — chat history is persisted to ChatStorage under
+    the token's user. ``chat_id`` is optional: when omitted a new chat is
+    created and announced via a ``chat_created`` SSE event.
+
+    SSE events: ``task``, ``task_event``, ``status``, ``classify_summary``,
+    ``chat_created``, ``token``, ``error``, ``done``. Use a fetch-based SSE
+    client (native EventSource cannot POST multipart or set Authorization).
+    """
+    task_out = await run_in_threadpool(
+        _create_pipeline_task,
+        cadastral_file=cadastral_feature_collection_file,
+        pzz_zones_file=None,
+        labels_file=None,
+        classifier_file=vri_classifier_file,
+        include_pzz_check=False,
+        cadastral_vri_col=cadastral_vri_col,
+        pzz_zone_code_col="",
+        pzz_zone_name_col="",
+        priority=priority,
+        retry_failed=False,
+        force_recompute=force_recompute,
+        idempotency_key=idempotency_key_header or idempotency_key_form,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+    )
+    session.commit()
+    return EventSourceResponse(
+        task_stream_with_chat_generator(
+            task_out.external_id,
+            group_by="object",
+            poll_interval=poll_interval,
+            request=request,
+            app_settings=app_settings,
+            initial=task_out.model_dump(mode="json"),
+            token=token,
+            user_query=user_query,
+            chat_id=chat_id,
+            scenario_id=None,
+            project_id=None,
+            chat_title=user_query[:256],
+            model=model,
+            temperature=temperature,
+            report_kind="classify",
             emit_input_files=True,
         )
     )

@@ -528,14 +528,21 @@ async def task_stream_with_chat_generator(
     model: str | None = None,
     temperature: float | None = None,
     include_report: bool = True,
+    report_kind: str = "object_zone_fit",
     emit_input_files: bool = False,
 ) -> AsyncIterator[ServerSentEvent]:
     """Stream a task to completion, then a grounded LLM answer over its report.
 
     Like ``task_stream_with_report_generator``, but on success it also builds
-    the object-zone-fit report into a grounding context and streams a
-    conversational answer (Ollama ``/api/chat``), persisting the user+assistant
-    turn to ChatStorage.
+    a report into a grounding context and streams a conversational answer
+    (Ollama ``/api/chat``), persisting the user+assistant turn to ChatStorage.
+
+    ``report_kind`` selects which report grounds the answer and which SSE event
+    carries it:
+      - ``"object_zone_fit"`` (default, PZZ-check): the per-zone fit report,
+        emitted as ``object_zone_fit``;
+      - ``"classify"`` (classify-only): the classifier-candidate summary,
+        emitted as ``classify_summary`` (no zones / spatial fit).
 
     The conversational part mirrors gMART's frontend contract: events carry a
     ``{"type", "content"}`` envelope in the SSE ``data`` field. Emitted, in order:
@@ -609,11 +616,18 @@ async def task_stream_with_chat_generator(
                 geo_layer = build_result_geo_layer(task, external_id, app_settings, request)
                 if include_report:
                     try:
-                        report = build_object_zone_fit_response(
-                            task, external_id, group_by, app_settings
-                        )
+                        if report_kind == "classify":
+                            report = build_classify_summary_response(
+                                task, external_id, app_settings
+                            )
+                            report_event = "classify_summary"
+                        else:
+                            report = build_object_zone_fit_response(
+                                task, external_id, group_by, app_settings
+                            )
+                            report_event = "object_zone_fit"
                         yield ServerSentEvent(
-                            data=json.dumps(report), event="object_zone_fit"
+                            data=json.dumps(report), event=report_event
                         )
                         classification_context = build_classification_context(
                             chat_message=report.get("chat_message"),
@@ -933,6 +947,8 @@ _COL_VERDICT = "Вердикт_ПЗЗ"
 _COL_REASON = "Причина"
 _COL_MATCHED_VRI_NAME = "Подобранный_ВРИ"
 _COL_MATCHED_VRI_CODE = "Код_подобранного_ВРИ"
+_COL_TOP1_CANDIDATE = "Топ1_возможный_ВРИ"
+_COL_TOP5_CANDIDATES = "Топ5_возможных_ВРИ"
 
 _ALLOWED_VERDICTS = {"allowed_main", "allowed_conditional", "allowed_auxiliary"}
 _UNCLEAR_VERDICTS = {
@@ -1152,4 +1168,103 @@ def build_object_zone_fit_response(
         "summary": summary,
         "chat_message": _build_chat_message_zones(zones_list, summary),
         "zones": zones_list,
+    }
+
+
+def _build_chat_message_classify(rows: list[dict[str, Any]], summary: dict[str, int]) -> str:
+    """Chatbot-friendly plain-text summary for a classify-only run.
+
+    Classify-only has no zones / spatial verdict — each object just gets a
+    ranked list of classifier VRI candidates. We surface the top candidate per
+    object and flag the ones where the classifier found nothing.
+    """
+    lines = [
+        f"Классифицировано объектов: {summary['total']}.",
+        "",
+        f"С подобранным ВРИ: {summary['with_candidate']}.",
+        f"Без однозначного кандидата: {summary['without_candidate']}.",
+    ]
+
+    sample = rows[:10]
+    if sample:
+        lines += ["", "Подобранные ВРИ:"]
+        for row in sample:
+            obj_label = row.get("vri_text") or "—"
+            matched = row.get("matched_vri") or "кандидат не найден"
+            lines.append(f"- #{row['feature_index']}: «{obj_label}» → {_truncate(matched, 200)}")
+        if len(rows) > 10:
+            lines.append(f"...и ещё {len(rows) - 10} объектов.")
+
+    return "\n".join(lines)
+
+
+@router.get("/tasks/{external_id}/classify-summary")
+def get_classify_summary_endpoint(
+    external_id: str,
+    task_repo: TaskRepository = Depends(get_task_repo),
+    app_settings: Settings = Depends(get_app_settings),
+) -> dict[str, Any]:
+    """Aggregate a finished classify-only task's per-object candidates.
+
+    The classify-only counterpart of ``/object-zone-fit``: reads the result
+    GeoJSON and returns, per feature, the original VRI text plus the top-1 and
+    top-5 classifier candidates. Returns 409 if the task isn't finished; 404 if
+    not found.
+    """
+    task = get_public_task_or_404(external_id, task_repo)
+    return build_classify_summary_response(task, external_id, app_settings)
+
+
+def build_classify_summary_response(
+    task: PipelineTask,
+    external_id: str,
+    app_settings: Settings,
+) -> dict[str, Any]:
+    """Build the classify-only candidate summary for an already-authorized task."""
+    if task.status != "finished":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task is not finished (status: {task.status})",
+        )
+    if not task.result_path:
+        raise HTTPException(status_code=404, detail="Task has no result")
+
+    try:
+        geojson = _load_result_geojson(task.result_path, app_settings.outputs_dir)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"Failed to load result GeoJSON: {exc}",
+        ) from exc
+
+    rows: list[dict[str, Any]] = []
+    for idx, feature in enumerate(geojson.get("features") or []):
+        props = feature.get("properties") or {}
+        top1 = props.get(_COL_TOP1_CANDIDATE)
+        top5 = props.get(_COL_TOP5_CANDIDATES)
+        matched_vri = top1.strip() if isinstance(top1, str) and top1.strip() else None
+        rows.append({
+            "feature_index": idx,
+            "vri_text": props.get(_COL_VRI_TEXT),
+            "matched_vri": matched_vri,
+            "candidates": top5 if isinstance(top5, str) and top5.strip() else None,
+            "reason": props.get(_COL_REASON),
+            # Reuse the object-zone-fit "fit" vocabulary so the shared grounding
+            # context builder can surface the no-candidate objects on big runs.
+            "fit": "matched" if matched_vri else "unclear",
+        })
+
+    summary = {
+        "total": len(rows),
+        "with_candidate": sum(1 for r in rows if r["fit"] == "matched"),
+        "without_candidate": sum(1 for r in rows if r["fit"] == "unclear"),
+    }
+    return {
+        "task_external_id": external_id,
+        "group_by": "object",
+        "summary": summary,
+        "chat_message": _build_chat_message_classify(rows, summary),
+        "objects": rows,
     }

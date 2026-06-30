@@ -101,7 +101,8 @@ docker compose -f docker-compose.yml up -d --build
 **Файловый флоу**
 - `POST /tasks/pzz-check` — полная проверка ПЗЗ (кадастр + зоны)
 - `POST /tasks/classify-only` — только классификация ВРИ по классификатору
-- `POST /tasks/chat/stream` — проверка + стрим разговорного ответа LLM (SSE, требует Bearer)
+- `POST /tasks/pzz-check/chat/stream` — проверка ПЗЗ + стрим разговорного ответа LLM (SSE, требует Bearer)
+- `POST /tasks/classify-only/chat/stream` — классификация ВРИ + стрим разговорного ответа LLM (SSE, требует Bearer)
 - `GET /tasks/{id}` · `GET /tasks_list` · `GET /tasks/{id}/result`
 - `GET /files/{slot}/{id}` — долговечная ссылка на геослой (`slot`: `result`/`cadastral`/`zones`; 307 → presigned MinIO)
 - `GET /tasks/{id}/object-zone-fit?group_by=zone|object` — структурированный отчёт + `chat_message`
@@ -117,9 +118,23 @@ GeoParquet — не-GeoJSON форматы конвертируются в GeoJS
 - `GET /scenarios/{id}/tasks/{external_id}` (+ `/result`, `/object-zone-fit`, `/events`)
 - `DELETE` / `POST .../recompute`
 
+**Админ: рантайм-конфиг** (заголовок `X-Admin-Token: <ADMIN_API_TOKEN>`; пусто → 503)
+- `GET /admin/config/settings` — текущие эффективные настройки (секреты замаскированы)
+- `GET /admin/config/overrides` — активные оверрайды
+- `GET /admin/config/{key}` — эффективное значение + статус оверрайда
+- `PUT /admin/config/{key}` `{value, updated_by?}` — задать оверрайд (валидируется; кред/boot-only/неизвестные ключи → 400)
+- `DELETE /admin/config/{key}` — снять оверрайд (вернуть деплой-значение)
+- `POST /admin/config/reload` — форс-ресинк оверрайдов в этом процессе
+
+  Оверрайды хранятся в таблице `config_override` (общая для всех контейнеров) и синкаются в
+  `os.environ` каждого процесса (TTL ~5с) + сбрасывают кэш `Settings` — меняются **без редеплоя**,
+  на всём флоте, включая subprocess пайплайна. Секреты (`ENV_SECRET`) и boot-only ключи менять
+  нельзя. `ADMIN_API_TOKEN` живёт в `ENV_SECRET`.
+
 Чат-ручки `*/chat/stream` дожидаются завершения классификации, затем стримят (в формате gMART:
-конверт `{type, content}`) `object_zone_fit` → `service_event/chat_created` (если не передан
-`chat_id`) → `chunk`* → `done`, и сохраняют диалог (user + assistant) в **ChatStorage**.
+конверт `{type, content}`) отчёт (`object_zone_fit` для pzz-check, `classify_summary` для
+classify-only) → `service_event/chat_created` (если не передан `chat_id`) → `chunk`* → `done`,
+и сохраняют диалог (user + assistant) в **ChatStorage**.
 Разговорный ответ генерирует Ollama `/api/chat` (`OLLAMA_BASE_URL`); модель — параметр запроса
 `model` (дефолт `CHAT_MODEL`/`GENERATE_MODEL`).
 
