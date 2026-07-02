@@ -102,6 +102,12 @@ class Settings(BaseSettings):
     fileserver_secret_key: str = Field(default="")
     fileserver_bucket_name: str = Field(default="")
     fileserver_secure: bool = Field(default=False)
+    # Public MinIO endpoint for presigned download links. Uploads and worker
+    # I/O keep using the internal ``fileserver_endpoint``; presigned GET URLs
+    # are signed against this host so the frontend can fetch chat-history files
+    # without the work VPN. Empty => presign against the internal endpoint.
+    fileserver_public_endpoint: str = Field(default="")
+    fileserver_public_secure: bool = Field(default=True)
 
     llm_backend: str = Field(...)
     ollama_base_url: str = Field(...)
@@ -188,6 +194,8 @@ def _build_settings_cached() -> Settings:
         fileserver_secret_key=config.get("FILESERVER_SECRET_KEY") or "",
         fileserver_bucket_name=config.get("FILESERVER_BUCKET_NAME") or "",
         fileserver_secure=(config.get("FILESERVER_SECURE") or "").lower() in {"1", "true", "yes", "on"},
+        fileserver_public_endpoint=_get_optional_env(config, "FILESERVER_PUBLIC_ENDPOINT"),
+        fileserver_public_secure=_get_optional_env(config, "FILESERVER_PUBLIC_SECURE", "true").lower() in {"1", "true", "yes", "on"},
         admin_api_token=_get_optional_env(config, "ADMIN_API_TOKEN"),
     )
 

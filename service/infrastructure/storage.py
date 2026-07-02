@@ -88,6 +88,8 @@ class MinioStorage(ObjectStorage):
         secret_key: str,
         bucket: str,
         secure: bool = False,
+        public_endpoint: str = "",
+        public_secure: bool = True,
     ) -> None:
         from minio import Minio
 
@@ -100,6 +102,19 @@ class MinioStorage(ObjectStorage):
             secret_key=secret_key,
             secure=secure,
         )
+        # Presigned URLs embed the host in the signature, so links built against
+        # the internal endpoint only work inside the work network (VPN). When a
+        # public MinIO endpoint is configured, presign against it instead: the
+        # frontend then downloads chat-history files without VPN, while uploads
+        # and worker I/O stay on the fast internal endpoint.
+        self._presign_client = self._client
+        if public_endpoint:
+            self._presign_client = Minio(
+                public_endpoint,
+                access_key=access_key,
+                secret_key=secret_key,
+                secure=public_secure,
+            )
         if not self._client.bucket_exists(bucket):
             self._client.make_bucket(bucket)
 
@@ -132,7 +147,7 @@ class MinioStorage(ObjectStorage):
 
         object_key = self._strip_scheme(stored_path)
         try:
-            return self._client.presigned_get_object(
+            return self._presign_client.presigned_get_object(
                 self._bucket, object_key, expires=timedelta(seconds=expires_seconds)
             )
         except Exception:  # noqa: BLE001 — presign failure shouldn't break the stream
@@ -162,5 +177,7 @@ def get_object_storage() -> ObjectStorage:
             secret_key=s.fileserver_secret_key,
             bucket=s.fileserver_bucket_name,
             secure=s.fileserver_secure,
+            public_endpoint=s.fileserver_public_endpoint,
+            public_secure=s.fileserver_public_secure,
         )
     return LocalStorage()
