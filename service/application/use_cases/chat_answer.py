@@ -17,7 +17,13 @@ Designed as an async generator of plain ``dict`` events so the SSE endpoint
   (only when the frontend did not supply ``chat_id``); the frontend should
   store it.
 - ``{"type": "token", "content"}`` — an assistant content delta.
-- ``{"type": "error", "stage", "detail"}`` — a non-fatal persistence/LLM error.
+- ``{"type": "warning", "stage", "detail", "message"}`` — a NON-fatal problem:
+  chat history couldn't be persisted/loaded (e.g. expired token). The answer is
+  still generated and streamed; it just won't be saved to history. Distinct from
+  ``error`` so the frontend can tell "your answer is fine, just not saved" apart
+  from a real service failure.
+- ``{"type": "error", "stage": "llm", "detail"}`` — a FATAL error: the answer
+  itself could not be generated.
 - ``{"type": "done", "chat_id", "assistant_message_id"}`` — terminal marker.
 
 The clients are injected (already opened) so the endpoint owns their
@@ -219,7 +225,13 @@ async def stream_chat_answer(
             history = build_llm_history(existing.get("messages") or [])
         except ChatStorageError as exc:
             logger.warning("chat_storage get_chat (history) failed: %s", exc)
-            yield {"type": "error", "stage": "load_history", "detail": str(exc)}
+            yield {
+                "type": "warning",
+                "stage": "load_history",
+                "detail": str(exc),
+                "message": "Не удалось загрузить историю чата — отвечаю без учёта "
+                "предыдущих сообщений.",
+            }
 
     # 1. Ensure a chat exists. Create one if the frontend didn't supply chat_id.
     if persist and not chat_id:
@@ -235,7 +247,13 @@ async def stream_chat_answer(
             yield {"type": "chat_created", "chat_id": chat_id, "title": created.get("title")}
         except ChatStorageError as exc:
             logger.warning("chat_storage create_chat failed: %s", exc)
-            yield {"type": "error", "stage": "create_chat", "detail": str(exc)}
+            yield {
+                "type": "warning",
+                "stage": "create_chat",
+                "detail": str(exc),
+                "message": "Ответ сформирован, но не сохранён в историю чата "
+                "(проверьте токен). Сохраните его при необходимости.",
+            }
             persist = False
 
     # 2. Persist the user turn before generating the answer.
@@ -250,7 +268,13 @@ async def stream_chat_answer(
             )
         except ChatStorageError as exc:
             logger.warning("chat_storage add user message failed: %s", exc)
-            yield {"type": "error", "stage": "add_user_message", "detail": str(exc)}
+            yield {
+                "type": "warning",
+                "stage": "add_user_message",
+                "detail": str(exc),
+                "message": "Ответ сформирован, но не сохранён в историю чата "
+                "(проверьте токен). Сохраните его при необходимости.",
+            }
 
     # 3. Stream the assistant answer from the dedicated chat LLM.
     messages = build_messages(system_prompt, classification_context, user_query, history)
@@ -289,7 +313,13 @@ async def stream_chat_answer(
             assistant_message_id = stored.get("message_id")
         except ChatStorageError as exc:
             logger.warning("chat_storage add assistant message failed: %s", exc)
-            yield {"type": "error", "stage": "add_assistant_message", "detail": str(exc)}
+            yield {
+                "type": "warning",
+                "stage": "add_assistant_message",
+                "detail": str(exc),
+                "message": "Ответ сформирован, но не сохранён в историю чата "
+                "(проверьте токен). Сохраните его при необходимости.",
+            }
 
     yield {
         "type": "done",

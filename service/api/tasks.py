@@ -490,6 +490,23 @@ def _chat_event_to_sse(event: dict[str, Any]) -> ServerSentEvent | None:
             ),
             event="chunk",
         )
+    if kind == "warning":
+        # Non-fatal: the answer streamed fine, but chat history couldn't be
+        # persisted/loaded. Distinct event so the frontend doesn't treat it as a
+        # service failure (it can show a soft notice instead).
+        return ServerSentEvent(
+            data=json.dumps(
+                {
+                    "type": "warning",
+                    "content": {
+                        "message": event.get("message") or event.get("detail"),
+                        "stage": event.get("stage"),
+                        "detail": event.get("detail"),
+                    },
+                }
+            ),
+            event="warning",
+        )
     if kind == "error":
         return ServerSentEvent(
             data=json.dumps(
@@ -508,6 +525,54 @@ def _final_answer_chunk_sse() -> ServerSentEvent:
     return ServerSentEvent(
         data=json.dumps({"type": "chunk", "content": {"text": "", "done": True}}),
         event="chunk",
+    )
+
+
+def narrative_chunk_sse(text: str) -> ServerSentEvent:
+    """A gMART ``chunk`` SSE carrying agent narrative text (not end-of-answer)."""
+    return ServerSentEvent(
+        data=json.dumps({"type": "chunk", "content": {"text": text, "done": False}}),
+        event="chunk",
+    )
+
+
+async def prepend_narrative_generator(
+    narrative: str,
+    inner: AsyncIterator[ServerSentEvent],
+) -> AsyncIterator[ServerSentEvent]:
+    """Emit a leading narrative chunk, then delegate to ``inner``.
+
+    Used by the auto-detect chat endpoint so the agent announces the detected
+    columns (\"поле X распознано как …\") before the task lifecycle starts.
+    """
+    if narrative:
+        yield narrative_chunk_sse(narrative)
+    async for event in inner:
+        yield event
+
+
+async def detection_failed_generator(
+    narrative: str,
+    detail: str,
+) -> AsyncIterator[ServerSentEvent]:
+    """Announce detection results + an error, without running a task.
+
+    Emitted when a required column could not be determined: the frontend shows
+    the narrative (which columns are missing) and the user can retry with the
+    columns specified.
+    """
+    if narrative:
+        yield narrative_chunk_sse(narrative)
+    yield ServerSentEvent(
+        data=json.dumps(
+            {"type": "error", "content": {"message": detail, "stage": "detect_columns"}}
+        ),
+        event="error",
+    )
+    yield _final_answer_chunk_sse()
+    yield ServerSentEvent(
+        data=json.dumps({"status": "detection_failed", "chat_id": None}),
+        event="done",
     )
 
 
@@ -555,7 +620,10 @@ async def task_stream_with_chat_generator(
         chat was created;
       - ``chunk`` — ``{text, done}`` assistant deltas; a final ``{text: "",
         done: true}`` marks the end of the answer;
-      - ``error`` — ``{message, stage}`` non-fatal LLM/persistence problems;
+      - ``warning`` — ``{message, stage, detail}`` NON-fatal: the answer streamed
+        fine but wasn't saved to chat history (e.g. expired token). The frontend
+        should show a soft notice, not treat it as a failure;
+      - ``error`` — ``{message, stage}`` FATAL: the answer couldn't be generated;
       - ``done`` — ``{status, chat_id}`` terminal marker; the stream closes.
     """
     yield ServerSentEvent(data=json.dumps(initial), event="task")
@@ -950,10 +1018,10 @@ _COL_MATCHED_VRI_CODE = "Код_подобранного_ВРИ"
 _COL_TOP1_CANDIDATE = "Топ1_возможный_ВРИ"
 _COL_TOP5_CANDIDATES = "Топ5_возможных_ВРИ"
 
-_ALLOWED_VERDICTS = {"allowed_main", "allowed_conditional", "allowed_auxiliary"}
-_UNCLEAR_VERDICTS = {
-    "unclear", "unknown", "classifier_only", "no_actual_zone", "no_zone_metadata", ""
-}
+# ``Вердикт_ПЗЗ`` now carries the human-readable Russian label (not the machine
+# ``allowed_main``). Bucket those labels into correct/wrong/unclear.
+_STATUS_CORRECT = {"Разрешен", "Условно разрешен", "Разрешен как вспомогательный"}
+_STATUS_WRONG = {"Не разрешен"}
 
 
 def _load_result_geojson(result_path: str, outputs_dir: str) -> dict[str, Any]:
@@ -973,12 +1041,12 @@ def _load_result_geojson(result_path: str, outputs_dir: str) -> dict[str, Any]:
         return json.load(fh)
 
 
-def _classify_verdict(verdict: str | None) -> str:
-    """Map raw verdict to one of: correct / wrong / unclear."""
-    v = (verdict or "").strip()
-    if v in _ALLOWED_VERDICTS:
+def _classify_verdict(status: str | None) -> str:
+    """Map the Russian ``Статус`` label to one of: correct / wrong / unclear."""
+    v = (status or "").strip()
+    if v in _STATUS_CORRECT:
         return "correct"
-    if v == "not_allowed":
+    if v in _STATUS_WRONG:
         return "wrong"
     return "unclear"
 

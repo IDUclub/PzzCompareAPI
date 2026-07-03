@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -22,7 +23,20 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from ..application.use_cases.create_task import create_task
-from ..dependencies import get_app_settings, get_db, get_event_repo, get_task_repo
+from ..application.use_cases.detect_columns import (
+    CADASTRAL_TARGETS,
+    PZZ_ZONE_TARGETS,
+    detect_columns_for_file,
+    render_detection_narrative,
+    required_columns_resolved,
+)
+from ..dependencies import (
+    build_ollama_chat_client,
+    get_app_settings,
+    get_db,
+    get_event_repo,
+    get_task_repo,
+)
 from ..domain.ports.event_repository import EventRepository
 from ..domain.ports.task_repository import TaskRepository
 from ..infrastructure.geo_ingest import (
@@ -36,7 +50,12 @@ from ..schemas import TaskCreate, TaskOut
 from ..settings import Settings
 from ..tasks import celery_app, enqueue_pipeline_task, execute_pipeline_task
 from .security import verify_token
-from .tasks import task_stream_with_chat_generator, task_stream_with_report_generator
+from .tasks import (
+    detection_failed_generator,
+    prepend_narrative_generator,
+    task_stream_with_chat_generator,
+    task_stream_with_report_generator,
+)
 from .utils import api_log
 
 router = APIRouter(prefix="/tasks", tags=["classifier"])
@@ -163,6 +182,60 @@ def _ingest_geo_upload(
         raw_path.unlink(missing_ok=True)
 
     return persist_geojson_dict(feature_collection, task_dir, filename, external_id, storage)
+
+
+def _upload_to_feature_collection(
+    upload: UploadFile,
+    task_dir: Path,
+    field_name: str,
+    max_bytes: int,
+) -> dict[str, Any]:
+    """Read an upload into a GeoJSON FeatureCollection dict for column detection.
+
+    Accepts the same formats as ``_ingest_geo_upload``. Always seeks the upload
+    back to the start afterwards so the task-creation path can re-stream the same
+    bytes (detection and ingestion each read the file once).
+    """
+    try:
+        if is_geojson_filename(upload.filename):
+            raw = upload.file.read(max_bytes + 1)
+            if len(raw) > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"{field_name} exceeds limit of {max_bytes} bytes",
+                )
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{field_name} must contain valid JSON/GeoJSON",
+                ) from exc
+            if not isinstance(data, dict):
+                raise HTTPException(
+                    status_code=400, detail=f"{field_name} must be a GeoJSON object"
+                )
+            return data
+
+        suffix = Path(upload.filename or "").suffix.lower()
+        if suffix not in supported_extensions():
+            raise HTTPException(
+                status_code=415,
+                detail=(
+                    f"{field_name}: unsupported format '{suffix}'. Supported: "
+                    + ", ".join(sorted(supported_extensions()))
+                ),
+            )
+        raw_path = task_dir / f"detect{suffix}"
+        _stream_upload_to_file(upload, raw_path, max_bytes, field_name)
+        try:
+            return geo_file_to_geojson_dict(raw_path)
+        except GeoIngestError as exc:
+            raise HTTPException(status_code=400, detail=f"{field_name}: {exc}") from exc
+        finally:
+            raw_path.unlink(missing_ok=True)
+    finally:
+        upload.file.seek(0)
 
 
 def persist_geojson_dict(
@@ -706,3 +779,152 @@ async def create_classify_only_chat_stream_endpoint(
             emit_input_files=True,
         )
     )
+
+
+def _default_auto_query(include_pzz_check: bool) -> str:
+    """Grounding query used when the auto endpoint gets no explicit user_query."""
+    if include_pzz_check:
+        return "Проверь загруженные участки на соответствие ПЗЗ и кратко опиши результат."
+    return "Классифицируй ВРИ загруженных участков и кратко опиши результат."
+
+
+@router.post("/auto/chat/stream")
+async def create_auto_chat_stream_endpoint(
+    request: Request,
+    cadastral_feature_collection_file: UploadFile = File(...),
+    pzz_zones_feature_collection_file: UploadFile | None = File(default=None),
+    pzz_zone_vri_labels_file: UploadFile | None = File(default=None),
+    vri_classifier_file: UploadFile | None = File(default=None),
+    mode: str = Form("pzz_check"),
+    user_query: str | None = Form(default=None),
+    chat_id: str | None = Form(default=None),
+    group_by: str = Form("zone"),
+    model: str | None = Form(default=None),
+    temperature: float | None = Form(default=None),
+    priority: int = Form(1, ge=1, le=10),
+    force_recompute: bool = Form(False),
+    poll_interval: float = Query(2.0, ge=0.5, le=10.0),
+    idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    token: str = Depends(verify_token),
+    app_settings: Settings = Depends(get_app_settings),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    event_repo: EventRepository = Depends(get_event_repo),
+    session: Session = Depends(get_db),
+) -> EventSourceResponse:
+    """Auto-detect the classifier's input columns, then run + stream the answer.
+
+    The "pick a mode, drop the files, magic happens" flow: instead of the caller
+    naming ``cadastral_vri_col`` / ``pzz_zone_code_col`` / ``pzz_zone_name_col``,
+    the columns are detected from the uploaded data (heuristic + LLM), announced
+    as a leading ``chunk`` ("поле X распознано как …"), and the full pipeline runs
+    automatically — grounding a conversational answer just like the other chat
+    endpoints.
+
+    ``mode``:
+      - ``pzz_check`` (default) — needs cadastral + PZZ zones; detects all three
+        columns; answer grounded in the object-zone-fit report;
+      - ``classify_only`` — needs only cadastral; detects the VRI column; answer
+        grounded in the classify summary.
+
+    When a required column can't be determined, no task is started: the narrative
+    (which columns are missing) plus an ``error`` and terminal ``done`` are
+    emitted so the user can retry with the columns specified.
+
+    A Bearer token is REQUIRED (chat history is persisted). Use a fetch-based SSE
+    client (native EventSource cannot POST multipart or set Authorization).
+    """
+    if mode not in ("pzz_check", "classify_only"):
+        raise HTTPException(status_code=422, detail="mode must be 'pzz_check' or 'classify_only'")
+    include_pzz_check = mode == "pzz_check"
+    if include_pzz_check and pzz_zones_feature_collection_file is None:
+        raise HTTPException(
+            status_code=422,
+            detail="pzz_zones_feature_collection_file is required for mode=pzz_check",
+        )
+    if group_by not in ("zone", "object"):
+        raise HTTPException(status_code=422, detail="group_by must be 'zone' or 'object'")
+
+    max_bytes = app_settings.max_upload_bytes
+    detect_dir = Path(app_settings.task_inputs_dir) / f"detect-{uuid4().hex}"
+    try:
+        cadastral_fc = await run_in_threadpool(
+            _upload_to_feature_collection,
+            cadastral_feature_collection_file,
+            detect_dir,
+            "cadastral_feature_collection_file",
+            max_bytes,
+        )
+        zones_fc: dict[str, Any] | None = None
+        if include_pzz_check:
+            zones_fc = await run_in_threadpool(
+                _upload_to_feature_collection,
+                pzz_zones_feature_collection_file,
+                detect_dir,
+                "pzz_zones_feature_collection_file",
+                max_bytes,
+            )
+    finally:
+        shutil.rmtree(detect_dir, ignore_errors=True)
+
+    targets = list(CADASTRAL_TARGETS) + (list(PZZ_ZONE_TARGETS) if include_pzz_check else [])
+    async with build_ollama_chat_client(app_settings) as ollama_client:
+        suggestions = await detect_columns_for_file(
+            ollama_client, cadastral_fc, CADASTRAL_TARGETS, model=model
+        )
+        if include_pzz_check and zones_fc is not None:
+            suggestions.update(
+                await detect_columns_for_file(
+                    ollama_client, zones_fc, PZZ_ZONE_TARGETS, model=model
+                )
+            )
+    narrative = render_detection_narrative(suggestions, targets)
+
+    if not required_columns_resolved(suggestions, targets):
+        return EventSourceResponse(
+            detection_failed_generator(
+                narrative, "не удалось определить обязательные колонки из загруженных данных"
+            )
+        )
+
+    task_out = await run_in_threadpool(
+        _create_pipeline_task,
+        cadastral_file=cadastral_feature_collection_file,
+        pzz_zones_file=pzz_zones_feature_collection_file if include_pzz_check else None,
+        labels_file=pzz_zone_vri_labels_file,
+        classifier_file=vri_classifier_file,
+        include_pzz_check=include_pzz_check,
+        cadastral_vri_col=suggestions["cadastral_vri_col"].value,
+        pzz_zone_code_col=(suggestions.get("pzz_zone_code_col").value if include_pzz_check else ""),
+        pzz_zone_name_col=(suggestions.get("pzz_zone_name_col").value if include_pzz_check else ""),
+        priority=priority,
+        retry_failed=False,
+        force_recompute=force_recompute,
+        idempotency_key=idempotency_key_header or idempotency_key_form,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+    )
+    session.commit()
+
+    effective_query = user_query or _default_auto_query(include_pzz_check)
+    inner = task_stream_with_chat_generator(
+        task_out.external_id,
+        group_by=group_by if include_pzz_check else "object",
+        poll_interval=poll_interval,
+        request=request,
+        app_settings=app_settings,
+        initial=task_out.model_dump(mode="json"),
+        token=token,
+        user_query=effective_query,
+        chat_id=chat_id,
+        scenario_id=None,
+        project_id=None,
+        chat_title=(user_query or narrative)[:256],
+        model=model,
+        temperature=temperature,
+        report_kind="object_zone_fit" if include_pzz_check else "classify",
+        emit_input_files=True,
+    )
+    return EventSourceResponse(prepend_narrative_generator(narrative, inner))

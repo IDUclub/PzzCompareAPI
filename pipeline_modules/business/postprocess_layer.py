@@ -183,7 +183,10 @@ def select_and_rename_result_columns(gdf: gpd.GeoDataFrame, cadastral_vri_col: s
     gpd.GeoDataFrame
         GeoDataFrame with selected and renamed columns.
     """
-    column_mapping: Dict[str, str] = {cadastral_vri_col: 'ВРИ_ЕГРН', 'PZZ_ACTUAL_CODE_x': 'Код фактической зоны нахождения кадастра', 'PZZ_ACTUAL_NAME_x': 'Название фактической зоны нахождения кадастра', 'CHECK_SCOPE': 'Область_проверки', 'PZZ_VRI_VERDICT': 'Вердикт_ПЗЗ', 'Статус': 'Статус', 'PZZ_REASON': 'Причина', 'MATCH_METHOD': 'Метод_сопоставления', 'MATCHED_VRI_NAME': 'Подобранный_ВРИ', 'MATCHED_VRI_CODE': 'Код_подобранного_ВРИ', 'ALLOWED_TOP_CANDIDATE_CODES': 'Код_возможного_подобранного_ВРИ', 'PZZ_NOT_ALLOWED_TOP1_CANDIDATE': 'Топ1_возможный_ВРИ', 'PZZ_NOT_ALLOWED_TOP5_CANDIDATES': 'Топ5_возможных_ВРИ'}
+    # ``Вердикт_ПЗЗ`` keeps its field name (so the frontend needs no change) but is
+    # now filled from the human-readable Russian ``Статус`` column, NOT the machine
+    # ``PZZ_VRI_VERDICT`` (allowed_main/…), which is intentionally not exposed.
+    column_mapping: Dict[str, str] = {cadastral_vri_col: 'ВРИ_ЕГРН', 'PZZ_ACTUAL_CODE_x': 'Код фактической зоны нахождения кадастра', 'PZZ_ACTUAL_NAME_x': 'Название фактической зоны нахождения кадастра', 'CHECK_SCOPE': 'Область_проверки', 'Статус': 'Вердикт_ПЗЗ', 'PZZ_REASON': 'Причина', 'MATCH_METHOD': 'Метод_сопоставления', 'MATCHED_VRI_NAME': 'Подобранный_ВРИ', 'MATCHED_VRI_CODE': 'Код_подобранного_ВРИ', 'ALLOWED_TOP_CANDIDATE_CODES': 'Код_возможного_подобранного_ВРИ', 'PZZ_NOT_ALLOWED_TOP1_CANDIDATE': 'Топ1_возможный_ВРИ', 'PZZ_NOT_ALLOWED_TOP5_CANDIDATES': 'Топ5_возможных_ВРИ'}
     existing_columns: List[str] = [column_name for column_name in column_mapping.keys() if column_name in gdf.columns]
     result_gdf = gdf[existing_columns + ['geometry']].copy()
     result_gdf = result_gdf.rename(columns={column_name: column_mapping[column_name] for column_name in existing_columns})

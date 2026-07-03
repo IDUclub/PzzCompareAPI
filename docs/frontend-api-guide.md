@@ -462,8 +462,11 @@ object-zone-fit. Параллельно история диалога сохра
 | `file` | `{ "name", "url", "download_url", "filename", "mime_type", "source_service" }` | ссылка на геослой-результат (см. ниже) |
 | `service_event` | `{ "event_type": "storage_event", "event": { "storage_event_type": "chat_created", "chat_id", "chat_title" } }` | только если `chat_id` не был передан — **сохраните `chat_id`** |
 | `chunk` | `{ "text": "...", "done": false }` | дельты ответа LLM; финальный `{ "text": "", "done": true }` — конец ответа |
-| `error` | `{ "message", "stage" }` | не фатально (сбой LLM/ChatStorage) — поток продолжается |
+| `warning` | `{ "message", "stage", "detail" }` | **НЕ фатально**: ответ сформирован и отдан, но **не сохранён в историю чата** (напр. истёк токен, `stage: "create_chat"`). Покажите мягкое уведомление (`message`), **не** трактуйте как ошибку сервиса. Ответ можно сохранить на своей стороне |
+| `error` | `{ "message", "stage" }` | **фатально**: ответ сгенерировать не удалось (`stage: "llm"`) |
 | `done` | `{ "status", "chat_id" }` | терминал, поток закрывается |
+
+**`warning` vs `error`:** `warning` = ваш запрос отработал, ответ есть, проблема только с сохранением в историю; `error` = ответа нет. Парсер ошибок должен реагировать только на `error`.
 
 Собирайте ответ ассистента, конкатенируя `content.text` из событий `chunk` (до `done: true`).
 Полный ответ бэкенд сам сохранит в ChatStorage как `role: "assistant"`, а `user_query` —

@@ -102,3 +102,38 @@ class OllamaChatClient:
                     yield delta
                 if chunk.get("done"):
                     break
+
+    async def complete_json(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        schema: dict[str, Any],
+        model: str | None = None,
+        temperature: float = 0.0,
+    ) -> dict[str, Any]:
+        """Non-streaming ``/api/chat`` with structured output (Ollama ``format``).
+
+        Sends ``stream: false`` and ``format=schema`` so the model must return
+        JSON conforming to ``schema`` (e.g. an ``enum`` of real column names, so
+        it cannot hallucinate a field). Parses ``message.content`` and returns it
+        as a dict. Raises ``OllamaChatError`` on a non-2xx status or when the
+        content is not valid JSON.
+        """
+        payload: dict[str, Any] = {
+            "model": model or self._default_model,
+            "stream": False,
+            "messages": messages,
+            "format": schema,
+            "options": {"temperature": temperature},
+        }
+        resp = await self._client.post("/api/chat", json=payload)
+        if resp.status_code >= 400:
+            raise OllamaChatError(resp.status_code, resp.text)
+        content = (resp.json().get("message") or {}).get("content") or ""
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise OllamaChatError(resp.status_code, content) from exc
+        if not isinstance(parsed, dict):
+            raise OllamaChatError(resp.status_code, content)
+        return parsed
