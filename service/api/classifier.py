@@ -47,6 +47,7 @@ from ..infrastructure.geo_ingest import (
 )
 from ..infrastructure.storage import get_object_storage
 from ..schemas import TaskCreate, TaskOut
+from ..output_version import PIPELINE_OUTPUT_VERSION
 from ..settings import Settings
 from ..tasks import celery_app, enqueue_pipeline_task, execute_pipeline_task
 from .security import verify_token
@@ -344,7 +345,9 @@ def _create_pipeline_task(
     namespaced_key: str | None = None
     if idempotency_key:
         mode_prefix = "pzz" if include_pzz_check else "clf"
-        namespaced_key = f"{mode_prefix}:{idempotency_key}"
+        # ``PIPELINE_OUTPUT_VERSION`` in the key auto-invalidates cache hits when
+        # the result format changes — a client's old key stops matching after a bump.
+        namespaced_key = f"{mode_prefix}:{PIPELINE_OUTPUT_VERSION}:{idempotency_key}"
 
     task = create_task(
         payload=payload,

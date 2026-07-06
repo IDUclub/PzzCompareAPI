@@ -34,6 +34,7 @@ class TaskOut(BaseModel):
     result_path: str | None
     error_text: str | None
     celery_task_id: str | None
+    output_version: str | None = None
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
