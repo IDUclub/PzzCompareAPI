@@ -535,6 +535,7 @@ def run_pipeline(
     output_gdf = select_and_rename_result_columns(
         classified_gdf,
         cadastral_vri_col=cadastral_vri_col,
+        include_pzz_check=include_pzz_check,
     )
 
     write_started = perf_counter()
