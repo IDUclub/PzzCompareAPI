@@ -459,7 +459,7 @@ object-zone-fit. Параллельно история диалога сохра
 | `task_event` | событие пайплайна | по мере выполнения |
 | `status` | `TaskOut` | при смене статуса |
 | `object_zone_fit` | отчёт (см. D2) | когда задача `finished` |
-| `file` | `{ "name", "url", "download_url", "filename", "mime_type", "source_service" }` | ссылка на геослой-результат (см. ниже) |
+| `file` | `{ "name", "title", "url", "download_url", "filename", "mime_type", "source_service" }` | ссылка на геослой-результат (см. ниже) |
 | `service_event` | `{ "event_type": "storage_event", "event": { "storage_event_type": "chat_created", "chat_id", "chat_title" } }` | только если `chat_id` не был передан — **сохраните `chat_id`** |
 | `chunk` | `{ "text": "...", "done": false }` | дельты ответа LLM; финальный `{ "text": "", "done": true }` — конец ответа |
 | `warning` | `{ "message", "stage", "detail" }` | **НЕ фатально**: ответ сформирован и отдан, но **не сохранён в историю чата** (напр. истёк токен, `stage: "create_chat"`). Покажите мягкое уведомление (`message`), **не** трактуйте как ошибку сервиса. Ответ можно сохранить на своей стороне |
@@ -479,15 +479,42 @@ object-zone-fit. Параллельно история диалога сохра
 
 ```json
 { "type": "file", "content": {
-  "name": "classified_result",          // или input_cadastral / input_zones
+  "name": "classified_result",          // машинный id слоя (стабильный ключ): classified_result | input_cadastral | input_zones
+  "title": "Результат проверки ПЗЗ",    // человекочитаемая подпись (RU) — её и показывать пользователю
   "role": "result",                      // "result" | "input"
   "url": "https://<api>/files/result/<external_id>",   // долговечная ссылка (не протухает)
   "download_url": "https://<minio>/...?X-Amz-Signature=...", // presigned для мгновенной выгрузки (может быть null)
-  "filename": "<external_id>.geojson",
+  "filename": "pzz_check_result.geojson",  // имя файла при скачивании (ASCII, англ.)
   "mime_type": "application/geo+json",
   "source_service": "PZZ Pipeline Service"
 } }
 ```
+
+**Какое поле показывать (кратко):**
+
+| Поле | Что это | Показывать в UI? |
+|------|---------|------------------|
+| `title` | Человекочитаемая подпись (RU), зависит от типа слоя и режима | **Да — основной лейбл** карточки/чипа слоя |
+| `filename` | Имя файла при скачивании (ASCII, англ.) | Использовать как `download`-атрибут; можно как вторичный текст |
+| `name` | Стабильный машинный id слоя | Ключ для дедупликации / переключения слоёв, **не для показа** |
+| `url` | Долговечная ссылка (`GET /files/{slot}/{id}`, редиректит на MinIO) | Постоянная ссылка в истории / шаринге |
+| `download_url` | Presigned MinIO (может быть `null`, временный) | Мгновенное скачивание; **не сохранять** |
+| `role` | `result` \| `input` | Различать итоговый и входные слои |
+
+**Значения `title` / `filename` по слою и режиму** (`name` — стабильный id, не зависит от режима):
+
+| Слой / режим | `name` | `title` | `filename` |
+|--------------|--------|---------|------------|
+| Результат, проверка ПЗЗ | `classified_result` | Результат проверки ПЗЗ | `pzz_check_result.geojson` |
+| Результат, только классификация | `classified_result` | Результат классификации ВРИ | `classification_result.geojson` |
+| Входной кадастр | `input_cadastral` | Исходные участки | `input_parcels.geojson` |
+| Входные зоны | `input_zones` | Зоны ПЗЗ | `pzz_zones.geojson` |
+
+> Раньше `filename` был опаковым хешем (`<external_id>.geojson`). Теперь он человекочитаемый и
+> зависит от режима; `title` — новое поле. Если раньше вы показывали в чипе `filename`, он сам
+> станет читаемым, но **лучший лейбл — `title`**. `name` не менялся, так что привязки по нему
+> (ключ слоя на карте) продолжают работать. Если где-то парсите имя из `Content-Disposition` —
+> учтите, что там теперь не хеш.
 
 Какие `file`-события приходят:
 - `role: "result"` — итоговый классифицированный слой (когда задача `finished`). Приходит во всех
@@ -505,8 +532,9 @@ object-zone-fit. Параллельно история диалога сохра
   presigned MinIO. Не протухает, авторизация не нужна, большой файл качается прямо из MinIO.
 
 В ChatStorage сохраняется только **result**-ссылка — как `kind: "file"` часть сообщения ассистента
-(`payload.url` = долговечный `url`). Входные слои в историю не пишутся (приходят только в стриме).
-`download_url` нигде не сохраняется (он временный).
+(`payload` = `{ url, name, title, filename, mime_type, source_service }`, где `url` — долговечный).
+Входные слои в историю не пишутся (приходят только в стриме). `download_url` нигде не сохраняется
+(он временный), поэтому при открытии истории качайте по `url`.
 
 **Пример (frontend):**
 ```js

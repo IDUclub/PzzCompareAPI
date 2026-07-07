@@ -809,7 +809,7 @@ def build_task_result_response(
         return FileResponse(
             path=str(cache_path),
             media_type="application/geo+json",
-            filename=f"{external_id}.geojson",
+            filename=_result_label(task.include_pzz_check)[1],
         )
 
     selected_path = Path(task.result_path)
@@ -827,7 +827,7 @@ def build_task_result_response(
     return FileResponse(
         path=str(resolved_path),
         media_type="application/geo+json",
-        filename=f"{external_id}.geojson",
+        filename=_result_label(task.include_pzz_check)[1],
     )
 
 
@@ -839,6 +839,30 @@ _FILE_SLOTS: dict[str, str] = {
     "cadastral": "cadastral_data_path",
     "zones": "pzz_zones_data_path",
 }
+
+# Human-readable label (``title``, RU — shown in chat/layer panel) + ASCII
+# download ``filename`` per slot. The layer ``name`` stays a stable machine id
+# (frontend layer key); ``title`` / ``filename`` are what the user sees and
+# saves — previously both were the opaque task hash (``<external_id>.geojson``).
+# Input slots map 1:1; the ``result`` slot depends on the run mode (PZZ check
+# vs classify-only), so it's resolved via ``_result_label`` instead.
+_SLOT_LABELS: dict[str, tuple[str, str]] = {
+    # slot -> (title, filename)
+    "cadastral": ("Исходные участки", "input_parcels.geojson"),
+    "zones": ("Зоны ПЗЗ", "pzz_zones.geojson"),
+}
+_RESULT_LABEL_PZZ = ("Результат проверки ПЗЗ", "pzz_check_result.geojson")
+_RESULT_LABEL_CLASSIFY = ("Результат классификации ВРИ", "classification_result.geojson")
+
+
+def _result_label(include_pzz_check: bool | None) -> tuple[str, str]:
+    """(title, download filename) for a result layer, by run mode.
+
+    ``None`` (an un-flushed in-memory task) maps to PZZ check to match the DB
+    column default (``include_pzz_check`` defaults to True).
+    """
+    is_pzz = True if include_pzz_check is None else bool(include_pzz_check)
+    return _RESULT_LABEL_PZZ if is_pzz else _RESULT_LABEL_CLASSIFY
 
 
 def _file_durable_url(
@@ -864,6 +888,8 @@ def _build_geo_layer(
     *,
     slot: str,
     name: str,
+    title: str,
+    filename: str,
     role: str,
     stored_path: str | None,
     external_id: str,
@@ -880,10 +906,11 @@ def _build_geo_layer(
         )
     return {
         "name": name,
+        "title": title,
         "role": role,
         "url": _file_durable_url(slot, external_id, app_settings, request),
         "download_url": download_url,
-        "filename": f"{external_id}_{slot}.geojson" if slot != "result" else f"{external_id}.geojson",
+        "filename": filename,
         "mime_type": "application/geo+json",
         "source_service": app_settings.app_name,
     }
@@ -902,9 +929,12 @@ def build_result_geo_layer(
     """
     if task.status != "finished":
         return None
+    title, filename = _result_label(task.include_pzz_check)
     return _build_geo_layer(
         slot="result",
         name="classified_result",
+        title=title,
+        filename=filename,
         role="result",
         stored_path=task.result_path,
         external_id=external_id,
@@ -931,9 +961,12 @@ def build_input_geo_layers(
     )
     layers: list[dict[str, Any]] = []
     for slot, column, name in specs:
+        title, filename = _SLOT_LABELS[slot]
         layer = _build_geo_layer(
             slot=slot,
             name=name,
+            title=title,
+            filename=filename,
             role="input",
             stored_path=getattr(task, column, None),
             external_id=external_id,
@@ -953,6 +986,8 @@ def geo_layer_to_file_part(layer: dict[str, Any]) -> dict[str, Any]:
     """
     return {
         "url": layer["url"],
+        "name": layer.get("name"),
+        "title": layer.get("title"),
         "filename": layer.get("filename"),
         "mime_type": layer.get("mime_type"),
         "source_service": layer.get("source_service"),
@@ -1004,7 +1039,7 @@ def get_task_file_redirect(
     return FileResponse(
         path=str(local_path),
         media_type="application/geo+json",
-        filename=f"{external_id}_{slot}.geojson",
+        filename=_SLOT_LABELS[slot][1],
     )
 
 
