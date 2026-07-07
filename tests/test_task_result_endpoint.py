@@ -99,7 +99,10 @@ def test_task_result_finished_ok(tmp_path: Path):
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/geo+json")
-    assert "filename=\"t-3.geojson\"" in response.headers.get("content-disposition", "")
+    # Human-readable download name (no longer the opaque task hash); PZZ-check
+    # run (include_pzz_check defaults to True).
+    content_disposition = response.headers.get("content-disposition", "")
+    assert 'filename="pzz_check_result.geojson"' in content_disposition
 
 
 def test_task_result_missing_file(tmp_path: Path):

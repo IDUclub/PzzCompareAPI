@@ -44,6 +44,23 @@ def test_error_maps_to_error_envelope() -> None:
     }
 
 
+def test_warning_maps_to_warning_envelope() -> None:
+    sse = _chat_event_to_sse(
+        {
+            "type": "warning",
+            "stage": "create_chat",
+            "detail": "chat_storage returned 401: Token expired",
+            "message": "Ответ сформирован, но не сохранён в историю чата.",
+        }
+    )
+    event, data = _payload(sse)
+    assert event == "warning"
+    assert data["type"] == "warning"
+    assert data["content"]["stage"] == "create_chat"
+    assert data["content"]["message"] == "Ответ сформирован, но не сохранён в историю чата."
+    assert "401" in data["content"]["detail"]
+
+
 def test_done_event_is_not_emitted_as_sse() -> None:
     assert _chat_event_to_sse({"type": "done", "chat_id": "c-1"}) is None
 

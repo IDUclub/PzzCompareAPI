@@ -26,6 +26,7 @@ class FakeTask:
     result_path: str | None = None
     error_text: str | None = None
     celery_task_id: str | None = None
+    output_version: str | None = None
 
 
 class Repo:
@@ -227,6 +228,19 @@ def test_waiting_capacity_task_is_reenqueued_on_force_recompute(tmp_path):
     assert rerun.id == task.id
     assert enqueue_count == 2
     assert repo.tasks[task.id].status == TaskStatus.queued
+
+
+def test_create_task_stamps_output_version(tmp_path):
+    """New tasks record the pipeline output version for observability."""
+    from service.output_version import PIPELINE_OUTPUT_VERSION
+
+    repo = Repo()
+    events = EventRepo()
+    task = create_task(
+        payload=_payload(), settings=_settings(tmp_path),
+        task_repo=repo, event_repo=events, enqueue_task=lambda _tid: Result(),
+    )
+    assert repo.tasks[task.id].output_version == PIPELINE_OUTPUT_VERSION
 
 
 def test_stuck_queued_task_old_celery_id_is_revoked_on_force_recompute(tmp_path):

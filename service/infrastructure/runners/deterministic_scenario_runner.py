@@ -41,6 +41,19 @@ _COL_MATCHED_VRI_CODE = "Код_подобранного_ВРИ"
 
 _FLOORS_FIELD = "Количество этажей"
 
+# Machine verdict -> human-readable Russian label (mirrors the pipeline's
+# ``status_to_russian_label``; duplicated here to keep the API/worker side free
+# of a ``pipeline_modules`` import).
+_VERDICT_RU = {
+    "allowed_main": "Разрешен",
+    "allowed_conditional": "Условно разрешен",
+    "allowed_auxiliary": "Разрешен как вспомогательный",
+    "not_allowed": "Не разрешен",
+    "unclear": "Требуется ручная проверка",
+    "no_actual_zone": "Нет пересечения с ПЗЗ",
+    "no_zone_metadata": "Нет описания зоны в шаблоне",
+}
+
 
 def _is_allowed(vri: str, allowed: set[str]) -> bool:
     """Exact or hierarchical membership (an umbrella code allows its children)."""
@@ -174,10 +187,10 @@ class DeterministicScenarioRunner(PipelineRunner):
 
         # --- classify + annotate features ---
         for i, feature in enumerate(feats):
-            props = feature.setdefault("properties", {})
-            po_type = (props.get("physical_object_type") or {}).get("physical_object_type_id")
-            nested = props.get("properties") if isinstance(props.get("properties"), dict) else {}
-            floors = nested.get(_FLOORS_FIELD, props.get(_FLOORS_FIELD))
+            old_props = feature.get("properties") or {}
+            po_type = (old_props.get("physical_object_type") or {}).get("physical_object_type_id")
+            nested = old_props.get("properties") if isinstance(old_props.get("properties"), dict) else {}
+            floors = nested.get(_FLOORS_FIELD, old_props.get(_FLOORS_FIELD))
             vri, vri_name = (None, None)
             if po_type is not None:
                 vri, vri_name = self._object_vri(int(po_type), floors)
@@ -185,13 +198,20 @@ class DeterministicScenarioRunner(PipelineRunner):
             fz = fz_by_obj.get(i)
             verdict, reason, mcode, _ = self._verdict(vri, fz)
 
-            props[_COL_VRI_TEXT] = props.get(vri_col)
-            props[_COL_ZONE_CODE] = str(fz) if fz is not None else ""
-            props[_COL_ZONE_NAME] = self._zone_nick.get(fz, "") if fz is not None else ""
-            props[_COL_VERDICT] = verdict
-            props[_COL_REASON] = reason
-            props[_COL_MATCHED_VRI_CODE] = mcode
-            props[_COL_MATCHED_VRI_NAME] = vri_name or ""
+            # Emit CLEAN properties: drop all urban_api passthrough fields
+            # (physical_object_*, nested properties, territories, …) — the
+            # frontend only needs the PZZ result columns. ``Вердикт_ПЗЗ`` keeps
+            # its field name but now holds the human-readable Russian label
+            # (not the machine ``allowed_main``), so the frontend needs no change.
+            feature["properties"] = {
+                _COL_VRI_TEXT: old_props.get(vri_col),
+                _COL_ZONE_CODE: str(fz) if fz is not None else "",
+                _COL_ZONE_NAME: self._zone_nick.get(fz, "") if fz is not None else "",
+                _COL_VERDICT: _VERDICT_RU.get(verdict, "Требуется ручная проверка"),
+                _COL_REASON: reason,
+                _COL_MATCHED_VRI_CODE: mcode,
+                _COL_MATCHED_VRI_NAME: vri_name or "",
+            }
 
         result = {"type": "FeatureCollection", "features": feats}
         out_path = output_dir / f"pzz_compare_spatial_first_{request.task_external_id}.geojson"

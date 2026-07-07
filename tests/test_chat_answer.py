@@ -127,6 +127,34 @@ def test_llm_error_emits_error_then_done() -> None:
     assert all(not (c[0] == "msg" and c[2] == "assistant") for c in cs.calls)
 
 
+def test_persistence_failure_emits_warning_not_error() -> None:
+    from service.infrastructure.chat_storage_client import ChatStorageError
+
+    class FailingChatStorage(FakeChatStorage):
+        async def create_chat(self, token, **kwargs):
+            raise ChatStorageError(401, "Token expired")
+
+    cs = FailingChatStorage()
+    events = _collect(
+        stream_chat_answer(
+            ollama_client=FakeOllama(("x", "y")),
+            chat_storage_client=cs,
+            token="tok",
+            system_prompt="SYS",
+            user_query="q",
+            chat_id=None,
+        )
+    )
+    # The answer still streams to completion.
+    assert "".join(e["content"] for e in events if e["type"] == "token") == "xy"
+    assert events[-1]["type"] == "done"
+    # Persistence failure is a WARNING, never an error (so the frontend doesn't
+    # treat "answer fine, just not saved" as a service failure).
+    warnings = [e for e in events if e["type"] == "warning"]
+    assert any(w["stage"] == "create_chat" and w.get("message") for w in warnings)
+    assert not any(e["type"] == "error" for e in events)
+
+
 def test_existing_chat_loads_history_into_messages() -> None:
     history_messages = [
         {"role": "user", "parts": [{"kind": "text", "payload": {"text": "Прошлый вопрос"}}]},
