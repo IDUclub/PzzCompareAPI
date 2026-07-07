@@ -39,6 +39,7 @@ from ..infrastructure.storage import get_object_storage
 from ..infrastructure.urban_api_client import UrbanApiClient, UrbanApiError
 from ..models import PipelineTask, TaskEvent, TaskStatus
 from ..schemas import TaskCreate, TaskEventOut, TaskOut
+from ..output_version import PIPELINE_OUTPUT_VERSION
 from ..settings import Settings
 from ..tasks import enqueue_pipeline_task, execute_pipeline_task
 from .classifier import persist_geojson_dict
@@ -321,6 +322,7 @@ async def _build_scenario_classification_task(
             f":type-{physical_object_type_id}"
             f":upd-{scenario_updated_at}"
             f":m-{mapping_version()}"
+            f":pv-{PIPELINE_OUTPUT_VERSION}"
         )
         raw_key = idempotency_key_header or idempotency_key_form
         namespaced_key = f"{auto_key}:{raw_key}" if raw_key else auto_key

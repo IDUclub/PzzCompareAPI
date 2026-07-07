@@ -15,12 +15,14 @@ def _task(
     result_path="outputs/abc/result.geojson",
     cadastral_data_path="minio://inputs/abc/cadastral_feature_collection.geojson",
     pzz_zones_data_path="minio://inputs/abc/pzz_zones_feature_collection.geojson",
+    include_pzz_check=True,
 ):
     return SimpleNamespace(
         status=status,
         result_path=result_path,
         cadastral_data_path=cadastral_data_path,
         pzz_zones_data_path=pzz_zones_data_path,
+        include_pzz_check=include_pzz_check,
     )
 
 
@@ -30,8 +32,18 @@ def test_layer_descriptor_local_result_relative_url() -> None:
     assert layer is not None
     assert layer["url"] == "/files/result/abc123"
     assert layer["download_url"] is None  # local storage can't presign
-    assert layer["filename"] == "abc123.geojson"
+    # Human-readable RU label + ASCII English filename (not the opaque task hash).
+    assert layer["title"] == "Результат проверки ПЗЗ"
+    assert layer["filename"] == "pzz_check_result.geojson"
     assert layer["mime_type"] == "application/geo+json"
+
+
+def test_result_layer_labels_classify_run() -> None:
+    # Same ``result`` slot, but a classify-only run is labelled distinctly.
+    layer = build_result_geo_layer(_task(include_pzz_check=False), "abc123", get_settings())
+    assert layer is not None
+    assert layer["title"] == "Результат классификации ВРИ"
+    assert layer["filename"] == "classification_result.geojson"
 
 
 def test_layer_descriptor_none_when_no_result() -> None:
@@ -46,6 +58,9 @@ def test_file_part_keeps_only_durable_url() -> None:
     assert part["url"] == "/files/result/abc123"
     # The ephemeral presigned download_url must never be persisted to history.
     assert "download_url" not in part
+    # Human-readable label rides along so the frontend can show it in history.
+    assert part["title"] == "Результат проверки ПЗЗ"
+    assert part["filename"] == "pzz_check_result.geojson"
     assert part["mime_type"] == "application/geo+json"
 
 
@@ -55,7 +70,11 @@ def test_input_layers_for_uploaded_files() -> None:
     by_name = {layer["name"]: layer for layer in layers}
     assert set(by_name) == {"input_cadastral", "input_zones"}
     assert by_name["input_cadastral"]["url"] == "/files/cadastral/abc123"
+    assert by_name["input_cadastral"]["title"] == "Исходные участки"
+    assert by_name["input_cadastral"]["filename"] == "input_parcels.geojson"
     assert by_name["input_zones"]["url"] == "/files/zones/abc123"
+    assert by_name["input_zones"]["title"] == "Зоны ПЗЗ"
+    assert by_name["input_zones"]["filename"] == "pzz_zones.geojson"
     assert all(layer["role"] == "input" for layer in layers)
 
 

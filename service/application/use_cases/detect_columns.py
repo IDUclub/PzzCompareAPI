@@ -1,0 +1,380 @@
+"""LLM-assisted detection of the classifier's input columns.
+
+The pipeline needs three column names to run against an uploaded layer:
+
+- ``cadastral_vri_col``  — the parcel's VRI (permitted-use) text (cadastral layer);
+- ``pzz_zone_code_col``  — the PZZ zone index/code (zones layer);
+- ``pzz_zone_name_col``  — the PZZ zone name (zones layer).
+
+Historically the frontend passed these explicitly. This module detects them from
+the uploaded data so the chat agent can say "I recognised field X as the VRI
+name" and proceed, letting the user correct it in a follow-up (phase 2).
+
+Two-pass strategy per target:
+
+1. a cheap heuristic — an EXACT (normalised) match of a column name against the
+   target's known names — resolves the standard schemas without an LLM call;
+2. for everything else, a single ``complete_json`` call with a JSON-schema whose
+   ``enum`` is the layer's real column names, so the model physically cannot
+   return a non-existent field.
+
+Fuzzy name matching was deliberately dropped: layers commonly carry a numeric
+"code companion" column named ``Код_<known>`` (e.g. ``Код_Индекс_зоны`` next to
+``Индекс_зоны``). When the real column is named non-standardly, a fuzzy matcher
+latches onto that companion and confidently picks the wrong (numeric) column —
+and, worse, preempts the LLM. So non-standard names defer to the LLM, which is
+the whole point of the feature.
+
+``confidence`` is derived from the source (heuristic-exact 1.0 / llm 0.6 / none
+0.0), not from the model — LLM self-reported confidence is unreliable.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from typing import Any
+
+from ...infrastructure.ollama_chat_client import OllamaChatClient, OllamaChatError
+
+logger = logging.getLogger("service.detect_columns")
+
+_HEURISTIC_EXACT = 1.0
+_LLM = 0.6
+_NONE = 0.0
+
+
+@dataclass(frozen=True)
+class ColumnProfile:
+    """A compact profile of one layer column (no geometry, no full values)."""
+
+    name: str
+    dtype: str  # "str" | "int" | "float" | "bool" | "mixed" | "null"
+    n_unique: int
+    samples: list[str]
+
+
+@dataclass(frozen=True)
+class ColumnSuggestion:
+    """A detected column for one target, with provenance for the narrative/UI."""
+
+    value: str | None
+    confidence: float
+    source: str  # "heuristic" | "llm" | "none"
+    reason: str
+    candidates: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DetectionTarget:
+    """A column role to detect, with heuristic hints and human-facing text."""
+
+    key: str
+    title_ru: str
+    description_ru: str
+    known_names: tuple[str, ...]
+
+
+VRI_TARGET = DetectionTarget(
+    key="cadastral_vri_col",
+    title_ru="название ВРИ участка",
+    description_ru=(
+        "Текстовое название вида разрешённого использования (ВРИ) земельного "
+        "участка — обычно длинные формулировки, напр. «Для индивидуального "
+        "жилищного строительства», «Многоэтажная жилая застройка»."
+    ),
+    known_names=(
+        "Вид_разрешенного_исп",
+        "вид разрешенного использования",
+        "vri_name",
+        "vri",
+        "ври",
+    ),
+)
+ZONE_CODE_TARGET = DetectionTarget(
+    key="pzz_zone_code_col",
+    title_ru="код (индекс) зоны ПЗЗ",
+    description_ru=(
+        "Короткий индекс/шифр территориальной зоны ПЗЗ — напр. «Ж-1», «О-2», "
+        "«П-3». Это НЕ длинное текстовое наименование зоны."
+    ),
+    known_names=("Индекс_зоны", "индекс зоны", "zone_code", "index", "индекс"),
+)
+ZONE_NAME_TARGET = DetectionTarget(
+    key="pzz_zone_name_col",
+    title_ru="название зоны ПЗЗ",
+    description_ru=(
+        "Человекочитаемое НАИМЕНОВАНИЕ территориальной зоны — длинный текст, "
+        "напр. «Производственная зона», «Зона застройки малоэтажными жилыми "
+        "домами». Это НЕ короткий индекс/шифр вида «Ж-1», «П-2» и НЕ числовой код."
+    ),
+    known_names=("Код_объекта", "zone_name", "name", "наименование"),
+)
+
+CADASTRAL_TARGETS: list[DetectionTarget] = [VRI_TARGET]
+PZZ_ZONE_TARGETS: list[DetectionTarget] = [ZONE_CODE_TARGET, ZONE_NAME_TARGET]
+
+
+def _normalise(name: str) -> str:
+    """Lowercase and strip separators so ``VRI_name`` ~= ``vri name``."""
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+def _dtype_of(values: list[Any]) -> str:
+    types = {type(v) for v in values if v is not None}
+    if not types:
+        return "null"
+    if types == {bool}:
+        return "bool"
+    if types <= {int, bool}:
+        return "int"
+    if types <= {int, float, bool}:
+        return "float"
+    if types == {str}:
+        return "str"
+    return "mixed"
+
+
+def profile_columns(
+    feature_collection: dict[str, Any],
+    *,
+    max_sample_values: int = 5,
+    max_value_chars: int = 80,
+    scan_features: int = 50,
+) -> list[ColumnProfile]:
+    """Profile a GeoJSON layer's columns from the ``properties`` of its features.
+
+    Geometry lives outside ``properties`` in GeoJSON, so it is excluded for
+    free. Scans up to ``scan_features`` features and keeps, per column, up to
+    ``max_sample_values`` distinct non-null example values (each truncated to
+    ``max_value_chars``).
+    """
+    features = feature_collection.get("features") or []
+    ordered_names: list[str] = []
+    seen_names: set[str] = set()
+    values_by_col: dict[str, list[Any]] = {}
+    samples_by_col: dict[str, list[str]] = {}
+    seen_samples: dict[str, set[str]] = {}
+
+    for feature in features[:scan_features]:
+        props = (feature or {}).get("properties") or {}
+        for name, value in props.items():
+            if name not in seen_names:
+                seen_names.add(name)
+                ordered_names.append(name)
+                values_by_col[name] = []
+                samples_by_col[name] = []
+                seen_samples[name] = set()
+            values_by_col[name].append(value)
+            if value is None or value == "":
+                continue
+            text = str(value)
+            if len(text) > max_value_chars:
+                text = text[:max_value_chars] + "…"
+            if text not in seen_samples[name] and len(samples_by_col[name]) < max_sample_values:
+                seen_samples[name].add(text)
+                samples_by_col[name].append(text)
+
+    profiles: list[ColumnProfile] = []
+    for name in ordered_names:
+        non_null = [v for v in values_by_col[name] if v is not None and v != ""]
+        profiles.append(
+            ColumnProfile(
+                name=name,
+                dtype=_dtype_of(values_by_col[name]),
+                n_unique=len({str(v) for v in non_null}),
+                samples=samples_by_col[name],
+            )
+        )
+    return profiles
+
+
+def _heuristic_match(
+    target: DetectionTarget, profiles: list[ColumnProfile]
+) -> ColumnSuggestion | None:
+    """Resolve a target by an EXACT (normalised) column-name match, else None.
+
+    Only exact hits are trusted; anything else defers to the LLM (see the module
+    docstring on why fuzzy matching is unsafe here).
+    """
+    names = [p.name for p in profiles]
+    known_norm = {_normalise(k) for k in target.known_names}
+    for name in names:
+        if _normalise(name) in known_norm:
+            return ColumnSuggestion(
+                value=name,
+                confidence=_HEURISTIC_EXACT,
+                source="heuristic",
+                reason=f"имя колонки «{name}» совпадает с известным для роли",
+                candidates=names,
+            )
+    return None
+
+
+def _build_detection_messages(
+    targets: list[DetectionTarget], profiles: list[ColumnProfile]
+) -> list[dict[str, str]]:
+    system = (
+        "Ты — помощник по геоданным для проверки ПЗЗ (правила землепользования "
+        "и застройки). Тебе дают колонки одного слоя (имя, тип, число уникальных "
+        "значений, примеры) и роли, которые нужно сопоставить с колонками.\n"
+        "Правила:\n"
+        "- Для каждой роли выбери РОВНО ОДНУ колонку ИЗ ПРЕДЛОЖЕННОГО СПИСКА имён.\n"
+        "- Если подходящей колонки нет — верни null. Никогда не придумывай имена.\n"
+        "- Ориентируйся и на имя колонки, и на примеры значений.\n"
+        "- Верни строго JSON по заданной схеме, без пояснений вне JSON."
+    )
+    roles_lines = "\n".join(f"- {t.key}: {t.description_ru}" for t in targets)
+    columns_json = _profiles_as_json(profiles)
+    user = (
+        "Роли, которые нужно определить:\n"
+        f"{roles_lines}\n\n"
+        "Колонки слоя (JSON):\n"
+        f"{columns_json}"
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def _profiles_as_json(profiles: list[ColumnProfile]) -> str:
+    import json
+
+    return json.dumps(
+        [
+            {
+                "name": p.name,
+                "dtype": p.dtype,
+                "n_unique": p.n_unique,
+                "samples": p.samples,
+            }
+            for p in profiles
+        ],
+        ensure_ascii=False,
+    )
+
+
+def _detection_schema(
+    targets: list[DetectionTarget], column_names: list[str]
+) -> dict[str, Any]:
+    """JSON schema whose per-target ``column`` enum is the real column names."""
+    enum_values: list[Any] = [*column_names, None]
+    properties = {
+        t.key: {
+            "type": "object",
+            "properties": {
+                "column": {"type": ["string", "null"], "enum": enum_values},
+                "reason": {"type": "string"},
+            },
+            "required": ["column", "reason"],
+        }
+        for t in targets
+    }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": [t.key for t in targets],
+    }
+
+
+async def detect_columns_for_file(
+    ollama_client: OllamaChatClient,
+    feature_collection: dict[str, Any],
+    targets: list[DetectionTarget],
+    *,
+    model: str | None = None,
+    max_sample_values: int = 5,
+) -> dict[str, ColumnSuggestion]:
+    """Detect each target's column: heuristic first, then one LLM call for the rest."""
+    profiles = profile_columns(feature_collection, max_sample_values=max_sample_values)
+    names = [p.name for p in profiles]
+    suggestions: dict[str, ColumnSuggestion] = {}
+
+    unresolved: list[DetectionTarget] = []
+    for target in targets:
+        hit = _heuristic_match(target, profiles)
+        if hit is not None:
+            suggestions[target.key] = hit
+        else:
+            unresolved.append(target)
+
+    if not unresolved or not names:
+        for target in unresolved:
+            suggestions[target.key] = ColumnSuggestion(
+                value=None,
+                confidence=_NONE,
+                source="none",
+                reason="подходящая колонка не найдена",
+                candidates=names,
+            )
+        return suggestions
+
+    messages = _build_detection_messages(unresolved, profiles)
+    schema = _detection_schema(unresolved, names)
+    try:
+        result = await ollama_client.complete_json(messages, schema=schema, model=model)
+    except OllamaChatError as exc:
+        logger.warning("column-detection LLM call failed: %s", exc)
+        result = {}
+
+    name_set = set(names)
+    for target in unresolved:
+        block = result.get(target.key) if isinstance(result, dict) else None
+        column = (block or {}).get("column") if isinstance(block, dict) else None
+        reason = (block or {}).get("reason") if isinstance(block, dict) else None
+        if isinstance(column, str) and column in name_set:
+            suggestions[target.key] = ColumnSuggestion(
+                value=column,
+                confidence=_LLM,
+                source="llm",
+                reason=(reason if isinstance(reason, str) and reason else "определено моделью"),
+                candidates=names,
+            )
+        else:
+            suggestions[target.key] = ColumnSuggestion(
+                value=None,
+                confidence=_NONE,
+                source="none",
+                reason="модель не смогла определить подходящую колонку",
+                candidates=names,
+            )
+    return suggestions
+
+
+def render_detection_narrative(
+    suggestions: dict[str, ColumnSuggestion],
+    targets: list[DetectionTarget],
+) -> str:
+    """Build the RU chat message announcing the detected columns."""
+    title_by_key = {t.key: t.title_ru for t in targets}
+    resolved: list[str] = []
+    missing: list[str] = []
+    for key, title in title_by_key.items():
+        suggestion = suggestions.get(key)
+        if suggestion is not None and suggestion.value:
+            resolved.append(f"• поле «{suggestion.value}» распознано как {title}")
+        else:
+            missing.append(title)
+
+    lines: list[str] = []
+    if resolved:
+        lines.append("Распознаны колонки:")
+        lines.extend(resolved)
+    if missing:
+        lines.append(
+            "Не удалось определить: "
+            + ", ".join(missing)
+            + ". Уточните нужные поля, и я пересчитаю."
+        )
+    return "\n".join(lines)
+
+
+def required_columns_resolved(
+    suggestions: dict[str, ColumnSuggestion],
+    targets: list[DetectionTarget],
+) -> bool:
+    """True when every target has a concrete column value."""
+    return all(
+        (suggestions.get(t.key) is not None and bool(suggestions[t.key].value))
+        for t in targets
+    )

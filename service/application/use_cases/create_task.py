@@ -11,6 +11,7 @@ from service.domain.ports.event_repository import EventRepository
 from service.domain.ports.task_repository import TaskRepository
 from service.domain.task_state import TaskStatus
 from service.models import PipelineTask
+from service.output_version import PIPELINE_OUTPUT_VERSION
 from service.schemas import TaskCreate
 from service.settings import Settings
 
@@ -163,6 +164,7 @@ def create_task(
         pzz_zone_name_col=payload.pzz_zone_name_col,
         priority=payload.priority,
         status=TaskStatus.queued,
+        output_version=PIPELINE_OUTPUT_VERSION,
     )
 
     if idempotency_key:

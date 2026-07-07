@@ -490,6 +490,23 @@ def _chat_event_to_sse(event: dict[str, Any]) -> ServerSentEvent | None:
             ),
             event="chunk",
         )
+    if kind == "warning":
+        # Non-fatal: the answer streamed fine, but chat history couldn't be
+        # persisted/loaded. Distinct event so the frontend doesn't treat it as a
+        # service failure (it can show a soft notice instead).
+        return ServerSentEvent(
+            data=json.dumps(
+                {
+                    "type": "warning",
+                    "content": {
+                        "message": event.get("message") or event.get("detail"),
+                        "stage": event.get("stage"),
+                        "detail": event.get("detail"),
+                    },
+                }
+            ),
+            event="warning",
+        )
     if kind == "error":
         return ServerSentEvent(
             data=json.dumps(
@@ -508,6 +525,54 @@ def _final_answer_chunk_sse() -> ServerSentEvent:
     return ServerSentEvent(
         data=json.dumps({"type": "chunk", "content": {"text": "", "done": True}}),
         event="chunk",
+    )
+
+
+def narrative_chunk_sse(text: str) -> ServerSentEvent:
+    """A gMART ``chunk`` SSE carrying agent narrative text (not end-of-answer)."""
+    return ServerSentEvent(
+        data=json.dumps({"type": "chunk", "content": {"text": text, "done": False}}),
+        event="chunk",
+    )
+
+
+async def prepend_narrative_generator(
+    narrative: str,
+    inner: AsyncIterator[ServerSentEvent],
+) -> AsyncIterator[ServerSentEvent]:
+    """Emit a leading narrative chunk, then delegate to ``inner``.
+
+    Used by the auto-detect chat endpoint so the agent announces the detected
+    columns (\"поле X распознано как …\") before the task lifecycle starts.
+    """
+    if narrative:
+        yield narrative_chunk_sse(narrative)
+    async for event in inner:
+        yield event
+
+
+async def detection_failed_generator(
+    narrative: str,
+    detail: str,
+) -> AsyncIterator[ServerSentEvent]:
+    """Announce detection results + an error, without running a task.
+
+    Emitted when a required column could not be determined: the frontend shows
+    the narrative (which columns are missing) and the user can retry with the
+    columns specified.
+    """
+    if narrative:
+        yield narrative_chunk_sse(narrative)
+    yield ServerSentEvent(
+        data=json.dumps(
+            {"type": "error", "content": {"message": detail, "stage": "detect_columns"}}
+        ),
+        event="error",
+    )
+    yield _final_answer_chunk_sse()
+    yield ServerSentEvent(
+        data=json.dumps({"status": "detection_failed", "chat_id": None}),
+        event="done",
     )
 
 
@@ -555,7 +620,10 @@ async def task_stream_with_chat_generator(
         chat was created;
       - ``chunk`` — ``{text, done}`` assistant deltas; a final ``{text: "",
         done: true}`` marks the end of the answer;
-      - ``error`` — ``{message, stage}`` non-fatal LLM/persistence problems;
+      - ``warning`` — ``{message, stage, detail}`` NON-fatal: the answer streamed
+        fine but wasn't saved to chat history (e.g. expired token). The frontend
+        should show a soft notice, not treat it as a failure;
+      - ``error`` — ``{message, stage}`` FATAL: the answer couldn't be generated;
       - ``done`` — ``{status, chat_id}`` terminal marker; the stream closes.
     """
     yield ServerSentEvent(data=json.dumps(initial), event="task")
@@ -741,7 +809,7 @@ def build_task_result_response(
         return FileResponse(
             path=str(cache_path),
             media_type="application/geo+json",
-            filename=f"{external_id}.geojson",
+            filename=_result_label(task.include_pzz_check)[1],
         )
 
     selected_path = Path(task.result_path)
@@ -759,7 +827,7 @@ def build_task_result_response(
     return FileResponse(
         path=str(resolved_path),
         media_type="application/geo+json",
-        filename=f"{external_id}.geojson",
+        filename=_result_label(task.include_pzz_check)[1],
     )
 
 
@@ -771,6 +839,30 @@ _FILE_SLOTS: dict[str, str] = {
     "cadastral": "cadastral_data_path",
     "zones": "pzz_zones_data_path",
 }
+
+# Human-readable label (``title``, RU — shown in chat/layer panel) + ASCII
+# download ``filename`` per slot. The layer ``name`` stays a stable machine id
+# (frontend layer key); ``title`` / ``filename`` are what the user sees and
+# saves — previously both were the opaque task hash (``<external_id>.geojson``).
+# Input slots map 1:1; the ``result`` slot depends on the run mode (PZZ check
+# vs classify-only), so it's resolved via ``_result_label`` instead.
+_SLOT_LABELS: dict[str, tuple[str, str]] = {
+    # slot -> (title, filename)
+    "cadastral": ("Исходные участки", "input_parcels.geojson"),
+    "zones": ("Зоны ПЗЗ", "pzz_zones.geojson"),
+}
+_RESULT_LABEL_PZZ = ("Результат проверки ПЗЗ", "pzz_check_result.geojson")
+_RESULT_LABEL_CLASSIFY = ("Результат классификации ВРИ", "classification_result.geojson")
+
+
+def _result_label(include_pzz_check: bool | None) -> tuple[str, str]:
+    """(title, download filename) for a result layer, by run mode.
+
+    ``None`` (an un-flushed in-memory task) maps to PZZ check to match the DB
+    column default (``include_pzz_check`` defaults to True).
+    """
+    is_pzz = True if include_pzz_check is None else bool(include_pzz_check)
+    return _RESULT_LABEL_PZZ if is_pzz else _RESULT_LABEL_CLASSIFY
 
 
 def _file_durable_url(
@@ -796,6 +888,8 @@ def _build_geo_layer(
     *,
     slot: str,
     name: str,
+    title: str,
+    filename: str,
     role: str,
     stored_path: str | None,
     external_id: str,
@@ -812,10 +906,11 @@ def _build_geo_layer(
         )
     return {
         "name": name,
+        "title": title,
         "role": role,
         "url": _file_durable_url(slot, external_id, app_settings, request),
         "download_url": download_url,
-        "filename": f"{external_id}_{slot}.geojson" if slot != "result" else f"{external_id}.geojson",
+        "filename": filename,
         "mime_type": "application/geo+json",
         "source_service": app_settings.app_name,
     }
@@ -834,9 +929,12 @@ def build_result_geo_layer(
     """
     if task.status != "finished":
         return None
+    title, filename = _result_label(task.include_pzz_check)
     return _build_geo_layer(
         slot="result",
         name="classified_result",
+        title=title,
+        filename=filename,
         role="result",
         stored_path=task.result_path,
         external_id=external_id,
@@ -863,9 +961,12 @@ def build_input_geo_layers(
     )
     layers: list[dict[str, Any]] = []
     for slot, column, name in specs:
+        title, filename = _SLOT_LABELS[slot]
         layer = _build_geo_layer(
             slot=slot,
             name=name,
+            title=title,
+            filename=filename,
             role="input",
             stored_path=getattr(task, column, None),
             external_id=external_id,
@@ -885,6 +986,8 @@ def geo_layer_to_file_part(layer: dict[str, Any]) -> dict[str, Any]:
     """
     return {
         "url": layer["url"],
+        "name": layer.get("name"),
+        "title": layer.get("title"),
         "filename": layer.get("filename"),
         "mime_type": layer.get("mime_type"),
         "source_service": layer.get("source_service"),
@@ -936,7 +1039,7 @@ def get_task_file_redirect(
     return FileResponse(
         path=str(local_path),
         media_type="application/geo+json",
-        filename=f"{external_id}_{slot}.geojson",
+        filename=_SLOT_LABELS[slot][1],
     )
 
 
@@ -950,10 +1053,10 @@ _COL_MATCHED_VRI_CODE = "Код_подобранного_ВРИ"
 _COL_TOP1_CANDIDATE = "Топ1_возможный_ВРИ"
 _COL_TOP5_CANDIDATES = "Топ5_возможных_ВРИ"
 
-_ALLOWED_VERDICTS = {"allowed_main", "allowed_conditional", "allowed_auxiliary"}
-_UNCLEAR_VERDICTS = {
-    "unclear", "unknown", "classifier_only", "no_actual_zone", "no_zone_metadata", ""
-}
+# ``Вердикт_ПЗЗ`` now carries the human-readable Russian label (not the machine
+# ``allowed_main``). Bucket those labels into correct/wrong/unclear.
+_STATUS_CORRECT = {"Разрешен", "Условно разрешен", "Разрешен как вспомогательный"}
+_STATUS_WRONG = {"Не разрешен"}
 
 
 def _load_result_geojson(result_path: str, outputs_dir: str) -> dict[str, Any]:
@@ -973,12 +1076,12 @@ def _load_result_geojson(result_path: str, outputs_dir: str) -> dict[str, Any]:
         return json.load(fh)
 
 
-def _classify_verdict(verdict: str | None) -> str:
-    """Map raw verdict to one of: correct / wrong / unclear."""
-    v = (verdict or "").strip()
-    if v in _ALLOWED_VERDICTS:
+def _classify_verdict(status: str | None) -> str:
+    """Map the Russian ``Статус`` label to one of: correct / wrong / unclear."""
+    v = (status or "").strip()
+    if v in _STATUS_CORRECT:
         return "correct"
-    if v == "not_allowed":
+    if v in _STATUS_WRONG:
         return "wrong"
     return "unclear"
 
