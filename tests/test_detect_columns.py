@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from service.application.use_cases.detect_columns import (
+    BUILDING_TARGETS,
     CADASTRAL_TARGETS,
     PZZ_ZONE_TARGETS,
     VRI_TARGET,
@@ -98,6 +99,17 @@ def test_heuristic_resolves_known_defaults_without_llm() -> None:
     assert fake.calls == []  # heuristic fully resolved -> no LLM call
 
 
+def test_building_columns_resolve_by_heuristic() -> None:
+    # Urban-API-shaped buildings: type/service/floors resolve without an LLM call.
+    fc = _fc([{"physical_object_type_id": 4, "service_type_id": 22, "floors_count": 5}])
+    fake = RecordingFakeOllama()
+    suggestions = asyncio.run(detect_columns_for_file(fake, fc, BUILDING_TARGETS))
+    assert suggestions["building_type_col"].value == "physical_object_type_id"
+    assert suggestions["building_service_col"].value == "service_type_id"
+    assert suggestions["building_floors_col"].value == "floors_count"
+    assert fake.calls == []
+
+
 # --- LLM fallback + enum constraint ---------------------------------------
 
 def test_llm_resolves_unknown_column_names() -> None:
@@ -142,7 +154,8 @@ def test_narrative_lists_recognised_and_missing() -> None:
     suggestions = asyncio.run(detect_columns_for_file(fake, fc, CADASTRAL_TARGETS))
     text = render_detection_narrative(suggestions, CADASTRAL_TARGETS)
     assert "permitted_use" in text
-    assert "название ВРИ участка" in text
+    assert "вид разрешённого использования (ВРИ) участка" in text
+    assert "определено как" in text
     assert required_columns_resolved(suggestions, CADASTRAL_TARGETS) is True
 
 

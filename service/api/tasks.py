@@ -42,6 +42,7 @@ from .utils import api_log
 
 router = APIRouter(tags=["tasks"])
 _SCENARIO_IDEMPOTENCY_PREFIX = "sc:"
+_BUILDING_IDEMPOTENCY_PREFIX = "bld:"
 
 
 def get_task_or_404(external_id: str, task_repo: TaskRepository) -> PipelineTask:
@@ -54,6 +55,11 @@ def get_task_or_404(external_id: str, task_repo: TaskRepository) -> PipelineTask
 def _is_scenario_task(external_id: str, task_repo: TaskRepository) -> bool:
     key = task_repo.get_idempotency_key_by_external_id(external_id)
     return bool(key and key.startswith(_SCENARIO_IDEMPOTENCY_PREFIX))
+
+
+def _is_building_upload_task(external_id: str, task_repo: TaskRepository) -> bool:
+    key = task_repo.get_idempotency_key_by_external_id(external_id)
+    return bool(key and key.startswith(_BUILDING_IDEMPOTENCY_PREFIX))
 
 
 def get_public_task_or_404(external_id: str, task_repo: TaskRepository) -> PipelineTask:
@@ -133,7 +139,9 @@ def build_recompute_task_response(
 
     try:
         celery_result = enqueue_pipeline_task(
-            task.id, is_scenario=_is_scenario_task(task.external_id, task_repo)
+            task.id,
+            is_scenario=_is_scenario_task(task.external_id, task_repo),
+            is_building_upload=_is_building_upload_task(task.external_id, task_repo),
         )
     except Exception as exc:  # noqa: BLE001
         task_repo.update_status(task.id, TaskStatus.failed, finished_at=utc_now())
@@ -543,10 +551,13 @@ async def prepend_narrative_generator(
     """Emit a leading narrative chunk, then delegate to ``inner``.
 
     Used by the auto-detect chat endpoint so the agent announces the detected
-    columns (\"поле X распознано как …\") before the task lifecycle starts.
+    columns (\"поле X определено как …\") before the task lifecycle starts.
+
+    A trailing blank line is appended so the streamed answer that follows starts
+    as a separate paragraph instead of being glued to the last narrative line.
     """
     if narrative:
-        yield narrative_chunk_sse(narrative)
+        yield narrative_chunk_sse(narrative + "\n\n")
     async for event in inner:
         yield event
 
@@ -1093,20 +1104,77 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[: max_chars - 1].rstrip() + "…"
 
 
-def _build_chat_message_objects(rows: list[dict[str, Any]], summary: dict[str, int]) -> str:
-    """Chatbot-friendly plain-text summary for group_by=object."""
+def _verdict_breakdown_lines(summary: dict[str, Any]) -> list[str]:
+    """Split the 'требуют ручной проверки' bucket by actual Вердикт_ПЗЗ reason.
+
+    Reads ``summary['by_verdict']`` (exact Russian-label counts) and keeps only
+    the labels outside correct/wrong — the reasons a parcel ends up needing
+    manual review (e.g. «Нет пересечения с ПЗЗ», «Нет описания зоны в шаблоне»).
+    Returns one '- «label»: N;' line per reason (most common first) so the answer
+    can tell the user exactly which «Вердикт_ПЗЗ» value to filter by, instead of
+    lumping distinct causes into one generic "требуют ручной проверки".
+    """
+    by_verdict = summary.get("by_verdict") or {}
+    reasons = {
+        label: count
+        for label, count in by_verdict.items()
+        if label and label not in _STATUS_CORRECT and label not in _STATUS_WRONG
+    }
+    if not reasons:
+        return []
     lines = [
-        f"Проверено объектов: {summary['total']}.",
-        "",
-        f"В подходящих зонах: {summary['in_correct_zone']}.",
-        f"Не в своих зонах: {summary['in_wrong_zone']}.",
+        "Причины ручной проверки (значение поля «Вердикт_ПЗЗ» в итоговом файле — "
+        "по нему можно отфильтровать эти участки):"
     ]
+    for label, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
+        lines.append(f"- «{label}»: {count};")
+    return lines
+
+
+def _reconciled_intro(summary: dict[str, Any]) -> list[str]:
+    """Intro lines with totals that add up, using the exact counts in ``summary``.
+
+    Fixes the "277 находятся в границах 3 зон" contradiction: the no-intersection
+    parcels are reported separately (``not_in_zone``) and the real-zone count uses
+    ``zones_count`` (which excludes the empty bucket), not ``len(zones)``.
+    """
+    total = summary["total"]
+    correct = summary["in_correct_zone"]
+    wrong = summary["in_wrong_zone"]
+    unclear = summary["unclear"]
+    zones_count = summary.get("zones_count", 0)
+    not_in_zone = summary.get("not_in_zone", 0)
+
+    intro = f"Проверено земельных участков: {total}."
+    if not_in_zone:
+        intro += (
+            f" Из них {total - not_in_zone} находятся в границах {zones_count} "
+            f"территориальных зон ПЗЗ, {not_in_zone} не пересеклись ни с одной "
+            "зоной ПЗЗ."
+        )
+    elif zones_count:
+        intro += f" Все они находятся в границах {zones_count} территориальных зон ПЗЗ."
+    return [
+        intro,
+        "Результат проверки соответствия ВРИ каждого участка правилам его "
+        f"территориальной зоны ПЗЗ ({correct} + {wrong} + {unclear} = {total}):",
+        f"- ВРИ допустим, нарушений ПЗЗ нет: {correct};",
+        f"- ВРИ не соответствует зоне ПЗЗ (потенциальное нарушение): {wrong};",
+        f"- требуют ручной проверки: {unclear}.",
+    ]
+
+
+def _build_chat_message_objects(rows: list[dict[str, Any]], summary: dict[str, Any]) -> str:
+    """Chatbot-friendly plain-text summary for group_by=object."""
+    lines = _reconciled_intro(summary)
     if summary["unclear"]:
-        lines.append(f"Без чёткой оценки: {summary['unclear']}.")
+        breakdown = _verdict_breakdown_lines(summary)
+        if breakdown:
+            lines += ["", *breakdown]
 
     wrong = [r for r in rows if r["fit"] == "wrong"]
     if wrong:
-        lines += ["", "Объекты не в своих зонах:"]
+        lines += ["", "Участки с недопустимым в их зоне ВРИ:"]
         for row in wrong[:10]:
             obj_label = row.get("vri_text") or "—"
             zone_label = row.get("zone_name") or row.get("zone_type_id") or "—"
@@ -1115,36 +1183,49 @@ def _build_chat_message_objects(rows: list[dict[str, Any]], summary: dict[str, i
                 f"- #{row['feature_index']}: «{obj_label}» в зоне «{zone_label}» — {reason}"
             )
         if len(wrong) > 10:
-            lines.append(f"...и ещё {len(wrong) - 10} объектов не в своих зонах.")
-    else:
-        lines += ["", "Все объекты находятся в подходящих зонах."]
+            lines.append(
+                f"...и ещё {len(wrong) - 10} участков с недопустимым в их зоне ВРИ."
+            )
+    elif not summary["unclear"]:
+        lines += ["", "У всех участков ВРИ допустим в их территориальной зоне."]
 
     return "\n".join(lines)
 
 
-def _build_chat_message_zones(zones: list[dict[str, Any]], summary: dict[str, int]) -> str:
+def _build_chat_message_zones(zones: list[dict[str, Any]], summary: dict[str, Any]) -> str:
     """Chatbot-friendly plain-text summary for group_by=zone."""
-    lines = [
-        f"Проверено объектов: {summary['total']} в {len(zones)} зонах.",
-        f"В подходящих зонах: {summary['in_correct_zone']}. "
-        f"Не в своих зонах: {summary['in_wrong_zone']}. "
-        f"Без чёткой оценки: {summary['unclear']}.",
-        "",
-    ]
+    lines = _reconciled_intro(summary)
+    if summary["unclear"]:
+        breakdown = _verdict_breakdown_lines(summary)
+        if breakdown:
+            lines += ["", *breakdown]
+
+    lines.append("")
     for zone in zones:
         z_sum = zone["summary"]
-        zone_label = zone.get("zone_name") or zone.get("zone_type_id") or "—"
+        z_id = zone.get("zone_type_id")
         total = z_sum["total"]
         wrong = z_sum["in_wrong_zone"]
         unclear_n = z_sum["unclear"]
 
+        # The "no zone" bucket (empty zone_type_id) is not a real PZZ zone — it
+        # holds parcels that did not intersect any zone. Report it as such
+        # instead of printing «Зона «—»», which reads like a third zone.
+        if not z_id:
+            lines.append(
+                f"Вне зон ПЗЗ: {total} участков не пересеклись ни с одной "
+                "территориальной зоной ПЗЗ."
+            )
+            continue
+
+        zone_label = zone.get("zone_name") or str(z_id)
         if wrong == 0 and unclear_n == 0:
-            note = f"все {total} в порядке"
+            note = f"все {total} участков с допустимым ВРИ"
         elif wrong > 0:
-            note = f"{wrong} из {total} не в своей зоне"
+            note = f"{wrong} из {total} участков с недопустимым в этой зоне ВРИ"
         else:
-            note = f"{unclear_n} из {total} требуют ручной проверки"
-        lines.append(f"Зона «{zone_label}»: {note}.")
+            note = f"{unclear_n} из {total} участков требуют ручной проверки"
+        lines.append(f"Зона ПЗЗ «{zone_label}»: {note}.")
 
         if wrong > 0:
             wrong_objs = [o for o in zone.get("objects") or [] if o["fit"] == "wrong"]
@@ -1223,11 +1304,23 @@ def build_object_zone_fit_response(
             "matched_vri_code": props.get(_COL_MATCHED_VRI_CODE),
         })
 
+    by_verdict: dict[str, int] = {}
+    for r in rows:
+        label = r["verdict"] or "—"
+        by_verdict[label] = by_verdict.get(label, 0) + 1
     summary = {
         "total": len(rows),
         "in_correct_zone": sum(1 for r in rows if r["fit"] == "correct"),
         "in_wrong_zone": sum(1 for r in rows if r["fit"] == "wrong"),
         "unclear": sum(1 for r in rows if r["fit"] == "unclear"),
+        # Number of REAL territorial zones the parcels fall into (excludes the
+        # "no zone" bucket) and how many parcels fell outside every zone — so the
+        # answer can reconcile totals instead of counting the empty-zone bucket.
+        "zones_count": len({r["zone_type_id"] for r in rows if r["zone_type_id"]}),
+        "not_in_zone": sum(1 for r in rows if not r["zone_type_id"]),
+        # Exact per-verdict breakdown (Russian labels) so the answer can split
+        # "требуют ручной проверки" by reason without recomputing.
+        "by_verdict": by_verdict,
     }
 
     if group_by == "object":

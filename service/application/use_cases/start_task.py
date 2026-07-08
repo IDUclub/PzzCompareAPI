@@ -77,6 +77,7 @@ def start_task(
 
     idempotency_key = task_repo.get_idempotency_key_by_external_id(task.external_id)
     is_scenario = bool(idempotency_key and idempotency_key.startswith("sc:"))
+    is_building_upload = bool(idempotency_key and idempotency_key.startswith("bld:"))
 
     request = PipelineRequest(
         task_external_id=task.external_id,
@@ -90,6 +91,10 @@ def start_task(
         pzz_zone_name_col=task.pzz_zone_name_col,
         outputs_dir=settings.outputs_dir,
         is_scenario=is_scenario,
+        is_building_upload=is_building_upload,
+        building_type_col=task.building_type_col or "",
+        building_service_col=task.building_service_col or "",
+        building_floors_col=task.building_floors_col or "",
     )
 
     return StartTaskResult(task_priority=task_priority, request=request, retry_in_seconds=0)

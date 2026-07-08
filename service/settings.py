@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     physical_object_type_to_vri_path: str = Field(
         default="data/physical_object_type_to_vri.json"
     )
+    # service_type_id -> Rosreestr VRI, for resolving service buildings in the
+    # uploaded-building PZZ check (see scripts/build_service_type_to_vri.py).
+    service_type_to_vri_path: str = Field(
+        default="data/service_type_to_vri.json"
+    )
     priority_max_sum_default: int = 20
 
     run_migrations_on_startup: bool = Field(default=True)

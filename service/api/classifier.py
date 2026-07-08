@@ -24,8 +24,10 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..application.use_cases.create_task import create_task
 from ..application.use_cases.detect_columns import (
+    BUILDING_TARGETS,
     CADASTRAL_TARGETS,
     PZZ_ZONE_TARGETS,
+    ZONE_CODE_TARGET,
     detect_columns_for_file,
     render_detection_narrative,
     required_columns_resolved,
@@ -281,6 +283,10 @@ def _create_pipeline_task(
     task_repo: TaskRepository,
     event_repo: EventRepository,
     session: Session,
+    building_upload: bool = False,
+    building_type_col: str | None = None,
+    building_service_col: str | None = None,
+    building_floors_col: str | None = None,
 ) -> TaskOut:
     """Shared logic for both submission endpoints.
 
@@ -307,7 +313,20 @@ def _create_pipeline_task(
     else:
         stored_pzz_zones = ""
 
-    if labels_file is not None:
+    if building_upload:
+        # The building flow's optional "descriptions" file is a zone→permitted-VRI
+        # mapping (dict with ``functional_zone_mappings``), reusing the labels slot.
+        # When absent, leave empty so the runner falls back to the built-in
+        # fz_to_pzz mapping (NOT the parcel LLM labels template).
+        if labels_file is not None:
+            stored_labels = _ingest_upload(
+                labels_file, task_dir, "pzz_zone_descriptions.json",
+                dict, "pzz_descriptions_file",
+                app_settings.max_upload_bytes, external_id, storage,
+            )
+        else:
+            stored_labels = ""
+    elif labels_file is not None:
         stored_labels = _ingest_upload(
             labels_file, task_dir, "pzz_zone_vri_labels.json",
             list, "pzz_zone_vri_labels_file",
@@ -339,11 +358,21 @@ def _create_pipeline_task(
         cadastral_vri_col=cadastral_vri_col,
         pzz_zone_code_col=pzz_zone_code_col,
         pzz_zone_name_col=pzz_zone_name_col,
+        building_type_col=building_type_col,
+        building_service_col=building_service_col,
+        building_floors_col=building_floors_col,
         priority=priority,
     )
 
     namespaced_key: str | None = None
-    if idempotency_key:
+    if building_upload:
+        # "bld:" routes the worker to the deterministic UploadedBuildingPzzRunner
+        # (start_task derives it from this prefix, mirroring the "sc:" scenario
+        # prefix). Always keyed so routing works even without a caller key — the
+        # unique external_id then just means no cross-request dedup.
+        key_base = idempotency_key or external_id
+        namespaced_key = f"bld:{PIPELINE_OUTPUT_VERSION}:{key_base}"
+    elif idempotency_key:
         mode_prefix = "pzz" if include_pzz_check else "clf"
         # ``PIPELINE_OUTPUT_VERSION`` in the key auto-invalidates cache hits when
         # the result format changes — a client's old key stops matching after a bump.
@@ -354,7 +383,9 @@ def _create_pipeline_task(
         settings=app_settings,
         task_repo=task_repo,
         event_repo=event_repo,
-        enqueue_task=lambda tid: enqueue_pipeline_task(tid, is_scenario=False),
+        enqueue_task=lambda tid: enqueue_pipeline_task(
+            tid, is_scenario=False, is_building_upload=building_upload
+        ),
         idempotency_key=namespaced_key,
         retry_failed=retry_failed,
         force_recompute=force_recompute,
@@ -368,7 +399,10 @@ def _create_pipeline_task(
     api_log(
         "create_task", "accepted",
         task_id=task.id, external_id=task.external_id,
-        mode=("pzz_check" if include_pzz_check else "classify_only"),
+        mode=(
+            "building_pzz_check" if building_upload
+            else ("pzz_check" if include_pzz_check else "classify_only")
+        ),
     )
     return TaskOut.model_validate(task)
 
@@ -787,8 +821,142 @@ async def create_classify_only_chat_stream_endpoint(
 def _default_auto_query(include_pzz_check: bool) -> str:
     """Grounding query used when the auto endpoint gets no explicit user_query."""
     if include_pzz_check:
-        return "Проверь загруженные участки на соответствие ПЗЗ и кратко опиши результат."
-    return "Классифицируй ВРИ загруженных участков и кратко опиши результат."
+        return (
+            "Проверь загруженные земельные участки на соответствие ПЗЗ и кратко "
+            "опиши результат: сколько участков проверено, у скольких ВРИ допустим "
+            "в их территориальной зоне, у скольких — не соответствует, сколько "
+            "требует ручной проверки. Поясни, что стоит за числами, простым языком."
+        )
+    return (
+        "Классифицируй ВРИ загруженных земельных участков и кратко опиши "
+        "результат простым языком."
+    )
+
+
+_DEFAULT_BUILDING_AUTO_QUERY = (
+    "Проверь загруженные здания на соответствие ПЗЗ и кратко опиши результат: "
+    "сколько зданий проверено, сколько допустимо в своей территориальной зоне "
+    "по типу и этажности, сколько — не допустимо, сколько требует ручной "
+    "проверки. Поясни простым языком."
+)
+
+
+async def _run_building_pzz_auto(
+    *,
+    request: Request,
+    buildings_file: UploadFile,
+    zones_file: UploadFile,
+    descriptions_file: UploadFile | None,
+    user_query: str | None,
+    chat_id: str | None,
+    group_by: str,
+    model: str | None,
+    temperature: float | None,
+    priority: int,
+    force_recompute: bool,
+    poll_interval: float,
+    idempotency_key: str | None,
+    token: str,
+    app_settings: Settings,
+    task_repo: TaskRepository,
+    event_repo: EventRepository,
+    session: Session,
+) -> EventSourceResponse:
+    """Auto-detect building columns, run the deterministic building PZZ check, stream chat.
+
+    The uploaded-building counterpart of the ``pzz_check`` auto flow: buildings
+    (physical_object_type_id / service_type_id + floors) are matched against the
+    uploaded PZZ zones; the answer is grounded in the object-zone-fit report.
+    """
+    max_bytes = app_settings.max_upload_bytes
+    detect_dir = Path(app_settings.task_inputs_dir) / f"detect-{uuid4().hex}"
+    try:
+        buildings_fc = await run_in_threadpool(
+            _upload_to_feature_collection,
+            buildings_file, detect_dir, "buildings_feature_collection_file", max_bytes,
+        )
+        zones_fc = await run_in_threadpool(
+            _upload_to_feature_collection,
+            zones_file, detect_dir, "pzz_zones_feature_collection_file", max_bytes,
+        )
+    finally:
+        shutil.rmtree(detect_dir, ignore_errors=True)
+
+    announce_targets = list(BUILDING_TARGETS) + [ZONE_CODE_TARGET]
+    async with build_ollama_chat_client(app_settings) as ollama_client:
+        suggestions = await detect_columns_for_file(
+            ollama_client, buildings_fc, BUILDING_TARGETS, model=model
+        )
+        suggestions.update(
+            await detect_columns_for_file(
+                ollama_client, zones_fc, [ZONE_CODE_TARGET], model=model
+            )
+        )
+    narrative = render_detection_narrative(suggestions, announce_targets)
+
+    def _val(key: str) -> str | None:
+        s = suggestions.get(key)
+        return s.value if s is not None else None
+
+    zone_code = _val("pzz_zone_code_col")
+    building_type = _val("building_type_col")
+    building_service = _val("building_service_col")
+    # Floors is optional (residential falls back without it); a zone code plus at
+    # least one building identifier (type or service) is the minimum to classify.
+    if not zone_code or not (building_type or building_service):
+        return EventSourceResponse(
+            detection_failed_generator(
+                narrative,
+                "нужны колонка кода зоны ПЗЗ и хотя бы одна из колонок «тип» или "
+                "«сервис» здания",
+            )
+        )
+
+    task_out = await run_in_threadpool(
+        _create_pipeline_task,
+        cadastral_file=buildings_file,
+        pzz_zones_file=zones_file,
+        labels_file=descriptions_file,
+        classifier_file=None,
+        include_pzz_check=True,
+        cadastral_vri_col="",
+        pzz_zone_code_col=zone_code,
+        pzz_zone_name_col="",
+        priority=priority,
+        retry_failed=False,
+        force_recompute=force_recompute,
+        idempotency_key=idempotency_key,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+        building_upload=True,
+        building_type_col=building_type,
+        building_service_col=building_service,
+        building_floors_col=_val("building_floors_col"),
+    )
+    session.commit()
+
+    effective_query = user_query or _DEFAULT_BUILDING_AUTO_QUERY
+    inner = task_stream_with_chat_generator(
+        task_out.external_id,
+        group_by=group_by,
+        poll_interval=poll_interval,
+        request=request,
+        app_settings=app_settings,
+        initial=task_out.model_dump(mode="json"),
+        token=token,
+        user_query=effective_query,
+        chat_id=chat_id,
+        scenario_id=None,
+        project_id=None,
+        chat_title=(user_query or narrative)[:256],
+        model=model,
+        temperature=temperature,
+        report_kind="object_zone_fit",
+        emit_input_files=True,
+    )
+    return EventSourceResponse(prepend_narrative_generator(narrative, inner))
 
 
 @router.post("/auto/chat/stream")
@@ -797,6 +965,7 @@ async def create_auto_chat_stream_endpoint(
     cadastral_feature_collection_file: UploadFile = File(...),
     pzz_zones_feature_collection_file: UploadFile | None = File(default=None),
     pzz_zone_vri_labels_file: UploadFile | None = File(default=None),
+    pzz_descriptions_file: UploadFile | None = File(default=None),
     vri_classifier_file: UploadFile | None = File(default=None),
     mode: str = Form("pzz_check"),
     user_query: str | None = Form(default=None),
@@ -820,7 +989,7 @@ async def create_auto_chat_stream_endpoint(
     The "pick a mode, drop the files, magic happens" flow: instead of the caller
     naming ``cadastral_vri_col`` / ``pzz_zone_code_col`` / ``pzz_zone_name_col``,
     the columns are detected from the uploaded data (heuristic + LLM), announced
-    as a leading ``chunk`` ("поле X распознано как …"), and the full pipeline runs
+    as a leading ``chunk`` ("поле X определено как …"), and the full pipeline runs
     automatically — grounding a conversational answer just like the other chat
     endpoints.
 
@@ -829,6 +998,12 @@ async def create_auto_chat_stream_endpoint(
         columns; answer grounded in the object-zone-fit report;
       - ``classify_only`` — needs only cadastral; detects the VRI column; answer
         grounded in the classify summary.
+      - ``building_pzz_check`` — needs a buildings layer (``cadastral_…_file``:
+        Urban-API-shaped ``physical_object_type_id`` / ``service_type_id`` +
+        floors) + PZZ zones; detects the type/service/floors + zone-code columns
+        and runs the deterministic building PZZ check (no LLM classification).
+        Optionally accepts ``pzz_descriptions_file`` (a zone→permitted-VRI mapping);
+        without it the built-in mapping is used. Answer grounded in object-zone-fit.
 
     When a required column can't be determined, no task is started: the narrative
     (which columns are missing) plus an ``error`` and terminal ``done`` are
@@ -837,16 +1012,47 @@ async def create_auto_chat_stream_endpoint(
     A Bearer token is REQUIRED (chat history is persisted). Use a fetch-based SSE
     client (native EventSource cannot POST multipart or set Authorization).
     """
-    if mode not in ("pzz_check", "classify_only"):
-        raise HTTPException(status_code=422, detail="mode must be 'pzz_check' or 'classify_only'")
+    if mode not in ("pzz_check", "classify_only", "building_pzz_check"):
+        raise HTTPException(
+            status_code=422,
+            detail="mode must be 'pzz_check', 'classify_only' or 'building_pzz_check'",
+        )
+    if group_by not in ("zone", "object"):
+        raise HTTPException(status_code=422, detail="group_by must be 'zone' or 'object'")
+
+    if mode == "building_pzz_check":
+        if pzz_zones_feature_collection_file is None:
+            raise HTTPException(
+                status_code=422,
+                detail="pzz_zones_feature_collection_file is required for mode=building_pzz_check",
+            )
+        return await _run_building_pzz_auto(
+            request=request,
+            buildings_file=cadastral_feature_collection_file,
+            zones_file=pzz_zones_feature_collection_file,
+            descriptions_file=pzz_descriptions_file,
+            user_query=user_query,
+            chat_id=chat_id,
+            group_by=group_by,
+            model=model,
+            temperature=temperature,
+            priority=priority,
+            force_recompute=force_recompute,
+            poll_interval=poll_interval,
+            idempotency_key=idempotency_key_header or idempotency_key_form,
+            token=token,
+            app_settings=app_settings,
+            task_repo=task_repo,
+            event_repo=event_repo,
+            session=session,
+        )
+
     include_pzz_check = mode == "pzz_check"
     if include_pzz_check and pzz_zones_feature_collection_file is None:
         raise HTTPException(
             status_code=422,
             detail="pzz_zones_feature_collection_file is required for mode=pzz_check",
         )
-    if group_by not in ("zone", "object"):
-        raise HTTPException(status_code=422, detail="group_by must be 'zone' or 'object'")
 
     max_bytes = app_settings.max_upload_bytes
     detect_dir = Path(app_settings.task_inputs_dir) / f"detect-{uuid4().hex}"
