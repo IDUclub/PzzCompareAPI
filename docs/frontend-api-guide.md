@@ -514,9 +514,77 @@ object-zone-fit. Параллельно история диалога сохра
 
 Для запуска нужны: колонка кода зоны **и** хотя бы одна из колонок «тип»/«сервис» здания
 (этажность опциональна — для жилых без неё берётся базовый ВРИ). Если минимум не определился,
-задача не создаётся: приходит нарратив + `error` + `done`. Результат — тот же GeoJSON с 7
-колонками ПЗЗ (`Вердикт_ПЗЗ` и др.), что и остальные проверки (см. D2), одна result-фича на каждую
+задача не создаётся: приходит нарратив + `error` + `done`. Результат — GeoJSON с 8
+колонками ПЗЗ (`Вердикт_ПЗЗ`, `Основание_подбора_ВРИ` и др.; см. D2), одна result-фича на каждую
 входную. Здания без сопоставленного ВРИ или зоны без описания → «Требуется ручная проверка».
+
+Все GeoJSON — в **EPSG:4326**. Форматы: `.geojson` / `.json` или GeoPackage / GML / KML /
+GeoParquet (конвертируются в GeoJSON на приёме).
+
+**Пример 1 — слой зданий (`cadastral_feature_collection_file`).** Здания и сервисы в одном
+слое, одна фича = один объект. Колонки можно называть по-своему — детектор найдёт их по
+содержимому (`physical_object_type_id` → тип, `service_type_id` → сервис, `floors` → этажность):
+
+```json
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [31.03, 59.94] },
+      "properties": { "physical_object_type_id": 4, "floors": 8 }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [31.04, 59.95] },
+      "properties": { "service_type_id": 22 }
+    }
+  ]
+}
+```
+
+Строка-**здание** заполняет `physical_object_type_id` (+ `floors` для жилых), строка-**сервис** —
+`service_type_id`. Понимаются и вложенные Urban-API-формы (`physical_object_type.physical_object_type_id`,
+`service_type.service_type_id`, `properties["Количество этажей"]`).
+
+**Пример 2 — слой зон ПЗЗ (`pzz_zones_feature_collection_file`).** `zone_code` — то, по чему
+ищется набор разрешённых ВРИ; при его отсутствии берётся вложенный `functional_zone_type.id`:
+
+```json
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": { "type": "Polygon", "coordinates": [[[31.02,59.94],[31.02,59.96],[31.06,59.96],[31.06,59.94],[31.02,59.94]]] },
+      "properties": { "zone_code": 8, "zone_name": "Жилая зона" }
+    }
+  ]
+}
+```
+
+**Пример 3 — описания зон (`pzz_descriptions_file`, опционально).** Ключ `functional_zone_type_id`
+совпадает с кодом зоны из слоя зон. Без файла берётся встроенный
+`functional_zones_to_pzz_mapping.json`:
+
+```json
+{
+  "functional_zone_mappings": [
+    {
+      "functional_zone_type_id": 8,
+      "db_zone_nickname": "Жилая зона",
+      "averaged_pzz_profile": {
+        "main_vri":        [{ "vri_code": "2.1" }, { "vri_code": "2.5" }],
+        "conditional_vri": [{ "vri_code": "3.5.1" }],
+        "auxiliary_vri":   [{ "vri_code": "12.0" }]
+      }
+    }
+  ]
+}
+```
+
+ВРИ здания проверяется на вхождение в `main` / `conditional` / `auxiliary` его зоны, иерархически
+(зонтичный код разрешает вложенные: `2.1` покрывает `2.1.1`).
 
 Поток SSE-событий — как в таблице H (`task` → `status` → `object_zone_fit` → `chunk*` →
 `done`), с ведущим `chunk`-нарративом об определённых колонках.
