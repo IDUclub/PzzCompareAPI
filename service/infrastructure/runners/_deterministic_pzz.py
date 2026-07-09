@@ -22,6 +22,7 @@ COL_VERDICT = "Вердикт_ПЗЗ"
 COL_REASON = "Причина"
 COL_MATCHED_VRI_NAME = "Подобранный_ВРИ"
 COL_MATCHED_VRI_CODE = "Код_подобранного_ВРИ"
+COL_RESOLUTION_BASIS = "Основание_подбора_ВРИ"
 
 # Machine verdict -> human-readable Russian label (mirrors the pipeline's
 # ``status_to_russian_label``; duplicated here to keep the API/worker side free
@@ -194,11 +195,14 @@ def clean_result_properties(
     reason: str,
     matched_vri_code: str,
     matched_vri_name: str | None,
+    resolution_basis: str | None = None,
 ) -> dict[str, Any]:
-    """Build the whitelist of 7 PZZ result columns for one feature.
+    """Build the whitelist of PZZ result columns for one feature.
 
     Drops all input passthrough fields. ``Вердикт_ПЗЗ`` keeps its field name but
     holds the human-readable Russian label (frontend colors by it unchanged).
+    ``resolution_basis`` (how the ВРИ was picked — by floors / service / type) is
+    filled by the building runner and left empty by flows where it doesn't apply.
     """
     return {
         COL_VRI_TEXT: vri_text,
@@ -208,4 +212,5 @@ def clean_result_properties(
         COL_REASON: reason,
         COL_MATCHED_VRI_CODE: matched_vri_code,
         COL_MATCHED_VRI_NAME: matched_vri_name or "",
+        COL_RESOLUTION_BASIS: resolution_basis or "",
     }

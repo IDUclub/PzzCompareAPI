@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from service.domain import PipelineRequest
 from service.infrastructure.runners._deterministic_pzz import (
     COL_MATCHED_VRI_CODE,
+    COL_RESOLUTION_BASIS,
     COL_VERDICT,
     COL_ZONE_CODE,
 )
@@ -154,11 +155,14 @@ def test_run_residential_verdicts_fallback_mapping(tmp_path) -> None:
     assert props[0][COL_MATCHED_VRI_CODE] == "2.1.1"
     assert props[0][COL_ZONE_CODE] == "8"
     assert props[1][COL_VERDICT] == "Не разрешен"
-    # clean whitelist: exactly the 7 result columns, no input passthrough
+    # clean whitelist: exactly the 8 result columns, no input passthrough
     assert set(props[0].keys()) == {
         "ВРИ_ЕГРН", COL_ZONE_CODE, "Название фактической зоны нахождения кадастра",
         COL_VERDICT, "Причина", COL_MATCHED_VRI_CODE, "Подобранный_ВРИ",
+        COL_RESOLUTION_BASIS,
     }
+    # residential building -> basis records the floor-band resolution
+    assert "по этажности" in props[0][COL_RESOLUTION_BASIS]
 
 
 def test_run_uploaded_descriptions_override(tmp_path) -> None:

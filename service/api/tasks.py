@@ -15,6 +15,7 @@ from starlette.responses import FileResponse, RedirectResponse
 from ..application.use_cases.chat_answer import (
     build_classification_context,
     load_system_prompt,
+    load_vri_names,
     stream_chat_answer,
 )
 from ..db import session_scope
@@ -711,6 +712,9 @@ async def task_stream_with_chat_generator(
                         classification_context = build_classification_context(
                             chat_message=report.get("chat_message"),
                             object_zone_fit=report,
+                            vri_names=load_vri_names(
+                                app_settings.default_vri_classifier_path
+                            ),
                         )
                     except HTTPException as exc:
                         yield ServerSentEvent(
@@ -1061,6 +1065,7 @@ _COL_VERDICT = "Вердикт_ПЗЗ"
 _COL_REASON = "Причина"
 _COL_MATCHED_VRI_NAME = "Подобранный_ВРИ"
 _COL_MATCHED_VRI_CODE = "Код_подобранного_ВРИ"
+_COL_RESOLUTION_BASIS = "Основание_подбора_ВРИ"
 _COL_TOP1_CANDIDATE = "Топ1_возможный_ВРИ"
 _COL_TOP5_CANDIDATES = "Топ5_возможных_ВРИ"
 
@@ -1123,8 +1128,8 @@ def _verdict_breakdown_lines(summary: dict[str, Any]) -> list[str]:
     if not reasons:
         return []
     lines = [
-        "Причины ручной проверки (значение поля «Вердикт_ПЗЗ» в итоговом файле — "
-        "по нему можно отфильтровать эти участки):"
+        "Причины ручной проверки (эти земельные участки можно проверить "
+        "по атрибуту «Вердикт_ПЗЗ»):"
     ]
     for label, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
         lines.append(f"- «{label}»: {count};")
@@ -1155,9 +1160,12 @@ def _reconciled_intro(summary: dict[str, Any]) -> list[str]:
     elif zones_count:
         intro += f" Все они находятся в границах {zones_count} территориальных зон ПЗЗ."
     return [
+        "ВРИ — вид разрешённого использования земельного участка; ПЗЗ — правила "
+        "землепользования и застройки.",
+        "",
         intro,
-        "Результат проверки соответствия ВРИ каждого участка правилам его "
-        f"территориальной зоны ПЗЗ ({correct} + {wrong} + {unclear} = {total}):",
+        "Результат проверки соответствия ВРИ каждого земельного участка правилам "
+        f"его территориальной зоны ПЗЗ ({correct} + {wrong} + {unclear} = {total}):",
         f"- ВРИ допустим, нарушений ПЗЗ нет: {correct};",
         f"- ВРИ не соответствует зоне ПЗЗ (потенциальное нарушение): {wrong};",
         f"- требуют ручной проверки: {unclear}.",
@@ -1174,7 +1182,7 @@ def _build_chat_message_objects(rows: list[dict[str, Any]], summary: dict[str, A
 
     wrong = [r for r in rows if r["fit"] == "wrong"]
     if wrong:
-        lines += ["", "Участки с недопустимым в их зоне ВРИ:"]
+        lines += ["", "Земельные участки с недопустимым в их зоне ВРИ:"]
         for row in wrong[:10]:
             obj_label = row.get("vri_text") or "—"
             zone_label = row.get("zone_name") or row.get("zone_type_id") or "—"
@@ -1184,56 +1192,29 @@ def _build_chat_message_objects(rows: list[dict[str, Any]], summary: dict[str, A
             )
         if len(wrong) > 10:
             lines.append(
-                f"...и ещё {len(wrong) - 10} участков с недопустимым в их зоне ВРИ."
+                f"...и ещё {len(wrong) - 10} земельных участков с недопустимым "
+                "в их зоне ВРИ."
             )
     elif not summary["unclear"]:
-        lines += ["", "У всех участков ВРИ допустим в их территориальной зоне."]
+        lines += ["", "У всех земельных участков ВРИ допустим в их территориальной зоне."]
 
     return "\n".join(lines)
 
 
 def _build_chat_message_zones(zones: list[dict[str, Any]], summary: dict[str, Any]) -> str:
-    """Chatbot-friendly plain-text summary for group_by=zone."""
+    """Chatbot-friendly plain-text summary for group_by=zone.
+
+    Compact headline only — totals, per-verdict counts and manual-review reasons.
+    The per-zone breakdown deliberately lives in the conversational LLM answer
+    (grounded on the object-zone-fit report) so the two messages complement each
+    other instead of duplicating. ``zones`` is kept in the signature for a
+    uniform call site with the object variant.
+    """
     lines = _reconciled_intro(summary)
     if summary["unclear"]:
         breakdown = _verdict_breakdown_lines(summary)
         if breakdown:
             lines += ["", *breakdown]
-
-    lines.append("")
-    for zone in zones:
-        z_sum = zone["summary"]
-        z_id = zone.get("zone_type_id")
-        total = z_sum["total"]
-        wrong = z_sum["in_wrong_zone"]
-        unclear_n = z_sum["unclear"]
-
-        # The "no zone" bucket (empty zone_type_id) is not a real PZZ zone — it
-        # holds parcels that did not intersect any zone. Report it as such
-        # instead of printing «Зона «—»», which reads like a third zone.
-        if not z_id:
-            lines.append(
-                f"Вне зон ПЗЗ: {total} участков не пересеклись ни с одной "
-                "территориальной зоной ПЗЗ."
-            )
-            continue
-
-        zone_label = zone.get("zone_name") or str(z_id)
-        if wrong == 0 and unclear_n == 0:
-            note = f"все {total} участков с допустимым ВРИ"
-        elif wrong > 0:
-            note = f"{wrong} из {total} участков с недопустимым в этой зоне ВРИ"
-        else:
-            note = f"{unclear_n} из {total} участков требуют ручной проверки"
-        lines.append(f"Зона ПЗЗ «{zone_label}»: {note}.")
-
-        if wrong > 0:
-            wrong_objs = [o for o in zone.get("objects") or [] if o["fit"] == "wrong"]
-            if wrong_objs:
-                first_reason = (wrong_objs[0].get("reason") or "").strip()
-                if first_reason:
-                    lines.append("    " + _truncate(first_reason.split(".")[0], 200))
-
     return "\n".join(lines)
 
 
@@ -1302,6 +1283,7 @@ def build_object_zone_fit_response(
             "reason": props.get(_COL_REASON),
             "matched_vri_name": props.get(_COL_MATCHED_VRI_NAME),
             "matched_vri_code": props.get(_COL_MATCHED_VRI_CODE),
+            "resolution_basis": props.get(_COL_RESOLUTION_BASIS),
         })
 
     by_verdict: dict[str, int] = {}

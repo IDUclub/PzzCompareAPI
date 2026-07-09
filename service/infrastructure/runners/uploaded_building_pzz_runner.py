@@ -116,20 +116,31 @@ class UploadedBuildingPzzRunner(PipelineRunner):
 
     def _resolve_vri(
         self, po_type_id: int | None, is_residential: bool, service_type_id: int | None, floors: Any
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str | None, str | None, str]:
+        """Return ``(vri_code, vri_name, basis)`` — ``basis`` records HOW the ВРИ
+        was picked (by floors / service type / object type) for the report."""
         if is_residential:
             code, name = resolve_po_type_vri(self._po2vri, _RESIDENTIAL_PO_TYPE, floors)
             if code:
-                return code, name
+                floors_txt = f", {floors} эт." if floors not in (None, "") else " (этажность не указана)"
+                return code, name, f"жилое здание — ВРИ подобран по этажности{floors_txt}"
         if service_type_id is not None:
             entry = self._service_map.get(str(service_type_id))
             if entry and entry.get("vri_code"):
-                return entry["vri_code"], entry.get("vri_name") or None
+                return (
+                    entry["vri_code"],
+                    entry.get("vri_name") or None,
+                    f"сервис (service_type_id={service_type_id}) — ВРИ подобран по типу сервиса",
+                )
         if po_type_id is not None:
             code, name = resolve_po_type_vri(self._po2vri, po_type_id, floors)
             if code:
-                return code, name
-        return None, None
+                return (
+                    code,
+                    name,
+                    f"физический объект (physical_object_type_id={po_type_id}) — ВРИ подобран по типу объекта",
+                )
+        return None, None, ""
 
     def run(self, request: PipelineRequest) -> str:
         output_dir = Path(request.outputs_dir)
@@ -147,7 +158,9 @@ class UploadedBuildingPzzRunner(PipelineRunner):
         for i, feature in enumerate(feats):
             props = feature.get("properties") or {}
             po_type_id, is_residential, service_type_id, floors, label = self._extract(props, request)
-            vri, vri_name = self._resolve_vri(po_type_id, is_residential, service_type_id, floors)
+            vri, vri_name, vri_basis = self._resolve_vri(
+                po_type_id, is_residential, service_type_id, floors
+            )
 
             fz = fz_by_obj.get(i)
             machine_verdict, reason, mcode, _ = compute_verdict(vri, fz, zone_allowed, zone_nick)
@@ -159,6 +172,7 @@ class UploadedBuildingPzzRunner(PipelineRunner):
                 reason=reason,
                 matched_vri_code=mcode,
                 matched_vri_name=vri_name,
+                resolution_basis=vri_basis,
             )
 
         result = {"type": "FeatureCollection", "features": feats}

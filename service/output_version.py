@@ -20,6 +20,8 @@ History:
         urban_api passthrough attributes in the scenario flow.
   - v2  2026-07-03 (f9868f7): Russian ``Вердикт_ПЗЗ`` label, trimmed result
         columns, classifier-only PZZ-column pruning.
+  - v3  2026-07-09: building runner adds the ``Основание_подбора_ВРИ`` result
+        column (how the ВРИ was resolved — floors / service / object type).
 """
 
-PIPELINE_OUTPUT_VERSION = "v2"
+PIPELINE_OUTPUT_VERSION = "v3"

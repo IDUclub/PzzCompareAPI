@@ -66,16 +66,49 @@ def load_system_prompt(path: str) -> str:
         return _DEFAULT_SYSTEM_PROMPT
 
 
+@lru_cache(maxsize=4)
+def _load_vri_names_cached(path: str) -> tuple[tuple[str, str], ...]:
+    """Load ``{vri_code: name}`` from a Rosreestr classifier's ``by_code`` block.
+
+    Cached; returns a tuple of pairs (hashable). Used to enrich the grounding
+    with human-readable ВРИ names, since the deterministic runner leaves
+    ``matched_vri_name`` empty for services / most physical-object types.
+    """
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ()
+    by_code = data.get("by_code") if isinstance(data, dict) else None
+    if not isinstance(by_code, dict):
+        return ()
+    pairs: list[tuple[str, str]] = []
+    for code, entry in by_code.items():
+        if isinstance(entry, dict):
+            name = entry.get("name_plain") or entry.get("name")
+        else:
+            name = entry
+        if name:
+            pairs.append((str(code), str(name)))
+    return tuple(pairs)
+
+
+def load_vri_names(path: str | None) -> dict[str, str]:
+    """Public helper: ``{code: name}`` from a classifier file, {} on any failure."""
+    return dict(_load_vri_names_cached(path)) if path else {}
+
+
 def _extract_problem_objects(
     object_zone_fit: dict[str, Any],
     cap: int,
     reason_chars: int = 240,
+    vri_names: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return the wrong/unclear objects (key fields only), capped in count.
 
     Works for both ``group_by`` shapes: a flat ``objects`` list or per-zone
-    ``zones[].objects``. Keeps the answer-relevant fields so the model can be
-    specific without ingesting the whole (potentially huge) report.
+    ``zones[].objects``. Keeps the answer-relevant fields — including the ВРИ
+    the runner assigned (code + name) and the verdict reason — so the model can
+    explain each problem parcel specifically without ingesting the whole report.
     """
     objects = object_zone_fit.get("objects")
     if not objects:
@@ -86,12 +119,18 @@ def _extract_problem_objects(
     trimmed: list[dict[str, Any]] = []
     for obj in problems[:cap]:
         reason = obj.get("reason")
+        code = obj.get("matched_vri_code") or ""
+        name = obj.get("matched_vri_name") or ""
+        if not name and code and vri_names:
+            name = vri_names.get(code, "")
         trimmed.append(
             {
                 "vri_text": obj.get("vri_text"),
                 "zone_name": obj.get("zone_name"),
                 "verdict": obj.get("verdict"),
-                "fit": obj.get("fit"),
+                "assigned_vri_code": code or None,
+                "assigned_vri_name": name or None,
+                "основание_подбора_ВРИ": obj.get("resolution_basis") or None,
                 "reason": (reason[:reason_chars] if isinstance(reason, str) else reason),
             }
         )
@@ -103,6 +142,7 @@ def build_classification_context(
     chat_message: str | None = None,
     object_zone_fit: dict[str, Any] | None = None,
     zones_info: dict[str, Any] | None = None,
+    vri_names: dict[str, str] | None = None,
     max_report_chars: int = 12000,
     max_problem_objects: int = 60,
 ) -> str:
@@ -124,15 +164,62 @@ def build_classification_context(
         summary = object_zone_fit.get("summary")
         if summary:
             parts.append("Сводка:\n" + json.dumps(summary, ensure_ascii=False, default=str))
+        # Compact per-zone breakdown, always included (it's tiny — one row per
+        # zone). Lets the answer give a detailed per-zone report even when the
+        # full report JSON below is dropped for exceeding max_report_chars.
+        zones = object_zone_fit.get("zones")
+        if zones:
+            per_zone = [
+                {
+                    "зона_ПЗЗ": z.get("zone_name") or z.get("zone_type_id"),
+                    "всего": (z.get("summary") or {}).get("total"),
+                    "допустимо": (z.get("summary") or {}).get("in_correct_zone"),
+                    "не_соответствует": (z.get("summary") or {}).get("in_wrong_zone"),
+                    "ручная_проверка": (z.get("summary") or {}).get("unclear"),
+                }
+                for z in zones
+                if z.get("zone_type_id")  # skip the synthetic "no zone" bucket
+            ]
+            if per_zone:
+                parts.append(
+                    "Разбивка по территориальным зонам ПЗЗ:\n"
+                    + json.dumps(per_zone, ensure_ascii=False, default=str)
+                )
+        # Aggregated (verdict, reason) -> count for the non-clean objects, so the
+        # answer can say WHY parcels need manual review / were rejected, not just
+        # how many. Always small (a handful of distinct reasons).
+        all_objects = object_zone_fit.get("objects")
+        if not all_objects:
+            all_objects = []
+            for z in object_zone_fit.get("zones") or []:
+                all_objects.extend(z.get("objects") or [])
+        reason_counts: dict[tuple[str, str], int] = {}
+        for o in all_objects:
+            if o.get("fit") in ("wrong", "unclear"):
+                key = (o.get("verdict") or "—", (o.get("reason") or "").strip())
+                reason_counts[key] = reason_counts.get(key, 0) + 1
+        if reason_counts:
+            reasons = [
+                {"вердикт": v, "причина": r, "участков": n}
+                for (v, r), n in sorted(reason_counts.items(), key=lambda kv: -kv[1])
+            ]
+            parts.append(
+                "Причины по проблемным участкам (агрегировано):\n"
+                + json.dumps(reasons, ensure_ascii=False, default=str)
+            )
         report_json = json.dumps(object_zone_fit, ensure_ascii=False, default=str)
         if len(report_json) <= max_report_chars:
             parts.append("Структурированный отчёт (JSON):\n" + report_json)
         else:
-            problems = _extract_problem_objects(object_zone_fit, max_problem_objects)
+            problems = _extract_problem_objects(
+                object_zone_fit, max_problem_objects, vri_names=vri_names
+            )
             if problems:
                 parts.append(
-                    f"Неуместные/спорные объекты (показаны первые {len(problems)}; "
-                    "точные итоги — в «Сводка»):\n"
+                    "Проблемные земельные участки (потенциальные нарушения и "
+                    f"требующие ручной проверки; показаны первые {len(problems)}, "
+                    "точные итоги — в «Сводка»; для каждого: присвоенный ВРИ и "
+                    "причина вердикта):\n"
                     + json.dumps(problems, ensure_ascii=False, default=str)
                 )
     if zones_info:
