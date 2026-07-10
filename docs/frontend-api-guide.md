@@ -489,10 +489,11 @@ object-zone-fit. Параллельно история диалога сохра
 
 **`building_pzz_check` — проверка ПЗЗ по зданиям.** Пользователь грузит **сценарий застройки
 (здания)** вместо участков и свои зоны ПЗЗ. Здания — в формате Urban API (числовые
-`physical_object_type_id` / `service_type_id` + этажность). Каждое здание детерминированно
-(без LLM-классификации) сопоставляется с ВРИ (жилое → по этажности, сервис → по
-`service_type_id`, иначе → по `physical_object_type_id`) и проверяется на допустимость в своей
-территориальной зоне.
+`physical_object_type_id` / `service_type_id` + этажность), но вместо ID можно передать
+текстовое название/код типа или сервиса (`"Школа"`, `"Детский сад"`, `school`). Каждое здание
+детерминированно (без LLM-классификации значений) сопоставляется с ВРИ (жилое → по этажности,
+сервис → по `service_type_id`/названию/коду, иначе → по `physical_object_type_id`/названию) и
+проверяется на допустимость в своей территориальной зоне.
 
 | Поле | Тип | Обязательно | Описание |
 |------|-----|-------------|----------|
@@ -513,7 +514,7 @@ object-zone-fit. Параллельно история диалога сохра
 (разложение физобъектов и сервисов по отдельным строкам) — на стороне фронта/данных.
 
 Для запуска нужны: колонка кода зоны **и** хотя бы одна из колонок «тип»/«сервис» здания
-(этажность опциональна — для жилых без неё берётся базовый ВРИ). Если минимум не определился,
+(ID или текстовое название; этажность опциональна — для жилых без неё берётся базовый ВРИ). Если минимум не определился,
 задача не создаётся: приходит нарратив + `error` + `done`. Результат — GeoJSON с 8
 колонками ПЗЗ (`Вердикт_ПЗЗ`, `Основание_подбора_ВРИ` и др.; см. D2), одна result-фича на каждую
 входную. Здания без сопоставленного ВРИ или зоны без описания → «Требуется ручная проверка».
@@ -523,7 +524,8 @@ GeoParquet (конвертируются в GeoJSON на приёме).
 
 **Пример 1 — слой зданий (`cadastral_feature_collection_file`).** Здания и сервисы в одном
 слое, одна фича = один объект. Колонки можно называть по-своему — детектор найдёт их по
-содержимому (`physical_object_type_id` → тип, `service_type_id` → сервис, `floors` → этажность):
+содержимому (`physical_object_type_id`/`physical_object_type_name` → тип,
+`service_type_id`/`service_type_name` → сервис, `floors` → этажность):
 
 ```json
 {
@@ -532,20 +534,26 @@ GeoParquet (конвертируются в GeoJSON на приёме).
     {
       "type": "Feature",
       "geometry": { "type": "Point", "coordinates": [31.03, 59.94] },
-      "properties": { "physical_object_type_id": 4, "floors": 8 }
+      "properties": { "physical_object_type_name": "Жилой дом", "floors": 8 }
     },
     {
       "type": "Feature",
       "geometry": { "type": "Point", "coordinates": [31.04, 59.95] },
-      "properties": { "service_type_id": 22 }
+      "properties": { "service_type_name": "Школа" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [31.05, 59.95] },
+      "properties": { "service_type_name": "Детский сад" }
     }
   ]
 }
 ```
 
-Строка-**здание** заполняет `physical_object_type_id` (+ `floors` для жилых), строка-**сервис** —
-`service_type_id`. Понимаются и вложенные Urban-API-формы (`physical_object_type.physical_object_type_id`,
-`service_type.service_type_id`, `properties["Количество этажей"]`).
+Строка-**здание** заполняет `physical_object_type_id`/`physical_object_type_name` (+ `floors` для жилых),
+строка-**сервис** — `service_type_id`/`service_type_name`/`service_type.code`. Понимаются и вложенные
+Urban-API-формы (`physical_object_type.physical_object_type_id`, `physical_object_type.name`,
+`service_type.service_type_id`, `service_type.name`, `properties["Количество этажей"]`).
 
 **Пример 2 — слой зон ПЗЗ (`pzz_zones_feature_collection_file`).** `zone_code` — то, по чему
 ищется набор разрешённых ВРИ; при его отсутствии берётся вложенный `functional_zone_type.id`:

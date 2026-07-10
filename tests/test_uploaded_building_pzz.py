@@ -50,6 +50,35 @@ def test_resolve_service_type() -> None:
     assert r._resolve_vri(None, False, 22, None)[0] == "3.5.1"
 
 
+def test_extract_resolves_text_service_name() -> None:
+    r = _runner()
+    req = _req(building_type_col="", building_service_col="service_name")
+    po, is_res, svc, floors, label = r._extract({"service_name": "Школа"}, req)
+    assert (po, is_res, svc, floors) == (None, False, 22, None)
+    assert label == "Школа"
+    assert r._resolve_vri(po, is_res, svc, floors)[0] == "3.5.1"
+
+
+def test_extract_resolves_text_service_alias_prefix() -> None:
+    r = _runner()
+    req = _req(building_type_col="", building_service_col="service_name")
+    po, is_res, svc, floors, label = r._extract(
+        {"service_name": "Детский сад 12"}, req
+    )
+    assert (po, is_res, svc, floors) == (None, False, 21, None)
+    assert label == "Детский сад 12"
+    assert r._resolve_vri(po, is_res, svc, floors)[0] == "3.5.1"
+
+
+def test_extract_resolves_text_physical_object_type_name() -> None:
+    r = _runner()
+    req = _req(building_type_col="type_name", building_service_col="")
+    po, is_res, svc, floors, label = r._extract({"type_name": "Склад"}, req)
+    assert (po, is_res, svc, floors) == (29, False, None, None)
+    assert label == "Склад"
+    assert r._resolve_vri(po, is_res, svc, floors)[0] == "6.9"
+
+
 def test_resolve_residential_wins_over_service() -> None:
     r = _runner()
     # a residential building carrying a stray service id still classifies as жилое
@@ -58,7 +87,7 @@ def test_resolve_residential_wins_over_service() -> None:
 
 def test_resolve_unknown_returns_none() -> None:
     r = _runner()
-    assert r._resolve_vri(999999, False, None, None) == (None, None)
+    assert r._resolve_vri(999999, False, None, None) == (None, None, "")
 
 
 def test_extract_reads_configured_columns() -> None:

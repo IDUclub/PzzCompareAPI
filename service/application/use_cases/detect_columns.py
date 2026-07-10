@@ -118,30 +118,40 @@ BUILDING_TYPE_TARGET = DetectionTarget(
     title_ru="тип здания (жилое/нежилое)",
     description_ru=(
         "Тип здания. Обычно числовой physical_object_type_id из Urban API "
-        "(напр. 4 — жилой дом), либо текст «жилое»/«нежилое». Определяет, "
-        "жилое ли здание, и участвует в подборе ВРИ."
+        "(напр. 4 — жилой дом), либо текстовое название типа объекта "
+        "(«жилой дом», «склад»). Определяет, жилое ли здание, и участвует "
+        "в подборе ВРИ."
     ),
     known_names=(
         "physical_object_type_id",
+        "physical_object_type_name",
         "physical_object_type",
         "тип",
         "тип_здания",
+        "название_типа",
         "building_type",
+        "building_type_name",
         "po_type_id",
+        "po_type_name",
     ),
 )
 BUILDING_SERVICE_TARGET = DetectionTarget(
     key="building_service_col",
     title_ru="сервис здания (service_type_id)",
     description_ru=(
-        "Тип сервиса здания — числовой service_type_id из Urban API "
-        "(напр. школа, поликлиника, магазин). Используется для подбора ВРИ "
-        "нежилых зданий. НЕ этажность и НЕ тип здания."
+        "Тип сервиса здания — числовой service_type_id из Urban API или "
+        "текстовое название/код сервиса (напр. «школа», «детский сад», "
+        "«поликлиника», school). Используется для подбора ВРИ нежилых "
+        "зданий. НЕ этажность и НЕ тип здания."
     ),
     known_names=(
         "service_type_id",
+        "service_type_name",
         "service_type",
+        "service_name",
         "сервис",
+        "название_сервиса",
+        "наименование_сервиса",
         "service",
         "тип_сервиса",
     ),

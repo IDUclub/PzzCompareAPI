@@ -110,6 +110,20 @@ def test_building_columns_resolve_by_heuristic() -> None:
     assert fake.calls == []
 
 
+def test_building_text_name_columns_resolve_by_heuristic() -> None:
+    fc = _fc([{
+        "physical_object_type_name": "Жилой дом",
+        "service_type_name": "Школа",
+        "floors": 5,
+    }])
+    fake = RecordingFakeOllama()
+    suggestions = asyncio.run(detect_columns_for_file(fake, fc, BUILDING_TARGETS))
+    assert suggestions["building_type_col"].value == "physical_object_type_name"
+    assert suggestions["building_service_col"].value == "service_type_name"
+    assert suggestions["building_floors_col"].value == "floors"
+    assert fake.calls == []
+
+
 # --- LLM fallback + enum constraint ---------------------------------------
 
 def test_llm_resolves_unknown_column_names() -> None:

@@ -2,16 +2,16 @@
 
 The building counterpart of the cadastral upload flow: instead of a parcel's VRI
 text, the user uploads *buildings* (Urban-API-shaped: ``physical_object_type_id``
-/ ``service_type_id`` + floors) plus their own PZZ zones, and optionally a zone
-descriptions file. Each building is resolved to a VRI code and tested against its
-containing zone's permitted-VRI set — the same verdict logic as the scenario
-runner (see ``_deterministic_pzz``), driven by user-named columns instead of
-urban_api's fixed schema.
+/ ``service_type_id`` or their text names/codes + floors) plus their own PZZ
+zones, and optionally a zone descriptions file. Each building is resolved to a
+VRI code and tested against its containing zone's permitted-VRI set — the same
+verdict logic as the scenario runner (see ``_deterministic_pzz``), driven by
+user-named columns instead of urban_api's fixed schema.
 
 Resolution priority for a building's VRI:
     1. residential  -> floor-band VRI (uses the floors column);
-    2. service       -> service_type_id → VRI (service_type_to_vri.json);
-    3. otherwise     -> physical_object_type_id → VRI.
+    2. service       -> service_type_id/name/code → VRI (service_type_to_vri.json);
+    3. otherwise     -> physical_object_type_id/name → VRI.
 
 Zone permitted-VRI set comes from the uploaded descriptions file when supplied,
 else the built-in fz_to_pzz mapping (fallback). Heavy geo deps load lazily.
@@ -43,6 +43,10 @@ logger = logging.getLogger("service.tasks")
 _FLOORS_FIELD = "Количество этажей"
 _RESIDENTIAL_PO_TYPE = 4  # urban_api "жилой дом"
 _RESIDENTIAL_TEXT = ("жил", "residential", "жилое", "жилой")
+_COMMON_SERVICE_ALIASES: dict[str, tuple[str, ...]] = {
+    "21": ("детсад", "детский садик", "дошкольное учреждение", "доу"),
+    "22": ("сош", "общеобразовательная школа"),
+}
 
 
 def _as_int(value: Any) -> int | None:
@@ -50,6 +54,52 @@ def _as_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalise_alias(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    text = str(value).casefold().replace("ё", "е")
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def _add_alias(alias_map: dict[str, str | None], value: Any, object_id: str) -> None:
+    key = _normalise_alias(value)
+    if not key:
+        return
+    if key not in alias_map:
+        alias_map[key] = object_id
+    elif alias_map[key] != object_id:
+        alias_map[key] = None
+
+
+def _lookup_alias(alias_map: dict[str, str | None], value: Any) -> int | None:
+    key = _normalise_alias(value)
+    if not key:
+        return None
+
+    exact = alias_map.get(key)
+    if exact:
+        return _as_int(exact)
+
+    prefix_matches = {
+        object_id
+        for alias, object_id in alias_map.items()
+        if object_id and len(alias) >= 5 and key.startswith(alias)
+    }
+    if len(prefix_matches) == 1:
+        return _as_int(next(iter(prefix_matches)))
+    return None
+
+
+def _dict_value(raw: Any, *keys: str) -> Any:
+    if not isinstance(raw, dict):
+        return raw
+    for key in keys:
+        value = raw.get(key)
+        if value not in (None, ""):
+            return value
+    return None
 
 
 class UploadedBuildingPzzRunner(PipelineRunner):
@@ -64,6 +114,29 @@ class UploadedBuildingPzzRunner(PipelineRunner):
             Path(settings.service_type_to_vri_path).read_text(encoding="utf-8")
         )
         self._service_map: dict[str, Any] = raw_service.get("by_service_type_id", {})
+        self._service_aliases = self._build_service_aliases()
+        self._po_type_aliases = self._build_po_type_aliases()
+
+    def _build_service_aliases(self) -> dict[str, str | None]:
+        aliases: dict[str, str | None] = {}
+        for service_type_id, entry in self._service_map.items():
+            _add_alias(aliases, service_type_id, service_type_id)
+            _add_alias(aliases, entry.get("name"), service_type_id)
+            _add_alias(aliases, entry.get("code"), service_type_id)
+            for alias in entry.get("aliases") or ():
+                _add_alias(aliases, alias, service_type_id)
+            for alias in _COMMON_SERVICE_ALIASES.get(str(service_type_id), ()):
+                _add_alias(aliases, alias, service_type_id)
+        return aliases
+
+    def _build_po_type_aliases(self) -> dict[str, str | None]:
+        aliases: dict[str, str | None] = {}
+        for po_type_id, entry in self._po2vri.get("by_type_id", {}).items():
+            _add_alias(aliases, po_type_id, po_type_id)
+            _add_alias(aliases, entry.get("name"), po_type_id)
+            for alias in entry.get("aliases") or ():
+                _add_alias(aliases, alias, po_type_id)
+        return aliases
 
     def _load_zone_mapping(self, request: PipelineRequest):
         """User descriptions file when supplied+usable, else built-in fallback."""
@@ -87,27 +160,35 @@ class UploadedBuildingPzzRunner(PipelineRunner):
 
         type_raw = props.get(request.building_type_col) if request.building_type_col else None
         # Unwrap the urban_api nested ``physical_object_type`` object (the detected
-        # column may point straight at it) to its id.
-        if isinstance(type_raw, dict):
-            type_raw = type_raw.get("physical_object_type_id")
+        # column may point straight at it) to its id or text name/code.
+        type_raw = _dict_value(type_raw, "physical_object_type_id", "id", "name", "code")
         if type_raw is None:
-            type_raw = (props.get("physical_object_type") or {}).get("physical_object_type_id")
+            type_raw = _dict_value(
+                props.get("physical_object_type"),
+                "physical_object_type_id",
+                "id",
+                "name",
+                "code",
+            )
 
         service_raw = props.get(request.building_service_col) if request.building_service_col else None
-        if isinstance(service_raw, dict):
-            service_raw = service_raw.get("service_type_id")
+        service_raw = _dict_value(service_raw, "service_type_id", "id", "name", "code")
+        if service_raw is None:
+            service_raw = _dict_value(
+                props.get("service_type"), "service_type_id", "id", "name", "code"
+            )
 
         floors = props.get(request.building_floors_col) if request.building_floors_col else None
         if floors is None:
             floors = nested.get(_FLOORS_FIELD, props.get(_FLOORS_FIELD))
 
-        po_type_id = _as_int(type_raw)
+        po_type_id = _as_int(type_raw) or _lookup_alias(self._po_type_aliases, type_raw)
         is_residential = po_type_id == _RESIDENTIAL_PO_TYPE
         if po_type_id is None and isinstance(type_raw, str):
             low = type_raw.strip().lower()
             if any(low.startswith(t) for t in _RESIDENTIAL_TEXT):
                 is_residential = True
-        service_type_id = _as_int(service_raw)
+        service_type_id = _as_int(service_raw) or _lookup_alias(self._service_aliases, service_raw)
 
         label = " / ".join(
             str(x) for x in (type_raw, service_raw) if x not in (None, "")
