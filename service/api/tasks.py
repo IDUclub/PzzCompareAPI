@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
-from starlette.responses import FileResponse, RedirectResponse
+from starlette.responses import FileResponse, RedirectResponse, Response
 
 from ..application.use_cases.chat_answer import (
     build_classification_context,
@@ -400,10 +400,10 @@ async def task_stream_with_report_generator(
                         yield ServerSentEvent(
                             data=json.dumps({"error": exc.detail}), event="error"
                         )
-                    # Durable link to the result layer (alongside inline geojson,
+                    # Durable link(s) to the result layer(s) (alongside inline geojson,
                     # so the frontend can switch to download-by-link for big files).
-                    layer = build_result_geo_layer(task, external_id, app_settings, request)
-                    if layer is not None:
+                    # building_pzz_check yields two — здания + сервисы.
+                    for layer in build_result_geo_layers(task, external_id, app_settings, request):
                         yield ServerSentEvent(
                             data=json.dumps({"type": "file", "content": layer}),
                             event="file",
@@ -643,7 +643,7 @@ async def task_stream_with_chat_generator(
     last_event_id = 0
     last_status: TaskStatus | None = None
     classification_context = ""
-    geo_layer: dict[str, Any] | None = None
+    geo_layers: list[dict[str, Any]] = []
     inputs_emitted = False
     while True:
         if await request.is_disconnected():
@@ -693,7 +693,7 @@ async def task_stream_with_chat_generator(
             # inside the session scope (need the task row), then stream the
             # answer outside any I/O on it.
             if current_status == TaskStatus.finished:
-                geo_layer = build_result_geo_layer(task, external_id, app_settings, request)
+                geo_layers = build_result_geo_layers(task, external_id, app_settings, request)
                 if include_report:
                     try:
                         if report_kind == "classify":
@@ -720,7 +720,7 @@ async def task_stream_with_chat_generator(
                         yield ServerSentEvent(
                             data=json.dumps({"error": exc.detail}), event="error"
                         )
-                if geo_layer is not None:
+                for geo_layer in geo_layers:
                     yield ServerSentEvent(
                         data=json.dumps({"type": "file", "content": geo_layer}),
                         event="file",
@@ -731,7 +731,7 @@ async def task_stream_with_chat_generator(
     # Conversational events use gMART's {"type", "content"} envelope.
     chat_id_final = chat_id
     streamed_answer = False
-    assistant_file_parts = [geo_layer_to_file_part(geo_layer)] if geo_layer else None
+    assistant_file_parts = [geo_layer_to_file_part(layer) for layer in geo_layers] or None
     if last_status == TaskStatus.finished:
         async for event in _stream_chat_answer_managed(
             app_settings,
@@ -869,6 +869,25 @@ _SLOT_LABELS: dict[str, tuple[str, str]] = {
 _RESULT_LABEL_PZZ = ("Результат проверки ПЗЗ", "pzz_check_result.geojson")
 _RESULT_LABEL_CLASSIFY = ("Результат классификации ВРИ", "classification_result.geojson")
 
+# building_pzz_check emits the result as TWO layers — здания and сервисы — split
+# from the single combined result by the «Категория_объекта» feature property.
+# These slots have no task column: /files/{slot} filters the combined result on
+# the fly (works for both local and MinIO storage). slot -> (category, name,
+# title, filename).
+_COL_CATEGORY = "Категория_объекта"
+_RESULT_SPLIT_SLOTS: dict[str, tuple[str, str, str, str]] = {
+    "result_buildings": ("Здание", "buildings_result", "Результат — здания", "buildings_result.geojson"),
+    "result_services": ("Сервис", "services_result", "Результат — сервисы", "services_result.geojson"),
+}
+
+
+def _is_building_task(task: PipelineTask) -> bool:
+    """True for building_pzz_check tasks (they carry detected building columns)."""
+    return bool(
+        getattr(task, "building_type_col", None)
+        or getattr(task, "building_service_col", None)
+    )
+
 
 def _result_label(include_pzz_check: bool | None) -> tuple[str, str]:
     """(title, download filename) for a result layer, by run mode.
@@ -958,6 +977,40 @@ def build_result_geo_layer(
     )
 
 
+def build_result_geo_layers(
+    task: PipelineTask,
+    external_id: str,
+    app_settings: Settings,
+    request: Request | None = None,
+) -> list[dict[str, Any]]:
+    """Result-layer link descriptors for a finished task (one or two layers).
+
+    building_pzz_check returns TWO layers — «здания» and «сервисы» — served by
+    filtering the combined result on the fly (durable ``url`` only, no presigned
+    ``download_url``). Every other mode returns the single combined result layer.
+    """
+    if task.status != "finished" or not task.result_path:
+        return []
+    if not _is_building_task(task):
+        single = build_result_geo_layer(task, external_id, app_settings, request)
+        return [single] if single is not None else []
+    layers: list[dict[str, Any]] = []
+    for slot, (_category, name, title, filename) in _RESULT_SPLIT_SLOTS.items():
+        layers.append(
+            {
+                "name": name,
+                "title": title,
+                "role": "result",
+                "url": _file_durable_url(slot, external_id, app_settings, request),
+                "download_url": None,
+                "filename": filename,
+                "mime_type": "application/geo+json",
+                "source_service": app_settings.app_name,
+            }
+        )
+    return layers
+
+
 def build_input_geo_layers(
     task: PipelineTask,
     external_id: str,
@@ -1009,6 +1062,32 @@ def geo_layer_to_file_part(layer: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _serve_result_split(
+    task: PipelineTask, slot: str, app_settings: Settings
+) -> Response:
+    """Serve one half (здания / сервисы) of a building_pzz_check result.
+
+    Loads the combined result GeoJSON (local or MinIO), filters features by their
+    «Категория_объекта», and returns the filtered FeatureCollection as a download.
+    Generated on the fly so no second artefact is stored.
+    """
+    category, _name, _title, filename = _RESULT_SPLIT_SLOTS[slot]
+    if task.status != "finished" or not task.result_path:
+        raise HTTPException(status_code=404, detail="Task result not available yet")
+    geojson = _load_result_geojson(task.result_path, app_settings.outputs_dir)
+    features = [
+        f
+        for f in (geojson.get("features") or [])
+        if (f.get("properties") or {}).get(_COL_CATEGORY) == category
+    ]
+    fc = {"type": "FeatureCollection", "features": features}
+    return Response(
+        content=json.dumps(fc, ensure_ascii=False, default=str),
+        media_type="application/geo+json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/files/{slot}/{external_id}")
 def get_task_file_redirect(
     slot: str,
@@ -1023,6 +1102,10 @@ def get_task_file_redirect(
     the file when storage is local. Intentionally unauthenticated so links saved
     in chat history keep working — the ``external_id`` (a uuid) is the capability.
     """
+    if slot in _RESULT_SPLIT_SLOTS:
+        task = get_task_or_404(external_id, task_repo)
+        return _serve_result_split(task, slot, app_settings)
+
     column = _FILE_SLOTS.get(slot)
     if column is None:
         raise HTTPException(status_code=404, detail=f"Unknown file slot '{slot}'")

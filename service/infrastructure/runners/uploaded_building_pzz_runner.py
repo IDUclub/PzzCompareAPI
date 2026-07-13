@@ -25,6 +25,8 @@ from typing import Any
 
 from service.domain import PipelineRequest
 from service.infrastructure.runners._deterministic_pzz import (
+    CATEGORY_BUILDING,
+    CATEGORY_SERVICE,
     build_zone_gdf,
     clean_result_properties,
     join_objects_to_zones,
@@ -245,6 +247,14 @@ class UploadedBuildingPzzRunner(PipelineRunner):
 
             fz = fz_by_obj.get(i)
             machine_verdict, reason, mcode, _ = compute_verdict(vri, fz, zone_allowed, zone_nick)
+            # Split key for the two download layers: a feature is a «Сервис» when a
+            # service_type was extracted and it isn't residential; otherwise «Здание»
+            # (physical objects, incl. unresolved / manual-check rows).
+            category = (
+                CATEGORY_SERVICE
+                if service_type_id is not None and not is_residential
+                else CATEGORY_BUILDING
+            )
             feature["properties"] = clean_result_properties(
                 vri_text=label,
                 fz_type_id=fz,
@@ -254,6 +264,7 @@ class UploadedBuildingPzzRunner(PipelineRunner):
                 matched_vri_code=mcode,
                 matched_vri_name=vri_name,
                 resolution_basis=vri_basis,
+                category=category,
             )
 
         result = {"type": "FeatureCollection", "features": feats}

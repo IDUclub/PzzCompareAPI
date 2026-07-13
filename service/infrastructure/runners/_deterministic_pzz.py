@@ -23,6 +23,11 @@ COL_REASON = "Причина"
 COL_MATCHED_VRI_NAME = "Подобранный_ВРИ"
 COL_MATCHED_VRI_CODE = "Код_подобранного_ВРИ"
 COL_RESOLUTION_BASIS = "Основание_подбора_ВРИ"
+# Object kind, filled only by the building runner so its result can be split into
+# separate «здания» / «сервисы» download layers. Absent from parcel results.
+COL_CATEGORY = "Категория_объекта"
+CATEGORY_BUILDING = "Здание"
+CATEGORY_SERVICE = "Сервис"
 
 # Machine verdict -> human-readable Russian label (mirrors the pipeline's
 # ``status_to_russian_label``; duplicated here to keep the API/worker side free
@@ -196,6 +201,7 @@ def clean_result_properties(
     matched_vri_code: str,
     matched_vri_name: str | None,
     resolution_basis: str | None = None,
+    category: str | None = None,
 ) -> dict[str, Any]:
     """Build the whitelist of PZZ result columns for one feature.
 
@@ -203,8 +209,10 @@ def clean_result_properties(
     holds the human-readable Russian label (frontend colors by it unchanged).
     ``resolution_basis`` (how the ВРИ was picked — by floors / service / type) is
     filled by the building runner and left empty by flows where it doesn't apply.
+    ``category`` («Здание»/«Сервис») is filled only by the building runner so the
+    result can be split into two download layers; omitted entirely otherwise.
     """
-    return {
+    props: dict[str, Any] = {
         COL_VRI_TEXT: vri_text,
         COL_ZONE_CODE: str(fz_type_id) if fz_type_id is not None else "",
         COL_ZONE_NAME: zone_nick.get(fz_type_id, "") if fz_type_id is not None else "",
@@ -214,3 +222,6 @@ def clean_result_properties(
         COL_MATCHED_VRI_NAME: matched_vri_name or "",
         COL_RESOLUTION_BASIS: resolution_basis or "",
     }
+    if category is not None:
+        props[COL_CATEGORY] = category
+    return props

@@ -6,6 +6,9 @@ from types import SimpleNamespace
 
 from service.domain import PipelineRequest
 from service.infrastructure.runners._deterministic_pzz import (
+    CATEGORY_BUILDING,
+    CATEGORY_SERVICE,
+    COL_CATEGORY,
     COL_MATCHED_VRI_CODE,
     COL_RESOLUTION_BASIS,
     COL_VERDICT,
@@ -184,14 +187,53 @@ def test_run_residential_verdicts_fallback_mapping(tmp_path) -> None:
     assert props[0][COL_MATCHED_VRI_CODE] == "2.1.1"
     assert props[0][COL_ZONE_CODE] == "8"
     assert props[1][COL_VERDICT] == "Не разрешен"
-    # clean whitelist: exactly the 8 result columns, no input passthrough
+    # clean whitelist: exactly the 8 result columns + the building-mode category
     assert set(props[0].keys()) == {
         "ВРИ_ЕГРН", COL_ZONE_CODE, "Название фактической зоны нахождения кадастра",
         COL_VERDICT, "Причина", COL_MATCHED_VRI_CODE, "Подобранный_ВРИ",
-        COL_RESOLUTION_BASIS,
+        COL_RESOLUTION_BASIS, COL_CATEGORY,
     }
     # residential building -> basis records the floor-band resolution
     assert "по этажности" in props[0][COL_RESOLUTION_BASIS]
+    # non-service physical objects are categorised as «Здание»
+    assert props[0][COL_CATEGORY] == CATEGORY_BUILDING
+
+
+def test_run_tags_category_for_split(tmp_path) -> None:
+    """A mixed layer (physical object + service) is tagged so the API can split
+    the result into «здания» / «сервисы» download layers."""
+    buildings = {
+        "type": "FeatureCollection",
+        "features": [
+            # physical object (residential building) -> «Здание»
+            {"type": "Feature", "geometry": _point(0.5, 0.5),
+             "properties": {"po": 4, "floors": 3}},
+            # service (school, service_type_id 22) in the same zone -> «Сервис»
+            {"type": "Feature", "geometry": _point(0.5, 0.5),
+             "properties": {"svc": 22}},
+        ],
+    }
+    (tmp_path / "b.geojson").write_text(json.dumps(buildings), encoding="utf-8")
+    (tmp_path / "z.geojson").write_text(json.dumps(_zones()), encoding="utf-8")
+    req = _req(
+        cadastral_data_path=str(tmp_path / "b.geojson"),
+        pzz_zones_data_path=str(tmp_path / "z.geojson"),
+        outputs_dir=str(tmp_path / "out"),
+        building_type_col="po",
+        building_service_col="svc",
+        building_floors_col="floors",
+    )
+    feats = json.load(open(_runner().run(req), encoding="utf-8"))["features"]
+    cats = [f["properties"][COL_CATEGORY] for f in feats]
+    assert cats == [CATEGORY_BUILDING, CATEGORY_SERVICE]
+
+    # serve-time split (mirrors _serve_result_split in service/api/tasks.py)
+    def by_cat(cat):
+        return [f for f in feats if f["properties"].get(COL_CATEGORY) == cat]
+    assert len(by_cat(CATEGORY_BUILDING)) == 1
+    assert len(by_cat(CATEGORY_SERVICE)) == 1
+    # every feature lands in exactly one layer
+    assert len(by_cat(CATEGORY_BUILDING)) + len(by_cat(CATEGORY_SERVICE)) == len(feats)
 
 
 def test_run_uploaded_descriptions_override(tmp_path) -> None:
