@@ -3,13 +3,24 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
+from service.infrastructure.runners import pipeline_runner as runner_mod
 from service.infrastructure.runners.pipeline_runner import (
     InProcessPipelineRunner,
     PipelineRunnerFactory,
+    StorageAwarePipelineRunner,
     SubprocessPipelineRunner,
     _build_output_glob,
 )
 from service.domain import PipelineRequest
+
+
+class _FakeStorage:
+    def is_remote(self) -> bool:
+        return False
+
+
+def _patch_local_storage(monkeypatch) -> None:
+    monkeypatch.setattr(runner_mod, "get_object_storage", lambda: _FakeStorage())
 
 
 def _request(tmp_path) -> PipelineRequest:
@@ -19,6 +30,7 @@ def _request(tmp_path) -> PipelineRequest:
         pzz_zones_data_path="/tmp/pzz.geojson",
         pzz_zone_vri_labels_path="/tmp/labels.json",
         vri_classifier_path="/tmp/classifier.json",
+        include_pzz_check=True,
         cadastral_vri_col="vri",
         pzz_zone_code_col="code",
         pzz_zone_name_col="name",
@@ -44,14 +56,18 @@ def _settings(mode: str) -> SimpleNamespace:
     )
 
 
-def test_factory_selects_in_process_mode() -> None:
+def test_factory_selects_in_process_mode(monkeypatch) -> None:
+    _patch_local_storage(monkeypatch)
     runner = PipelineRunnerFactory.create(_settings("in_process"))
-    assert isinstance(runner, InProcessPipelineRunner)
+    assert isinstance(runner, StorageAwarePipelineRunner)
+    assert isinstance(runner._inner, InProcessPipelineRunner)
 
 
-def test_factory_selects_subprocess_mode() -> None:
+def test_factory_selects_subprocess_mode(monkeypatch) -> None:
+    _patch_local_storage(monkeypatch)
     runner = PipelineRunnerFactory.create(_settings("subprocess"))
-    assert isinstance(runner, SubprocessPipelineRunner)
+    assert isinstance(runner, StorageAwarePipelineRunner)
+    assert isinstance(runner._inner, SubprocessPipelineRunner)
 
 
 def test_runners_return_same_result_contract(tmp_path, monkeypatch) -> None:
@@ -64,14 +80,13 @@ def test_runners_return_same_result_contract(tmp_path, monkeypatch) -> None:
             assert kwargs["task_external_id"] == request.task_external_id
             (tmp_path / "pzz_compare_spatial_first_task-123_result.geojson").write_text("{}")
 
-    monkeypatch.setattr(
-        "service.application.runners.pipeline_runner.importlib.import_module",
-        lambda _: FakeModule,
-    )
-    monkeypatch.setattr(
-        "service.application.runners.pipeline_runner.subprocess.run",
-        lambda *args, **kwargs: None,
-    )
+    monkeypatch.setattr(runner_mod, "importlib", SimpleNamespace(import_module=lambda _: FakeModule))
+
+    def fake_subprocess_run(*args, **kwargs):
+        (tmp_path / "pzz_compare_spatial_first_task-123_result.geojson").write_text("{}")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_subprocess_run)
 
     in_process_result = InProcessPipelineRunner(settings).run(request)
     subprocess_result = SubprocessPipelineRunner(settings).run(request)

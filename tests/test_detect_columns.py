@@ -246,3 +246,21 @@ def test_complete_json_raises_on_bad_content() -> None:
 
     with pytest.raises(OllamaChatError):
         asyncio.run(run())
+
+
+def test_complete_json_recovers_json_from_reasoning_wrapper() -> None:
+    # gpt-oss-style: chain-of-thought + fenced JSON around the actual object.
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        content = 'Let me think...\nThe answer is:\n```json\n{"n0": 26, "n1": null}\n```\n'
+        return httpx.Response(200, json={"message": {"content": content}})
+
+    async def run():
+        async with _real_client(handler) as oc:
+            return await oc.complete_json([{"role": "user", "content": "x"}], schema={})
+
+    result = asyncio.run(run())
+    assert result == {"n0": 26, "n1": None}
+    assert seen["body"]["think"] is False  # reasoning suppressed at the source

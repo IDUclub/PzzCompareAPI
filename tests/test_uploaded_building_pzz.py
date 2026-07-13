@@ -19,11 +19,15 @@ from service.infrastructure.runners.uploaded_building_pzz_runner import (
 )
 
 
-def _settings() -> SimpleNamespace:
+def _settings(llm_fallback: bool = True) -> SimpleNamespace:
     return SimpleNamespace(
         physical_object_type_to_vri_path="data/physical_object_type_to_vri.json",
         service_type_to_vri_path="data/service_type_to_vri.json",
         default_fz_to_pzz_mapping_path="data/functional_zones_to_pzz_mapping.json",
+        building_llm_name_fallback=llm_fallback,
+        ollama_base_url="http://ollama.invalid",
+        chat_model="test-model",
+        generate_model="test-model",
     )
 
 
@@ -56,7 +60,7 @@ def test_resolve_service_type() -> None:
 def test_extract_resolves_text_service_name() -> None:
     r = _runner()
     req = _req(building_type_col="", building_service_col="service_name")
-    po, is_res, svc, floors, label = r._extract({"service_name": "Школа"}, req)
+    po, is_res, svc, floors, label, _llm = r._extract({"service_name": "Школа"}, req)
     assert (po, is_res, svc, floors) == (None, False, 22, None)
     assert label == "Школа"
     assert r._resolve_vri(po, is_res, svc, floors)[0] == "3.5.1"
@@ -65,7 +69,7 @@ def test_extract_resolves_text_service_name() -> None:
 def test_extract_resolves_text_service_alias_prefix() -> None:
     r = _runner()
     req = _req(building_type_col="", building_service_col="service_name")
-    po, is_res, svc, floors, label = r._extract(
+    po, is_res, svc, floors, label, _llm = r._extract(
         {"service_name": "Детский сад 12"}, req
     )
     assert (po, is_res, svc, floors) == (None, False, 21, None)
@@ -76,7 +80,7 @@ def test_extract_resolves_text_service_alias_prefix() -> None:
 def test_extract_resolves_text_physical_object_type_name() -> None:
     r = _runner()
     req = _req(building_type_col="type_name", building_service_col="")
-    po, is_res, svc, floors, label = r._extract({"type_name": "Склад"}, req)
+    po, is_res, svc, floors, label, _llm = r._extract({"type_name": "Склад"}, req)
     assert (po, is_res, svc, floors) == (29, False, None, None)
     assert label == "Склад"
     assert r._resolve_vri(po, is_res, svc, floors)[0] == "6.9"
@@ -96,7 +100,7 @@ def test_resolve_unknown_returns_none() -> None:
 def test_extract_reads_configured_columns() -> None:
     r = _runner()
     req = _req(building_type_col="po", building_service_col="svc", building_floors_col="fl")
-    po, is_res, svc, floors, label = r._extract({"po": 4, "svc": 22, "fl": 5}, req)
+    po, is_res, svc, floors, label, _llm = r._extract({"po": 4, "svc": 22, "fl": 5}, req)
     assert (po, is_res, svc, floors) == (4, True, 22, 5)
     assert "4" in label and "22" in label
 
@@ -234,6 +238,77 @@ def test_run_tags_category_for_split(tmp_path) -> None:
     assert len(by_cat(CATEGORY_SERVICE)) == 1
     # every feature lands in exactly one layer
     assert len(by_cat(CATEGORY_BUILDING)) + len(by_cat(CATEGORY_SERVICE)) == len(feats)
+
+
+def _run_buildings(runner, tmp_path, buildings, **overrides) -> list[dict]:
+    (tmp_path / "b.geojson").write_text(json.dumps(buildings), encoding="utf-8")
+    (tmp_path / "z.geojson").write_text(json.dumps(_zones()), encoding="utf-8")
+    req = _req(
+        cadastral_data_path=str(tmp_path / "b.geojson"),
+        pzz_zones_data_path=str(tmp_path / "z.geojson"),
+        outputs_dir=str(tmp_path / "out"),
+        **overrides,
+    )
+    return json.load(open(runner.run(req), encoding="utf-8"))["features"]
+
+
+def _unknown_service_layer() -> dict:
+    # a service name that matches neither an id nor a catalogue alias
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "geometry": _point(0.5, 0.5),
+             "properties": {"svc": "Учебный центр «Ромашка»"}},
+        ],
+    }
+
+
+def test_needs_llm_only_for_unresolved_text_names() -> None:
+    r = _runner()
+    assert r._needs_llm("Учебный центр «Ромашка»", r._service_aliases) is True
+    assert r._needs_llm("22", r._service_aliases) is False        # numeric id
+    assert r._needs_llm("Школа", r._service_aliases) is False      # catalogue alias
+    assert r._needs_llm(None, r._service_aliases) is False
+
+
+def test_llm_fallback_resolves_unknown_service_name(tmp_path) -> None:
+    r = _runner()
+    calls = {"n": 0}
+
+    def fake_complete(messages, schema):
+        calls["n"] += 1
+        return {key: "22" for key in schema["required"]}  # -> school 22 -> 3.5.1
+
+    r._llm_complete = fake_complete
+    feats = _run_buildings(
+        r, tmp_path, _unknown_service_layer(),
+        building_type_col="", building_service_col="svc", building_floors_col="",
+    )
+    p = feats[0]["properties"]
+    assert p[COL_MATCHED_VRI_CODE] == "3.5.1"
+    assert p[COL_CATEGORY] == CATEGORY_SERVICE
+    assert "сопоставлено ИИ" in p[COL_RESOLUTION_BASIS]
+    assert calls["n"] == 1  # one batched call for the distinct unknown names
+
+
+def test_llm_fallback_disabled_keeps_manual_review(tmp_path) -> None:
+    r = UploadedBuildingPzzRunner(_settings(llm_fallback=False))
+    calls = {"n": 0}
+    r._llm_complete = lambda m, s: calls.__setitem__("n", calls["n"] + 1) or {}
+    feats = _run_buildings(
+        r, tmp_path, _unknown_service_layer(),
+        building_type_col="", building_service_col="svc", building_floors_col="",
+    )
+    assert calls["n"] == 0  # LLM never consulted when the flag is off
+    assert feats[0]["properties"][COL_VERDICT] == "Требуется ручная проверка"
+
+
+def test_no_llm_call_when_everything_resolves(tmp_path) -> None:
+    r = _runner()
+    calls = {"n": 0}
+    r._llm_complete = lambda m, s: calls.__setitem__("n", calls["n"] + 1) or {}
+    _run_buildings(r, tmp_path, _buildings(), building_type_col="po", building_floors_col="floors")
+    assert calls["n"] == 0  # ids/known names never trigger the LLM
 
 
 def test_run_uploaded_descriptions_override(tmp_path) -> None:

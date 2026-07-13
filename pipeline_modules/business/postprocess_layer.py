@@ -211,4 +211,8 @@ def select_and_rename_result_columns(gdf: gpd.GeoDataFrame, cadastral_vri_col: s
     existing_columns: List[str] = [column_name for column_name in column_mapping.keys() if column_name in gdf.columns]
     result_gdf = gdf[existing_columns + ['geometry']].copy()
     result_gdf = result_gdf.rename(columns={column_name: column_mapping[column_name] for column_name in existing_columns})
+    for column_name in result_gdf.columns:
+        if column_name == 'geometry':
+            continue
+        result_gdf[column_name] = result_gdf[column_name].astype(object).where(pd.notna(result_gdf[column_name]), None)
     return gpd.GeoDataFrame(result_gdf, geometry='geometry', crs=gdf.crs)
