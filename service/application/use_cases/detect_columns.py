@@ -210,9 +210,12 @@ def profile_columns(
     """Profile a GeoJSON layer's columns from the ``properties`` of its features.
 
     Geometry lives outside ``properties`` in GeoJSON, so it is excluded for
-    free. Scans up to ``scan_features`` features and keeps, per column, up to
-    ``max_sample_values`` distinct non-null example values (each truncated to
-    ``max_value_chars``).
+    free. Column *discovery* scans EVERY feature, so a column that only appears
+    in later features is not missed — e.g. a merged buildings+services layer
+    where ``service_type_id`` first shows up mid-file (after all the physical
+    objects). Per column it keeps up to ``scan_features`` example values (for
+    dtype / n_unique) and up to ``max_sample_values`` distinct non-null samples
+    (each truncated to ``max_value_chars``).
     """
     features = feature_collection.get("features") or []
     ordered_names: list[str] = []
@@ -221,7 +224,7 @@ def profile_columns(
     samples_by_col: dict[str, list[str]] = {}
     seen_samples: dict[str, set[str]] = {}
 
-    for feature in features[:scan_features]:
+    for feature in features:
         props = (feature or {}).get("properties") or {}
         for name, value in props.items():
             if name not in seen_names:
@@ -230,7 +233,8 @@ def profile_columns(
                 values_by_col[name] = []
                 samples_by_col[name] = []
                 seen_samples[name] = set()
-            values_by_col[name].append(value)
+            if len(values_by_col[name]) < scan_features:
+                values_by_col[name].append(value)
             if value is None or value == "":
                 continue
             text = str(value)

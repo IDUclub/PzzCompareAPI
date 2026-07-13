@@ -110,6 +110,29 @@ def test_building_columns_resolve_by_heuristic() -> None:
     assert fake.calls == []
 
 
+def test_profile_columns_discovers_late_appearing_column() -> None:
+    # Regression: a merged buildings+services layer lists all physical objects
+    # first and services only later. The service column must still be discovered
+    # (profiling scans every feature, not just the first window).
+    feats = [{"physical_object_type_id": 45} for _ in range(60)]
+    feats.append({"service_type_id": 87})  # first service well past the old 50 cap
+    profiles = {p.name: p for p in profile_columns(_fc(feats))}
+    assert "service_type_id" in profiles
+    assert profiles["service_type_id"].samples == ["87"]
+
+
+def test_building_service_column_resolved_when_only_in_late_features() -> None:
+    # End-to-end of the fix: detection maps building_service_col even though
+    # service_type_id appears only after 1500 physical-object features.
+    feats = [{"physical_object_type_id": 4} for _ in range(1500)]
+    feats += [{"service_type_id": 22} for _ in range(20)]
+    fake = RecordingFakeOllama()
+    suggestions = asyncio.run(detect_columns_for_file(fake, _fc(feats), BUILDING_TARGETS))
+    # type + service resolve by heuristic (floors is absent -> defers to LLM)
+    assert suggestions["building_type_col"].value == "physical_object_type_id"
+    assert suggestions["building_service_col"].value == "service_type_id"
+
+
 def test_building_text_name_columns_resolve_by_heuristic() -> None:
     fc = _fc([{
         "physical_object_type_name": "Жилой дом",
