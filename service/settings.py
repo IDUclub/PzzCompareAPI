@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     # the catalogue aliases, fall back to one batched LLM call to map it to the
     # closest catalogue id. Disable to keep the flow strictly deterministic.
     building_llm_name_fallback: bool = Field(default=True)
+    # building_pzz_check (real ПЗЗ / letter-index zones): when the uploaded zone
+    # layer has this many or more zone codes absent from the label mapping, the
+    # flow stops asking to confirm each one and instead suggests uploading a proper
+    # ПЗЗ descriptions file. Below the threshold, per-zone LLM suggestions are offered.
+    building_pzz_zone_suggest_threshold: int = Field(default=5)
     priority_max_sum_default: int = 20
 
     run_migrations_on_startup: bool = Field(default=True)

@@ -13,6 +13,7 @@ from service.infrastructure.runners._deterministic_pzz import (
     COL_RESOLUTION_BASIS,
     COL_VERDICT,
     COL_ZONE_CODE,
+    COL_ZONE_NAME,
 )
 from service.infrastructure.runners.uploaded_building_pzz_runner import (
     UploadedBuildingPzzRunner,
@@ -24,7 +25,9 @@ def _settings(llm_fallback: bool = True) -> SimpleNamespace:
         physical_object_type_to_vri_path="data/physical_object_type_to_vri.json",
         service_type_to_vri_path="data/service_type_to_vri.json",
         default_fz_to_pzz_mapping_path="data/functional_zones_to_pzz_mapping.json",
+        default_pzz_zone_labels_path="data/pzz_zone_llm_labels_template.json",
         building_llm_name_fallback=llm_fallback,
+        building_pzz_zone_suggest_threshold=5,
         ollama_base_url="http://ollama.invalid",
         chat_model="test-model",
         generate_model="test-model",
@@ -309,6 +312,77 @@ def test_no_llm_call_when_everything_resolves(tmp_path) -> None:
     r._llm_complete = lambda m, s: calls.__setitem__("n", calls["n"] + 1) or {}
     _run_buildings(r, tmp_path, _buildings(), building_type_col="po", building_floors_col="floors")
     assert calls["n"] == 0  # ids/known names never trigger the LLM
+
+
+def _pzz_index_zones() -> dict:
+    """Zones keyed by a ПЗЗ letter index (no urban_api functional_zone_type_id)."""
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "geometry": _square(0, 0),
+             "properties": {"Индекс_зоны": "Ж-1"}},
+            {"type": "Feature", "geometry": _square(2, 0),
+             "properties": {"Индекс_зоны": "П-1"}},
+        ],
+    }
+
+
+def _pzz_index_labels() -> list:
+    return [
+        {"zone_code": "Ж-1", "zone_name": "Жилая зона",
+         "main": [{"vri_code": "2.1.1"}], "conditional": [], "auxiliary": []},
+        {"zone_code": "П-1", "zone_name": "Производственная зона",
+         "main": [{"vri_code": "6.9"}], "conditional": [], "auxiliary": []},
+    ]
+
+
+def test_run_pzz_letter_index_backend(tmp_path) -> None:
+    """Real ПЗЗ: zones carry letter indices (Ж-1 / П-1) and permitted ВРИ come from
+    an uploaded label file in the pzz_check schema — no urban_api id involved."""
+    (tmp_path / "b.geojson").write_text(json.dumps(_buildings()), encoding="utf-8")
+    (tmp_path / "z.geojson").write_text(json.dumps(_pzz_index_zones()), encoding="utf-8")
+    labels = tmp_path / "labels.json"
+    labels.write_text(json.dumps(_pzz_index_labels()), encoding="utf-8")
+    req = _req(
+        cadastral_data_path=str(tmp_path / "b.geojson"),
+        pzz_zones_data_path=str(tmp_path / "z.geojson"),
+        pzz_zone_vri_labels_path=str(labels),
+        pzz_zone_code_col="Индекс_зоны",
+        outputs_dir=str(tmp_path / "out"),
+    )
+    props = [f["properties"] for f in json.load(open(_runner().run(req), encoding="utf-8"))["features"]]
+    # residential 2.1.1 in Ж-1 (permits 2.1.1) -> allowed; in П-1 (only 6.9) -> not
+    assert props[0][COL_VERDICT] == "Разрешен"
+    assert props[0][COL_ZONE_CODE] == "Ж-1"          # user's verbatim index, not folded
+    assert props[0][COL_ZONE_NAME] == "Жилая зона"    # matched template zone name
+    assert props[0][COL_MATCHED_VRI_CODE] == "2.1.1"
+    assert props[1][COL_VERDICT] == "Не разрешен"
+    assert props[1][COL_ZONE_CODE] == "П-1"
+
+
+def test_run_pzz_letter_index_normalises_spelling(tmp_path) -> None:
+    """A folded code («ж 1», en-dash) still matches the «Ж-1» label entry."""
+    zones = {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "geometry": _square(0, 0),
+             "properties": {"Индекс_зоны": "ж 1"}},
+        ],
+    }
+    (tmp_path / "b.geojson").write_text(json.dumps(_buildings()), encoding="utf-8")
+    (tmp_path / "z.geojson").write_text(json.dumps(zones), encoding="utf-8")
+    labels = tmp_path / "labels.json"
+    labels.write_text(json.dumps(_pzz_index_labels()), encoding="utf-8")
+    req = _req(
+        cadastral_data_path=str(tmp_path / "b.geojson"),
+        pzz_zones_data_path=str(tmp_path / "z.geojson"),
+        pzz_zone_vri_labels_path=str(labels),
+        pzz_zone_code_col="Индекс_зоны",
+        outputs_dir=str(tmp_path / "out"),
+    )
+    props = [f["properties"] for f in json.load(open(_runner().run(req), encoding="utf-8"))["features"]]
+    assert props[0][COL_VERDICT] == "Разрешен"
+    assert props[0][COL_ZONE_CODE] == "ж 1"  # display keeps the user's spelling
 
 
 def test_run_uploaded_descriptions_override(tmp_path) -> None:

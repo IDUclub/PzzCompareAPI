@@ -32,7 +32,9 @@ from service.infrastructure.runners._deterministic_pzz import (
     build_zone_gdf,
     clean_result_properties,
     join_objects_to_zones,
+    load_pzz_label_mapping,
     load_zone_mapping,
+    normalise_zone_code,
     resolve_po_type_vri,
     verdict as compute_verdict,
 )
@@ -153,21 +155,66 @@ class UploadedBuildingPzzRunner(PipelineRunner):
                 _add_alias(aliases, alias, po_type_id)
         return aliases
 
-    def _load_zone_mapping(self, request: PipelineRequest):
-        """User descriptions file when supplied+usable, else built-in fallback."""
+    @staticmethod
+    def _zone_codes_are_numeric(zones: dict[str, Any], code_col: str) -> bool:
+        """True when every populated zone code parses as an int (urban_api
+        ``functional_zone_type_id``); False as soon as one is a ПЗЗ letter index
+        like «Ж-1». Chooses the zone backend: numeric fz-mapping vs label mapping.
+        Empty (no codes at all) defaults to the letter-index backend."""
+        saw_any = False
+        for f in zones.get("features") or []:
+            raw = (f.get("properties") or {}).get(code_col)
+            if raw in (None, ""):
+                continue
+            saw_any = True
+            try:
+                int(raw)
+            except (TypeError, ValueError):
+                return False
+        return saw_any
+
+    @staticmethod
+    def _zone_code_display_map(zones: dict[str, Any], code_col: str) -> dict[str, str]:
+        """Map a normalised zone key back to the user's verbatim code for display
+        (so «Ж-1» is shown even though matching is done on the folded «ж1»)."""
+        display: dict[str, str] = {}
+        for f in zones.get("features") or []:
+            raw = (f.get("properties") or {}).get(code_col)
+            key = normalise_zone_code(raw)
+            if key:
+                display.setdefault(key, str(raw).strip())
+        return display
+
+    def _load_zone_mapping(self, request: PipelineRequest, numeric: bool):
+        """User descriptions file when supplied+usable, else built-in fallback —
+        picking the schema by backend: urban_api functional-zone mapping (numeric
+        id) or the ПЗЗ letter-index label mapping («Ж-1» → permitted ВРИ, the
+        regular ``pzz_check`` schema).
+
+        Returns ``(allowed, nick, used_default)`` — ``used_default`` is True when
+        no usable upload was found and the built-in template/mapping was used, so
+        the chat answer can flag that the check is approximate.
+        """
+        load = load_zone_mapping if numeric else load_pzz_label_mapping
         descriptions_path = request.pzz_zone_vri_labels_path
         if descriptions_path and Path(descriptions_path).is_file():
             try:
-                allowed, nick = load_zone_mapping(descriptions_path)
+                allowed, nick = load(descriptions_path)
                 if allowed:
-                    return allowed, nick
+                    return allowed, nick, False
                 logger.warning(
-                    "uploaded zone descriptions had no usable mappings; "
-                    "falling back to built-in fz_to_pzz mapping"
+                    "uploaded zone descriptions had no usable mappings for the %s "
+                    "backend; falling back to the built-in mapping",
+                    "numeric" if numeric else "pzz-index",
                 )
             except (json.JSONDecodeError, OSError, KeyError) as exc:
                 logger.warning("failed to read uploaded zone descriptions (%s); fallback", exc)
-        return load_zone_mapping(self._settings.default_fz_to_pzz_mapping_path)
+        fallback_path = (
+            self._settings.default_fz_to_pzz_mapping_path if numeric
+            else self._settings.default_pzz_zone_labels_path
+        )
+        allowed, nick = load(fallback_path)
+        return allowed, nick, True
 
     # --- LLM name fallback -----------------------------------------------------
     def _needs_llm(self, value: Any, aliases: dict[str, str | None]) -> bool:
@@ -384,11 +431,28 @@ class UploadedBuildingPzzRunner(PipelineRunner):
         buildings = json.loads(Path(request.cadastral_data_path).read_text(encoding="utf-8"))
         zones = json.loads(Path(request.pzz_zones_data_path).read_text(encoding="utf-8"))
         code_col = request.pzz_zone_code_col or "zone_code"
-        zone_allowed, zone_nick = self._load_zone_mapping(request)
 
-        zgdf = build_zone_gdf(zones, code_col)
+        # Zone backend: numeric urban_api functional_zone_type_id vs a real ПЗЗ
+        # keyed by letter index («Ж-1»). The latter resolves against the label
+        # mapping (uploaded, else the built-in template) the same way pzz_check does.
+        numeric_zones = self._zone_codes_are_numeric(zones, code_col)
+        zone_allowed, zone_nick, used_default_mapping = self._load_zone_mapping(
+            request, numeric_zones
+        )
+        code_display = (
+            {} if numeric_zones else self._zone_code_display_map(zones, code_col)
+        )
+
+        zgdf = build_zone_gdf(zones, code_col, numeric=numeric_zones)
         feats = [f for f in (buildings.get("features") or []) if f.get("geometry") is not None]
         fz_by_obj = join_objects_to_zones(feats, zgdf)
+
+        # Zone codes present on the layer but absent from the mapping — surfaced so
+        # the chat answer can flag them (and, when many, suggest uploading a proper
+        # ПЗЗ description instead of the approximate built-in template).
+        uncovered_zones = sorted(
+            {code_display.get(k, k) for k in code_display if k not in zone_allowed}
+        ) if not numeric_zones else []
 
         # Deterministic-first: recover text type/service names that don't match the
         # catalogue via one batched LLM call each; ids/known names never reach it.
@@ -423,6 +487,7 @@ class UploadedBuildingPzzRunner(PipelineRunner):
                 matched_vri_name=vri_name,
                 resolution_basis=vri_basis,
                 category=category,
+                zone_code_display=code_display.get(fz) if fz is not None else None,
             )
 
         result = {"type": "FeatureCollection", "features": feats}
@@ -433,6 +498,9 @@ class UploadedBuildingPzzRunner(PipelineRunner):
                 "stage": "uploaded_building_pzz", "status": "finished",
                 "external_id": request.task_external_id,
                 "buildings": len(feats), "zones": len(zgdf), "matched_zone": len(fz_by_obj),
+                "zone_backend": "numeric" if numeric_zones else "pzz_index",
+                "used_default_mapping": used_default_mapping,
+                "uncovered_zones": len(uncovered_zones),
             })
         )
         return _build_output_glob(output_dir, request.task_external_id)
