@@ -385,6 +385,39 @@ def test_run_pzz_letter_index_normalises_spelling(tmp_path) -> None:
     assert props[0][COL_ZONE_CODE] == "ж 1"  # display keeps the user's spelling
 
 
+def test_confirmed_overlay_resolves_uncovered_zone(tmp_path) -> None:
+    """End-to-end of the confirm flow's output: a confirmed {СХ-3 → АГ-1} overlay,
+    fed back as the descriptions file, makes the user's СХ-3 zone resolve against
+    АГ-1's permitted ВРИ."""
+    from service.application.use_cases.building_zone_review import build_confirmed_overlay
+
+    template = tmp_path / "template.json"
+    template.write_text(json.dumps([
+        {"zone_code": "АГ-1", "zone_name": "Сельхоз-жилая",
+         "main": [{"vri_code": "2.1.1"}], "conditional": [], "auxiliary": []},
+    ]), encoding="utf-8")
+    overlay = build_confirmed_overlay(str(template), {"СХ-3": "АГ-1"})
+    labels = tmp_path / "overlay.json"
+    labels.write_text(json.dumps(overlay), encoding="utf-8")
+
+    zones = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": _square(0, 0), "properties": {"Индекс_зоны": "СХ-3"}}]}
+    (tmp_path / "b.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": _point(0.5, 0.5),
+         "properties": {"po": 4, "floors": 3}}]}), encoding="utf-8")
+    (tmp_path / "z.geojson").write_text(json.dumps(zones), encoding="utf-8")
+    req = _req(
+        cadastral_data_path=str(tmp_path / "b.geojson"),
+        pzz_zones_data_path=str(tmp_path / "z.geojson"),
+        pzz_zone_vri_labels_path=str(labels),
+        pzz_zone_code_col="Индекс_зоны",
+        outputs_dir=str(tmp_path / "out"),
+    )
+    props = [f["properties"] for f in json.load(open(_runner().run(req), encoding="utf-8"))["features"]]
+    assert props[0][COL_VERDICT] == "Разрешен"       # 2.1.1 permitted via АГ-1
+    assert props[0][COL_ZONE_CODE] == "СХ-3"          # user's own code shown
+
+
 def test_run_uploaded_descriptions_override(tmp_path) -> None:
     # descriptions file that permits only warehouses (6.9) in zone 8 -> the
     # residential building there is no longer allowed, proving the override.

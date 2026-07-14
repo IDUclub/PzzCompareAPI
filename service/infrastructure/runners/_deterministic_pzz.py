@@ -100,6 +100,35 @@ def load_zone_mapping(
     return allowed, nick
 
 
+def zone_codes_are_numeric(zones: dict[str, Any], code_col: str) -> bool:
+    """True when every populated zone code parses as an int (urban_api
+    ``functional_zone_type_id``); False as soon as one is a ПЗЗ letter index like
+    «Ж-1». Selects the zone backend. Empty (no codes) defaults to letter-index."""
+    saw_any = False
+    for f in zones.get("features") or []:
+        raw = (f.get("properties") or {}).get(code_col)
+        if raw in (None, ""):
+            continue
+        saw_any = True
+        try:
+            int(raw)
+        except (TypeError, ValueError):
+            return False
+    return saw_any
+
+
+def zone_code_display_map(zones: dict[str, Any], code_col: str) -> dict[str, str]:
+    """Map a normalised zone key back to the user's verbatim code for display
+    (so «Ж-1» is shown even though matching folds it to «ж1»)."""
+    display: dict[str, str] = {}
+    for f in zones.get("features") or []:
+        raw = (f.get("properties") or {}).get(code_col)
+        key = normalise_zone_code(raw)
+        if key:
+            display.setdefault(key, str(raw).strip())
+    return display
+
+
 def load_pzz_label_mapping(
     path: str,
 ) -> tuple[dict[str, dict[str, set[str]]], dict[str, str]]:

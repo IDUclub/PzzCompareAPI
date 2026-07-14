@@ -588,6 +588,38 @@ async def detection_failed_generator(
     )
 
 
+async def zone_review_generator(
+    narrative: str,
+    detail: str,
+    *,
+    action: str,
+    suggestions: list[dict[str, Any]] | None = None,
+) -> AsyncIterator[ServerSentEvent]:
+    """Announce that the uploaded ПЗЗ zones need attention before a task runs.
+
+    ``action`` is either ``suggest_upload`` (many zone indices are absent from the
+    built-in template — the user should upload their own descriptions) or
+    ``confirm`` (a few are absent — ``suggestions`` carries per-zone nearest-template
+    guesses for the user to confirm and re-submit via ``confirmed_zone_map``).
+    Mirrors ``detection_failed_generator``: narrative + event + terminal ``done``,
+    no task started.
+    """
+    if narrative:
+        yield narrative_chunk_sse(narrative)
+    yield ServerSentEvent(
+        data=json.dumps({
+            "type": "zone_review",
+            "content": {"message": detail, "action": action, "suggestions": suggestions or []},
+        }),
+        event="zone_review",
+    )
+    yield _final_answer_chunk_sse()
+    yield ServerSentEvent(
+        data=json.dumps({"status": "zone_review_required", "chat_id": None}),
+        event="done",
+    )
+
+
 async def task_stream_with_chat_generator(
     external_id: str,
     *,

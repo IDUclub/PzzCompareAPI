@@ -34,9 +34,10 @@ from service.infrastructure.runners._deterministic_pzz import (
     join_objects_to_zones,
     load_pzz_label_mapping,
     load_zone_mapping,
-    normalise_zone_code,
     resolve_po_type_vri,
     verdict as compute_verdict,
+    zone_code_display_map,
+    zone_codes_are_numeric,
 )
 from service.infrastructure.runners.pipeline_runner import PipelineRunner, _build_output_glob
 from typing import TYPE_CHECKING
@@ -154,36 +155,6 @@ class UploadedBuildingPzzRunner(PipelineRunner):
             for alias in entry.get("aliases") or ():
                 _add_alias(aliases, alias, po_type_id)
         return aliases
-
-    @staticmethod
-    def _zone_codes_are_numeric(zones: dict[str, Any], code_col: str) -> bool:
-        """True when every populated zone code parses as an int (urban_api
-        ``functional_zone_type_id``); False as soon as one is a ПЗЗ letter index
-        like «Ж-1». Chooses the zone backend: numeric fz-mapping vs label mapping.
-        Empty (no codes at all) defaults to the letter-index backend."""
-        saw_any = False
-        for f in zones.get("features") or []:
-            raw = (f.get("properties") or {}).get(code_col)
-            if raw in (None, ""):
-                continue
-            saw_any = True
-            try:
-                int(raw)
-            except (TypeError, ValueError):
-                return False
-        return saw_any
-
-    @staticmethod
-    def _zone_code_display_map(zones: dict[str, Any], code_col: str) -> dict[str, str]:
-        """Map a normalised zone key back to the user's verbatim code for display
-        (so «Ж-1» is shown even though matching is done on the folded «ж1»)."""
-        display: dict[str, str] = {}
-        for f in zones.get("features") or []:
-            raw = (f.get("properties") or {}).get(code_col)
-            key = normalise_zone_code(raw)
-            if key:
-                display.setdefault(key, str(raw).strip())
-        return display
 
     def _load_zone_mapping(self, request: PipelineRequest, numeric: bool):
         """User descriptions file when supplied+usable, else built-in fallback —
@@ -435,12 +406,12 @@ class UploadedBuildingPzzRunner(PipelineRunner):
         # Zone backend: numeric urban_api functional_zone_type_id vs a real ПЗЗ
         # keyed by letter index («Ж-1»). The latter resolves against the label
         # mapping (uploaded, else the built-in template) the same way pzz_check does.
-        numeric_zones = self._zone_codes_are_numeric(zones, code_col)
+        numeric_zones = zone_codes_are_numeric(zones, code_col)
         zone_allowed, zone_nick, used_default_mapping = self._load_zone_mapping(
             request, numeric_zones
         )
         code_display = (
-            {} if numeric_zones else self._zone_code_display_map(zones, code_col)
+            {} if numeric_zones else zone_code_display_map(zones, code_col)
         )
 
         zgdf = build_zone_gdf(zones, code_col, numeric=numeric_zones)
