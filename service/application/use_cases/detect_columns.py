@@ -76,7 +76,7 @@ class DetectionTarget:
 
 VRI_TARGET = DetectionTarget(
     key="cadastral_vri_col",
-    title_ru="название ВРИ участка",
+    title_ru="вид разрешённого использования (ВРИ) участка",
     description_ru=(
         "Текстовое название вида разрешённого использования (ВРИ) земельного "
         "участка — обычно длинные формулировки, напр. «Для индивидуального "
@@ -92,7 +92,7 @@ VRI_TARGET = DetectionTarget(
 )
 ZONE_CODE_TARGET = DetectionTarget(
     key="pzz_zone_code_col",
-    title_ru="код (индекс) зоны ПЗЗ",
+    title_ru="код (индекс) территориальной зоны ПЗЗ",
     description_ru=(
         "Короткий индекс/шифр территориальной зоны ПЗЗ — напр. «Ж-1», «О-2», "
         "«П-3». Это НЕ длинное текстовое наименование зоны."
@@ -101,7 +101,7 @@ ZONE_CODE_TARGET = DetectionTarget(
 )
 ZONE_NAME_TARGET = DetectionTarget(
     key="pzz_zone_name_col",
-    title_ru="название зоны ПЗЗ",
+    title_ru="наименование территориальной зоны ПЗЗ",
     description_ru=(
         "Человекочитаемое НАИМЕНОВАНИЕ территориальной зоны — длинный текст, "
         "напр. «Производственная зона», «Зона застройки малоэтажными жилыми "
@@ -112,6 +112,72 @@ ZONE_NAME_TARGET = DetectionTarget(
 
 CADASTRAL_TARGETS: list[DetectionTarget] = [VRI_TARGET]
 PZZ_ZONE_TARGETS: list[DetectionTarget] = [ZONE_CODE_TARGET, ZONE_NAME_TARGET]
+
+BUILDING_TYPE_TARGET = DetectionTarget(
+    key="building_type_col",
+    title_ru="тип здания (жилое/нежилое)",
+    description_ru=(
+        "Тип здания. Обычно числовой physical_object_type_id из Urban API "
+        "(напр. 4 — жилой дом), либо текстовое название типа объекта "
+        "(«жилой дом», «склад»). Определяет, жилое ли здание, и участвует "
+        "в подборе ВРИ."
+    ),
+    known_names=(
+        "physical_object_type_id",
+        "physical_object_type_name",
+        "physical_object_type",
+        "тип",
+        "тип_здания",
+        "название_типа",
+        "building_type",
+        "building_type_name",
+        "po_type_id",
+        "po_type_name",
+    ),
+)
+BUILDING_SERVICE_TARGET = DetectionTarget(
+    key="building_service_col",
+    title_ru="сервис здания (service_type_id)",
+    description_ru=(
+        "Тип сервиса здания — числовой service_type_id из Urban API или "
+        "текстовое название/код сервиса (напр. «школа», «детский сад», "
+        "«поликлиника», school). Используется для подбора ВРИ нежилых "
+        "зданий. НЕ этажность и НЕ тип здания."
+    ),
+    known_names=(
+        "service_type_id",
+        "service_type_name",
+        "service_type",
+        "service_name",
+        "сервис",
+        "название_сервиса",
+        "наименование_сервиса",
+        "service",
+        "тип_сервиса",
+    ),
+)
+BUILDING_FLOORS_TARGET = DetectionTarget(
+    key="building_floors_col",
+    title_ru="этажность здания",
+    description_ru=(
+        "Количество этажей здания — целое число (напр. 1, 5, 24). Для жилых "
+        "зданий определяет ВРИ по этажности. НЕ тип и НЕ сервис."
+    ),
+    known_names=(
+        "floors_count",
+        "floors",
+        "этажность",
+        "количество этажей",
+        "этажей",
+        "number_of_floors",
+    ),
+)
+
+BUILDING_TARGETS: list[DetectionTarget] = [
+    BUILDING_TYPE_TARGET,
+    BUILDING_SERVICE_TARGET,
+    BUILDING_FLOORS_TARGET,
+]
 
 
 def _normalise(name: str) -> str:
@@ -144,9 +210,12 @@ def profile_columns(
     """Profile a GeoJSON layer's columns from the ``properties`` of its features.
 
     Geometry lives outside ``properties`` in GeoJSON, so it is excluded for
-    free. Scans up to ``scan_features`` features and keeps, per column, up to
-    ``max_sample_values`` distinct non-null example values (each truncated to
-    ``max_value_chars``).
+    free. Column *discovery* scans EVERY feature, so a column that only appears
+    in later features is not missed — e.g. a merged buildings+services layer
+    where ``service_type_id`` first shows up mid-file (after all the physical
+    objects). Per column it keeps up to ``scan_features`` example values (for
+    dtype / n_unique) and up to ``max_sample_values`` distinct non-null samples
+    (each truncated to ``max_value_chars``).
     """
     features = feature_collection.get("features") or []
     ordered_names: list[str] = []
@@ -155,7 +224,7 @@ def profile_columns(
     samples_by_col: dict[str, list[str]] = {}
     seen_samples: dict[str, set[str]] = {}
 
-    for feature in features[:scan_features]:
+    for feature in features:
         props = (feature or {}).get("properties") or {}
         for name, value in props.items():
             if name not in seen_names:
@@ -164,7 +233,8 @@ def profile_columns(
                 values_by_col[name] = []
                 samples_by_col[name] = []
                 seen_samples[name] = set()
-            values_by_col[name].append(value)
+            if len(values_by_col[name]) < scan_features:
+                values_by_col[name].append(value)
             if value is None or value == "":
                 continue
             text = str(value)
@@ -352,15 +422,20 @@ def render_detection_narrative(
     for key, title in title_by_key.items():
         suggestion = suggestions.get(key)
         if suggestion is not None and suggestion.value:
-            resolved.append(f"• поле «{suggestion.value}» распознано как {title}")
+            resolved.append(f"- поле «{suggestion.value}» определено как {title}")
         else:
             missing.append(title)
 
     lines: list[str] = []
     if resolved:
-        lines.append("Распознаны колонки:")
+        lines.append(
+            "Результат анализа содержания полей в загруженном файле "
+            "для проверки по правилам землепользования и застройки (ПЗЗ):"
+        )
         lines.extend(resolved)
     if missing:
+        if resolved:
+            lines.append("")
         lines.append(
             "Не удалось определить: "
             + ", ".join(missing)

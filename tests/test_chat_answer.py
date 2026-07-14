@@ -228,7 +228,7 @@ def test_large_report_falls_back_to_problem_objects() -> None:
     )
     assert "Сводка" in ctx  # exact counts always present
     assert "Структурированный отчёт" not in ctx  # full dump dropped (too big)
-    assert "Неуместные/спорные объекты" in ctx  # problem objects included instead
+    assert "Проблемные земельные участки" in ctx  # problem parcels included instead
     assert "показаны первые 60" in ctx  # capped
     # reason trimmed, so the block stays bounded
     assert len(ctx) < 40000

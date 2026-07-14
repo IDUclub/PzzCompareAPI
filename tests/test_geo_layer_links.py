@@ -5,6 +5,7 @@ import service.api.tasks as tasks_mod
 from service.api.tasks import (
     build_input_geo_layers,
     build_result_geo_layer,
+    build_result_geo_layers,
     geo_layer_to_file_part,
 )
 from service.settings import get_settings
@@ -16,6 +17,8 @@ def _task(
     cadastral_data_path="minio://inputs/abc/cadastral_feature_collection.geojson",
     pzz_zones_data_path="minio://inputs/abc/pzz_zones_feature_collection.geojson",
     include_pzz_check=True,
+    building_type_col=None,
+    building_service_col=None,
 ):
     return SimpleNamespace(
         status=status,
@@ -23,6 +26,8 @@ def _task(
         cadastral_data_path=cadastral_data_path,
         pzz_zones_data_path=pzz_zones_data_path,
         include_pzz_check=include_pzz_check,
+        building_type_col=building_type_col,
+        building_service_col=building_service_col,
     )
 
 
@@ -44,6 +49,67 @@ def test_result_layer_labels_classify_run() -> None:
     assert layer is not None
     assert layer["title"] == "Результат классификации ВРИ"
     assert layer["filename"] == "classification_result.geojson"
+
+
+def test_result_layers_single_for_non_building() -> None:
+    # Non-building tasks keep the single combined result layer.
+    layers = build_result_geo_layers(_task(), "abc123", get_settings())
+    assert [layer["name"] for layer in layers] == ["classified_result"]
+    assert layers[0]["url"] == "/files/result/abc123"
+
+
+def test_result_layers_two_for_building() -> None:
+    # building_pzz_check splits the result into здания + сервисы layers.
+    task = _task(building_type_col="po_type", building_service_col="svc_type")
+    layers = build_result_geo_layers(task, "abc123", get_settings())
+    by_name = {layer["name"]: layer for layer in layers}
+    assert set(by_name) == {"buildings_result", "services_result"}
+    assert by_name["buildings_result"]["url"] == "/files/result_buildings/abc123"
+    assert by_name["buildings_result"]["title"] == "Результат — здания"
+    assert by_name["buildings_result"]["filename"] == "buildings_result.geojson"
+    assert by_name["services_result"]["url"] == "/files/result_services/abc123"
+    assert by_name["services_result"]["title"] == "Результат — сервисы"
+    # split served on the fly -> durable url only, no presigned download
+    assert all(layer["download_url"] is None for layer in layers)
+    assert all(layer["role"] == "result" for layer in layers)
+
+
+def test_files_result_split_filters_by_category(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    from service import app as app_module
+    from service.dependencies import get_app_settings, get_task_repo
+
+    result = {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "geometry": None, "properties": {"Категория_объекта": "Здание", "id": 1}},
+            {"type": "Feature", "geometry": None, "properties": {"Категория_объекта": "Сервис", "id": 2}},
+            {"type": "Feature", "geometry": None, "properties": {"Категория_объекта": "Здание", "id": 3}},
+        ],
+    }
+    result_file = tmp_path / "result.geojson"
+    result_file.write_text(__import__("json").dumps(result, ensure_ascii=False), encoding="utf-8")
+    task = _task(result_path=str(result_file), building_type_col="po", building_service_col="svc")
+
+    class StubRepo:
+        def get_by_external_id(self, external_id):
+            return task
+
+    app_module.app.dependency_overrides[get_task_repo] = lambda: StubRepo()
+    app_module.app.dependency_overrides[get_app_settings] = get_settings
+    try:
+        client = TestClient(app_module.app)
+        r_bld = client.get("/files/result_buildings/abc")
+        r_svc = client.get("/files/result_services/abc")
+        assert r_bld.status_code == 200 and r_svc.status_code == 200
+        bld_ids = [f["properties"]["id"] for f in r_bld.json()["features"]]
+        svc_ids = [f["properties"]["id"] for f in r_svc.json()["features"]]
+        assert bld_ids == [1, 3]
+        assert svc_ids == [2]
+        assert "attachment" in r_bld.headers.get("content-disposition", "")
+    finally:
+        app_module.app.dependency_overrides.clear()
 
 
 def test_layer_descriptor_none_when_no_result() -> None:

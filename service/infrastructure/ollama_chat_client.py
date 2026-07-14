@@ -36,6 +36,27 @@ class OllamaChatError(RuntimeError):
         super().__init__(f"ollama /api/chat returned {status}: {body!r}")
 
 
+def _loads_json_object(content: str) -> Any:
+    """Parse a JSON object from model ``content``, tolerating stray wrapping.
+
+    Structured-output is requested via ``format``, but reasoning models can still
+    leak a chain-of-thought or ```json code fences around the object. Try a strict
+    parse first, then fall back to the outermost ``{...}`` span.
+    """
+    text = (content or "").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(text[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise OllamaChatError(200, content) from exc
+    raise OllamaChatError(200, content)
+
+
 class OllamaChatClient:
     """Thin async wrapper that streams assistant tokens from ``/api/chat``."""
 
@@ -124,16 +145,16 @@ class OllamaChatClient:
             "stream": False,
             "messages": messages,
             "format": schema,
+            # Reasoning models (e.g. gpt-oss) otherwise prepend a chain-of-thought
+            # to ``content`` and wrap the JSON in code fences, breaking the parse.
+            "think": False,
             "options": {"temperature": temperature},
         }
         resp = await self._client.post("/api/chat", json=payload)
         if resp.status_code >= 400:
             raise OllamaChatError(resp.status_code, resp.text)
         content = (resp.json().get("message") or {}).get("content") or ""
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise OllamaChatError(resp.status_code, content) from exc
+        parsed = _loads_json_object(content)
         if not isinstance(parsed, dict):
             raise OllamaChatError(resp.status_code, content)
         return parsed

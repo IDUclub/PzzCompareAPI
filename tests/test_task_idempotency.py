@@ -21,6 +21,9 @@ class FakeTask:
     priority: int
     status: TaskStatus
     include_pzz_check: bool = True
+    building_type_col: str | None = None
+    building_service_col: str | None = None
+    building_floors_col: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
     result_path: str | None = None

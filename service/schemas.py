@@ -15,6 +15,9 @@ class TaskCreate(BaseModel):
     cadastral_vri_col: str
     pzz_zone_code_col: str = "Индекс_зоны"
     pzz_zone_name_col: str = "Код_объекта"
+    building_type_col: str | None = None
+    building_service_col: str | None = None
+    building_floors_col: str | None = None
     priority: int = Field(default=1, ge=1, le=10)
 
 

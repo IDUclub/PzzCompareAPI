@@ -26,12 +26,12 @@ class PipelineTask(Base):
     cadastral_vri_col: Mapped[str] = mapped_column(String(128))
     pzz_zone_code_col: Mapped[str] = mapped_column(String(128), default="Индекс_зоны")
     pzz_zone_name_col: Mapped[str] = mapped_column(String(128), default="Код_объекта")
+    building_type_col: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    building_service_col: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    building_floors_col: Mapped[str | None] = mapped_column(String(128), nullable=True)
     priority: Mapped[int] = mapped_column(Integer, default=1, index=True)
     status: Mapped[TaskStatus] = mapped_column(SqlEnum(TaskStatus), default=TaskStatus.queued)
     celery_task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    # Pipeline output schema/semantics version the result was computed under
-    # (see service.output_version). Stamped at creation; also mixed into the
-    # idempotency key so a bump auto-invalidates stale-format cached results.
     output_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
     result_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
