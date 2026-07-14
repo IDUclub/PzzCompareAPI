@@ -103,6 +103,19 @@ class Settings(BaseSettings):
     auth_jwks_cache_ttl: int = Field(default=600)
     auth_timeout_seconds: int = Field(default=5)
 
+    # ── Keycloak service token (outbound M2M auth) ───────────────────────────
+    # We accept the user's Keycloak token from the frontend and validate it, but
+    # persist chat history to ChatStorage with OUR OWN service-account token
+    # (client_credentials) so history is still saved after a long computation —
+    # by which point the user's token has expired. The end user is identified to
+    # ChatStorage via the ``X-User-Id`` header (the user's ``sub``). Leave these
+    # empty to disable the service token (chat persistence is then disabled).
+    keycloak_url: str = Field(default="")  # base URL, e.g. https://keycloak.idu...
+    keycloak_realm: str = Field(default="")
+    keycloak_client_id: str = Field(default="")
+    keycloak_client_secret: str = Field(default="")
+    keycloak_scope: str = Field(default="")  # optional OAuth2 scope
+
     urban_api_base_url: str = Field(default="")
     urban_api_timeout_seconds: float = Field(default=30.0)
 
@@ -190,6 +203,11 @@ def _build_settings_cached() -> Settings:
         chat_temperature=float(_get_optional_env(config, "CHAT_TEMPERATURE", "0.3")),
         chat_request_timeout_seconds=float(_get_optional_env(config, "CHAT_REQUEST_TIMEOUT_SECONDS", "900")),
         chat_system_prompt_path=_get_optional_env(config, "CHAT_SYSTEM_PROMPT_PATH", "data/chat_system_prompt.txt"),
+        keycloak_url=_get_optional_env(config, "KEYCLOAK_URL").rstrip("/"),
+        keycloak_realm=_get_optional_env(config, "KEYCLOAK_REALM"),
+        keycloak_client_id=_get_optional_env(config, "KEYCLOAK_CLIENT_ID"),
+        keycloak_client_secret=_get_optional_env(config, "KEYCLOAK_CLIENT_SECRET"),
+        keycloak_scope=_get_optional_env(config, "KEYCLOAK_SCOPE"),
         public_base_url=_get_optional_env(config, "PUBLIC_BASE_URL").rstrip("/"),
         geo_layer_url_ttl_seconds=int(_get_optional_env(config, "GEO_LAYER_URL_TTL_SECONDS", "3600")),
         fileserver_endpoint=config.get("FILESERVER_ENDPOINT") or "",

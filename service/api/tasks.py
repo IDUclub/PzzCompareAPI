@@ -420,7 +420,7 @@ async def task_stream_with_report_generator(
 async def _stream_chat_answer_managed(
     app_settings: Settings,
     *,
-    token: str | None,
+    user_id: str | None,
     user_query: str,
     classification_context: str,
     chat_id: str | None,
@@ -433,23 +433,23 @@ async def _stream_chat_answer_managed(
 ) -> AsyncIterator[dict[str, Any]]:
     """Open the chat clients and delegate to ``stream_chat_answer``.
 
-    Persistence is enabled only when a ChatStorage base URL is configured and
-    a token is present; otherwise the answer streams without being stored.
-    The endpoint layer owns client lifetimes via ``async with`` here so the
-    use-case stays pure and testable.
+    Persistence is enabled only when ChatStorage + the Keycloak service token
+    client are configured (``build_chat_storage_client``) and a ``user_id`` is
+    present; otherwise the answer streams without being stored. The endpoint
+    layer owns client lifetimes via ``async with`` here so the use-case stays
+    pure and testable.
     """
     system_prompt = load_system_prompt(app_settings.chat_system_prompt_path)
-    persist = bool(app_settings.chat_storage_base_url) and bool(token)
 
     async with build_ollama_chat_client(app_settings) as ollama_client:
         chat_storage_client = (
-            build_chat_storage_client(app_settings) if persist else None
+            build_chat_storage_client(app_settings) if user_id else None
         )
         try:
             async for event in stream_chat_answer(
                 ollama_client=ollama_client,
                 chat_storage_client=chat_storage_client,
-                token=token,
+                user_id=user_id,
                 system_prompt=system_prompt,
                 user_query=user_query,
                 classification_context=classification_context,
@@ -596,7 +596,7 @@ async def task_stream_with_chat_generator(
     request: Request,
     app_settings: Settings,
     initial: dict[str, Any],
-    token: str | None,
+    user_id: str | None,
     user_query: str,
     chat_id: str | None = None,
     scenario_id: int | str | None = None,
@@ -735,7 +735,7 @@ async def task_stream_with_chat_generator(
     if last_status == TaskStatus.finished:
         async for event in _stream_chat_answer_managed(
             app_settings,
-            token=token,
+            user_id=user_id,
             assistant_file_parts=assistant_file_parts,
             user_query=user_query,
             classification_context=classification_context,

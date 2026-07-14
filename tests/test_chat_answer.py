@@ -29,17 +29,17 @@ class FakeChatStorage:
         self.parts_calls = []
         self._history_messages = history_messages or []
 
-    async def create_chat(self, token, *, title=None, scenario_id=None, project_id=None, metadata=None):
+    async def create_chat(self, user_id, *, title=None, scenario_id=None, project_id=None, metadata=None):
         self.calls.append(("create", scenario_id, project_id))
         return {"chat_id": "new-chat", "title": title}
 
-    async def add_message(self, token, chat_id, *, role, content=None, parts=None, metadata=None):
+    async def add_message(self, user_id, chat_id, *, role, content=None, parts=None, metadata=None):
         self.calls.append(("msg", chat_id, role, content))
         if parts is not None:
             self.parts_calls.append((chat_id, role, parts))
         return {"message_id": f"m-{role}", "chat_id": chat_id}
 
-    async def get_chat(self, token, chat_id):
+    async def get_chat(self, user_id, chat_id):
         self.calls.append(("get_chat", chat_id))
         return {"chat_id": chat_id, "messages": self._history_messages}
 
@@ -56,7 +56,7 @@ def test_creates_chat_and_persists_turn_when_no_chat_id() -> None:
         stream_chat_answer(
             ollama_client=FakeOllama(("Привет", " мир")),
             chat_storage_client=cs,
-            token="tok",
+            user_id="tok",
             system_prompt="SYS",
             user_query="Что не так?",
             classification_context="CTX",
@@ -82,7 +82,7 @@ def test_uses_supplied_chat_id_without_creating() -> None:
         stream_chat_answer(
             ollama_client=FakeOllama(),
             chat_storage_client=cs,
-            token="tok",
+            user_id="tok",
             system_prompt="SYS",
             user_query="q",
             chat_id="existing",
@@ -98,7 +98,7 @@ def test_no_persist_without_storage_still_streams() -> None:
         stream_chat_answer(
             ollama_client=FakeOllama(("x", "y")),
             chat_storage_client=None,
-            token=None,
+            user_id=None,
             system_prompt="SYS",
             user_query="q",
             chat_id=None,
@@ -115,7 +115,7 @@ def test_llm_error_emits_error_then_done() -> None:
         stream_chat_answer(
             ollama_client=FakeOllama(error=True),
             chat_storage_client=cs,
-            token="tok",
+            user_id="tok",
             system_prompt="SYS",
             user_query="q",
             chat_id="c1",
@@ -131,7 +131,7 @@ def test_persistence_failure_emits_warning_not_error() -> None:
     from service.infrastructure.chat_storage_client import ChatStorageError
 
     class FailingChatStorage(FakeChatStorage):
-        async def create_chat(self, token, **kwargs):
+        async def create_chat(self, user_id, **kwargs):
             raise ChatStorageError(401, "Token expired")
 
     cs = FailingChatStorage()
@@ -139,7 +139,7 @@ def test_persistence_failure_emits_warning_not_error() -> None:
         stream_chat_answer(
             ollama_client=FakeOllama(("x", "y")),
             chat_storage_client=cs,
-            token="tok",
+            user_id="tok",
             system_prompt="SYS",
             user_query="q",
             chat_id=None,
@@ -167,7 +167,7 @@ def test_existing_chat_loads_history_into_messages() -> None:
         stream_chat_answer(
             ollama_client=fake_llm,
             chat_storage_client=cs,
-            token="tok",
+            user_id="tok",
             system_prompt="SYS",
             user_query="Новый вопрос",
             chat_id="existing",
@@ -194,7 +194,7 @@ def test_assistant_message_carries_geo_file_part() -> None:
         stream_chat_answer(
             ollama_client=FakeOllama(("ответ",)),
             chat_storage_client=cs,
-            token="tok",
+            user_id="tok",
             system_prompt="SYS",
             user_query="q",
             chat_id="c1",
