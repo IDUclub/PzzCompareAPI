@@ -1,0 +1,629 @@
+{
+  "metadata": {
+    "description": "Deterministic service_type_id -> Rosreestr VRI code, used by the uploaded-building PZZ check. Best-effort scaffold; needs domain validation. null vri_code -> 'manual check' verdict downstream.",
+    "source": "urban_api service_type catalogue (data/services_hierarchy.json)",
+    "total": 103,
+    "resolved": 99
+  },
+  "by_service_type_id": {
+    "110": {
+      "name": "Гостиница",
+      "code": "hotel",
+      "vri_code": "4.7",
+      "vri_name": ""
+    },
+    "111": {
+      "name": "Хостел",
+      "code": "hostel",
+      "vri_code": "4.7",
+      "vri_name": ""
+    },
+    "112": {
+      "name": "База отдыха",
+      "code": "recreation center",
+      "vri_code": "5.0",
+      "vri_name": ""
+    },
+    "113": {
+      "name": "Памятник",
+      "code": "monunent",
+      "vri_code": "9.3",
+      "vri_name": ""
+    },
+    "21": {
+      "name": "Детский сад",
+      "code": "kindergarden",
+      "vri_code": "3.5.1",
+      "vri_name": ""
+    },
+    "22": {
+      "name": "Школа",
+      "code": "school",
+      "vri_code": "3.5.1",
+      "vri_name": ""
+    },
+    "23": {
+      "name": "Дом детского творчества",
+      "code": "house of children's art",
+      "vri_code": "3.5.1",
+      "vri_name": ""
+    },
+    "25": {
+      "name": "Детский лагерь",
+      "code": "summer camp",
+      "vri_code": "3.5.1",
+      "vri_name": ""
+    },
+    "26": {
+      "name": "Учреждение среднего профессионального образования",
+      "code": "college",
+      "vri_code": "3.5.2",
+      "vri_name": ""
+    },
+    "27": {
+      "name": "Учреждение высшего профессионального образования",
+      "code": "university",
+      "vri_code": "3.5.2",
+      "vri_name": ""
+    },
+    "43": {
+      "name": "Комплексный центр социального обслуживания населения",
+      "code": "integrated social service center",
+      "vri_code": "3.2.2",
+      "vri_name": ""
+    },
+    "44": {
+      "name": "Дом престарелых",
+      "code": "nursing home",
+      "vri_code": "3.2.2",
+      "vri_name": ""
+    },
+    "45": {
+      "name": "Центр занятости населения",
+      "code": "employment center",
+      "vri_code": "3.2.2",
+      "vri_name": ""
+    },
+    "46": {
+      "name": "Детский дом-интернат",
+      "code": "orphanage",
+      "vri_code": "3.2.2",
+      "vri_name": ""
+    },
+    "47": {
+      "name": "МФЦ",
+      "code": "multifunctional center",
+      "vri_code": "3.8.1",
+      "vri_name": ""
+    },
+    "145": {
+      "name": "ЗАГС",
+      "code": "registry office",
+      "vri_code": "3.8.1",
+      "vri_name": ""
+    },
+    "35": {
+      "name": "Больница",
+      "code": "hospital",
+      "vri_code": "3.4.2",
+      "vri_name": ""
+    },
+    "36": {
+      "name": "Роддом",
+      "code": "maternity",
+      "vri_code": "3.4.2",
+      "vri_name": ""
+    },
+    "41": {
+      "name": "Морг",
+      "code": "mortuary",
+      "vri_code": "12.1",
+      "vri_name": ""
+    },
+    "146": {
+      "name": "Крематорий",
+      "code": "crematorium",
+      "vri_code": "12.1",
+      "vri_name": ""
+    },
+    "28": {
+      "name": "Поликлиника",
+      "code": "polyclinic",
+      "vri_code": "3.4.1",
+      "vri_name": ""
+    },
+    "30": {
+      "name": "Стоматологическая клиника",
+      "code": "dental clinic",
+      "vri_code": "3.4.1",
+      "vri_name": ""
+    },
+    "32": {
+      "name": "Женская консультация",
+      "code": "female consultation",
+      "vri_code": "3.4.1",
+      "vri_name": ""
+    },
+    "34": {
+      "name": "Аптека",
+      "code": "pharmacy",
+      "vri_code": "3.4.1",
+      "vri_name": ""
+    },
+    "39": {
+      "name": "Станция скорой медицинской помощи",
+      "code": "ambulance station",
+      "vri_code": "3.4.2",
+      "vri_name": ""
+    },
+    "40": {
+      "name": "Травматологический пункт",
+      "code": "trauma center",
+      "vri_code": "3.4.2",
+      "vri_name": ""
+    },
+    "48": {
+      "name": "Библиотека",
+      "code": "library",
+      "vri_code": "3.6.1",
+      "vri_name": ""
+    },
+    "49": {
+      "name": "Дворец культуры",
+      "code": "palace of culture",
+      "vri_code": "3.6.1",
+      "vri_name": ""
+    },
+    "50": {
+      "name": "Музей",
+      "code": "museum",
+      "vri_code": "3.6.1",
+      "vri_name": ""
+    },
+    "51": {
+      "name": "Театр",
+      "code": "theatre",
+      "vri_code": "3.6.1",
+      "vri_name": ""
+    },
+    "52": {
+      "name": "Ботанический сад",
+      "code": "botanical garden",
+      "vri_code": "3.6.3",
+      "vri_name": ""
+    },
+    "53": {
+      "name": "Концертный зал",
+      "code": "concert hall",
+      "vri_code": "3.6.1",
+      "vri_name": ""
+    },
+    "54": {
+      "name": "Цирк",
+      "code": "circus",
+      "vri_code": "3.6.3",
+      "vri_name": ""
+    },
+    "55": {
+      "name": "Зоопарк ",
+      "code": "zoo",
+      "vri_code": "3.6.3",
+      "vri_name": ""
+    },
+    "56": {
+      "name": "Кинотеатр",
+      "code": "cinema",
+      "vri_code": "3.6.1",
+      "vri_name": ""
+    },
+    "57": {
+      "name": "Торгово-развлекательный центр",
+      "code": "mall",
+      "vri_code": "4.2",
+      "vri_name": ""
+    },
+    "58": {
+      "name": "Аквапарк",
+      "code": "water park",
+      "vri_code": "4.8",
+      "vri_name": ""
+    },
+    "59": {
+      "name": "Стадион",
+      "code": "stadium",
+      "vri_code": "5.1.1",
+      "vri_name": ""
+    },
+    "60": {
+      "name": "Ледовая арена",
+      "code": "ice arena",
+      "vri_code": "5.1.1",
+      "vri_name": ""
+    },
+    "147": {
+      "name": "Конюшня",
+      "code": "stable",
+      "vri_code": null,
+      "vri_name": ""
+    },
+    "61": {
+      "name": "Кафе",
+      "code": "cafe",
+      "vri_code": "4.6",
+      "vri_name": ""
+    },
+    "62": {
+      "name": "Ресторан",
+      "code": "restaurant",
+      "vri_code": "4.6",
+      "vri_name": ""
+    },
+    "63": {
+      "name": "Бар",
+      "code": "bar",
+      "vri_code": "4.6",
+      "vri_name": ""
+    },
+    "65": {
+      "name": "Булочная",
+      "code": "bakery",
+      "vri_code": "4.4",
+      "vri_name": ""
+    },
+    "66": {
+      "name": "Спортивная площадка",
+      "code": "pitch",
+      "vri_code": "5.1.3",
+      "vri_name": ""
+    },
+    "67": {
+      "name": "Бассейн",
+      "code": "swimmimg pool",
+      "vri_code": "5.1.3",
+      "vri_name": ""
+    },
+    "68": {
+      "name": "Спортивный центр",
+      "code": "sports center",
+      "vri_code": "5.1.1",
+      "vri_name": ""
+    },
+    "69": {
+      "name": "Каток",
+      "code": "skating rink",
+      "vri_code": "5.1.3",
+      "vri_name": ""
+    },
+    "72": {
+      "name": "Экологическая тропа",
+      "code": "eco path",
+      "vri_code": "5.2",
+      "vri_name": ""
+    },
+    "73": {
+      "name": "Скалодром",
+      "code": "climbing gym",
+      "vri_code": "5.1.1",
+      "vri_name": ""
+    },
+    "74": {
+      "name": "Детская площадка",
+      "code": "playground",
+      "vri_code": "5.1.3",
+      "vri_name": ""
+    },
+    "75": {
+      "name": "Парк аттракционов",
+      "code": "theme park",
+      "vri_code": "4.8",
+      "vri_name": ""
+    },
+    "77": {
+      "name": "Скейт-парк",
+      "code": "skatepark",
+      "vri_code": "5.1.3",
+      "vri_name": ""
+    },
+    "78": {
+      "name": "Полицейский участок",
+      "code": "police",
+      "vri_code": "8.3",
+      "vri_name": ""
+    },
+    "79": {
+      "name": "Пожарная станция",
+      "code": "fire station",
+      "vri_code": "8.3",
+      "vri_name": ""
+    },
+    "80": {
+      "name": "Железнодорожная станция",
+      "code": "train station",
+      "vri_code": "7.1",
+      "vri_name": ""
+    },
+    "81": {
+      "name": "Железнодорожный вокзал",
+      "code": "train building",
+      "vri_code": "7.1",
+      "vri_name": ""
+    },
+    "82": {
+      "name": "Аэропорт",
+      "code": "airport",
+      "vri_code": "7.4",
+      "vri_name": ""
+    },
+    "84": {
+      "name": "Автозаправочная станция",
+      "code": "fuel",
+      "vri_code": "4.9.1.1",
+      "vri_name": ""
+    },
+    "85": {
+      "name": "Парковка",
+      "code": "parking",
+      "vri_code": "4.9",
+      "vri_name": ""
+    },
+    "86": {
+      "name": "Автовокзал",
+      "code": "bus terminal",
+      "vri_code": "7.2.1",
+      "vri_name": ""
+    },
+    "87": {
+      "name": "Остановка наземного общественного транспорта",
+      "code": "bus stop",
+      "vri_code": "7.2.1",
+      "vri_name": ""
+    },
+    "89": {
+      "name": "Супермаркет",
+      "code": "supermarket",
+      "vri_code": "4.4",
+      "vri_name": ""
+    },
+    "90": {
+      "name": "Продукты (магазин у дома)",
+      "code": "convenience",
+      "vri_code": "4.4",
+      "vri_name": ""
+    },
+    "91": {
+      "name": "Рынок",
+      "code": "market",
+      "vri_code": "4.3",
+      "vri_name": ""
+    },
+    "92": {
+      "name": "Хозяйственные товары",
+      "code": "houseware",
+      "vri_code": "4.4",
+      "vri_name": ""
+    },
+    "93": {
+      "name": "Одежда и обувь",
+      "code": "clothes",
+      "vri_code": "4.4",
+      "vri_name": ""
+    },
+    "94": {
+      "name": "Бытовая техника",
+      "code": "appliances",
+      "vri_code": "4.4",
+      "vri_name": ""
+    },
+    "95": {
+      "name": "Книжный магазин",
+      "code": "bookshop",
+      "vri_code": "4.4",
+      "vri_name": ""
+    },
+    "96": {
+      "name": "Детские товары",
+      "code": "baby goods",
+      "vri_code": "4.4",
+      "vri_name": ""
+    },
+    "97": {
+      "name": "Спортивный магазин",
+      "code": "sport shop",
+      "vri_code": "4.4",
+      "vri_name": ""
+    },
+    "98": {
+      "name": "Почтовое отделение",
+      "code": "post office",
+      "vri_code": "3.2.3",
+      "vri_name": ""
+    },
+    "99": {
+      "name": "Пункт выдачи",
+      "code": "dropsite",
+      "vri_code": "4.4",
+      "vri_name": ""
+    },
+    "100": {
+      "name": "Отделение банка",
+      "code": "bank",
+      "vri_code": "4.5",
+      "vri_name": ""
+    },
+    "101": {
+      "name": "Банкомат",
+      "code": "atm",
+      "vri_code": "4.5",
+      "vri_name": ""
+    },
+    "102": {
+      "name": "Юридические услуги",
+      "code": "lawyer",
+      "vri_code": "4.1",
+      "vri_name": ""
+    },
+    "104": {
+      "name": "Парикмахерская",
+      "code": "hairdresser",
+      "vri_code": "3.3",
+      "vri_name": ""
+    },
+    "105": {
+      "name": "Салон красоты",
+      "code": "beauty salon",
+      "vri_code": "3.3",
+      "vri_name": ""
+    },
+    "106": {
+      "name": "Общественная баня",
+      "code": "bathhouse",
+      "vri_code": "3.3",
+      "vri_name": ""
+    },
+    "107": {
+      "name": "Ветеринарная клиника",
+      "code": "veterinary",
+      "vri_code": "3.10.1",
+      "vri_name": ""
+    },
+    "108": {
+      "name": "Зоомагазин",
+      "code": "petshop",
+      "vri_code": "4.4",
+      "vri_name": ""
+    },
+    "109": {
+      "name": "Площадка для выгула собак",
+      "code": "dog park",
+      "vri_code": "5.0",
+      "vri_name": ""
+    },
+    "114": {
+      "name": "Религиозный объект",
+      "code": "religion",
+      "vri_code": "3.7.1",
+      "vri_name": ""
+    },
+    "115": {
+      "name": "Кладбище",
+      "code": "cemetery",
+      "vri_code": "12.1",
+      "vri_name": ""
+    },
+    "148": {
+      "name": "Монастырь",
+      "code": "monastery",
+      "vri_code": "3.7.1",
+      "vri_name": ""
+    },
+    "124": {
+      "name": "Водозаборное сооружение",
+      "code": "water works",
+      "vri_code": "3.1.1",
+      "vri_name": ""
+    },
+    "125": {
+      "name": "Насосная станция",
+      "code": "pumping station",
+      "vri_code": "3.1.1",
+      "vri_name": ""
+    },
+    "128": {
+      "name": "Очистное сооружение",
+      "code": "wastewater plant",
+      "vri_code": "3.1.1",
+      "vri_name": ""
+    },
+    "116": {
+      "name": "Котельная",
+      "code": "boiler room",
+      "vri_code": "3.1.1",
+      "vri_name": ""
+    },
+    "117": {
+      "name": "Теплоэлектроцентраль",
+      "code": "power plant",
+      "vri_code": "6.7",
+      "vri_name": ""
+    },
+    "118": {
+      "name": "Атомная электростанция",
+      "code": "nuclear plant",
+      "vri_code": "6.7",
+      "vri_name": ""
+    },
+    "119": {
+      "name": "Гидроэлектростанция",
+      "code": "hydropower plant",
+      "vri_code": "6.7",
+      "vri_name": ""
+    },
+    "120": {
+      "name": "Тепловая электростанция",
+      "code": "thermal plant",
+      "vri_code": "6.7",
+      "vri_name": ""
+    },
+    "121": {
+      "name": "Возобновляемый источник энергии",
+      "code": "renewable energy source",
+      "vri_code": "6.7",
+      "vri_name": ""
+    },
+    "123": {
+      "name": "Трансформаторная подстанция",
+      "code": "transformer substation",
+      "vri_code": "3.1.1",
+      "vri_name": ""
+    },
+    "132": {
+      "name": "Промышленная территория",
+      "code": "industrial area",
+      "vri_code": "6.0",
+      "vri_name": ""
+    },
+    "1": {
+      "name": "Парк",
+      "code": "park",
+      "vri_code": "3.6.2",
+      "vri_name": ""
+    },
+    "2": {
+      "name": "Лес",
+      "code": "wood",
+      "vri_code": null,
+      "vri_name": ""
+    },
+    "3": {
+      "name": "Заповедник",
+      "code": "reserve",
+      "vri_code": null,
+      "vri_name": ""
+    },
+    "4": {
+      "name": "ООПТ",
+      "code": "protected area",
+      "vri_code": null,
+      "vri_name": ""
+    },
+    "143": {
+      "name": "Санаторий",
+      "code": "sanatorium",
+      "vri_code": "9.2.1",
+      "vri_name": ""
+    },
+    "5": {
+      "name": "Пляж",
+      "code": "beach",
+      "vri_code": "5.0",
+      "vri_name": ""
+    },
+    "149": {
+      "name": "Исправительная колония",
+      "code": "prison",
+      "vri_code": "8.4",
+      "vri_name": ""
+    }
+  },
+  "_unmapped_codes": []
+}

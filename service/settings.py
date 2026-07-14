@@ -69,6 +69,15 @@ class Settings(BaseSettings):
     physical_object_type_to_vri_path: str = Field(
         default="data/physical_object_type_to_vri.json"
     )
+    # service_type_id -> Rosreestr VRI, for resolving service buildings in the
+    # uploaded-building PZZ check (see scripts/build_service_type_to_vri.py).
+    service_type_to_vri_path: str = Field(
+        default="data/service_type_to_vri.json"
+    )
+    # building_pzz_check: when a text type/service name matches neither an id nor
+    # the catalogue aliases, fall back to one batched LLM call to map it to the
+    # closest catalogue id. Disable to keep the flow strictly deterministic.
+    building_llm_name_fallback: bool = Field(default=True)
     priority_max_sum_default: int = 20
 
     run_migrations_on_startup: bool = Field(default=True)

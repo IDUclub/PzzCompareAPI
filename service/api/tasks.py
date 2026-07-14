@@ -10,11 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
-from starlette.responses import FileResponse, RedirectResponse
+from starlette.responses import FileResponse, RedirectResponse, Response
 
 from ..application.use_cases.chat_answer import (
     build_classification_context,
     load_system_prompt,
+    load_vri_names,
     stream_chat_answer,
 )
 from ..db import session_scope
@@ -42,6 +43,7 @@ from .utils import api_log
 
 router = APIRouter(tags=["tasks"])
 _SCENARIO_IDEMPOTENCY_PREFIX = "sc:"
+_BUILDING_IDEMPOTENCY_PREFIX = "bld:"
 
 
 def get_task_or_404(external_id: str, task_repo: TaskRepository) -> PipelineTask:
@@ -54,6 +56,11 @@ def get_task_or_404(external_id: str, task_repo: TaskRepository) -> PipelineTask
 def _is_scenario_task(external_id: str, task_repo: TaskRepository) -> bool:
     key = task_repo.get_idempotency_key_by_external_id(external_id)
     return bool(key and key.startswith(_SCENARIO_IDEMPOTENCY_PREFIX))
+
+
+def _is_building_upload_task(external_id: str, task_repo: TaskRepository) -> bool:
+    key = task_repo.get_idempotency_key_by_external_id(external_id)
+    return bool(key and key.startswith(_BUILDING_IDEMPOTENCY_PREFIX))
 
 
 def get_public_task_or_404(external_id: str, task_repo: TaskRepository) -> PipelineTask:
@@ -133,7 +140,9 @@ def build_recompute_task_response(
 
     try:
         celery_result = enqueue_pipeline_task(
-            task.id, is_scenario=_is_scenario_task(task.external_id, task_repo)
+            task.id,
+            is_scenario=_is_scenario_task(task.external_id, task_repo),
+            is_building_upload=_is_building_upload_task(task.external_id, task_repo),
         )
     except Exception as exc:  # noqa: BLE001
         task_repo.update_status(task.id, TaskStatus.failed, finished_at=utc_now())
@@ -391,10 +400,10 @@ async def task_stream_with_report_generator(
                         yield ServerSentEvent(
                             data=json.dumps({"error": exc.detail}), event="error"
                         )
-                    # Durable link to the result layer (alongside inline geojson,
+                    # Durable link(s) to the result layer(s) (alongside inline geojson,
                     # so the frontend can switch to download-by-link for big files).
-                    layer = build_result_geo_layer(task, external_id, app_settings, request)
-                    if layer is not None:
+                    # building_pzz_check yields two — здания + сервисы.
+                    for layer in build_result_geo_layers(task, external_id, app_settings, request):
                         yield ServerSentEvent(
                             data=json.dumps({"type": "file", "content": layer}),
                             event="file",
@@ -543,10 +552,13 @@ async def prepend_narrative_generator(
     """Emit a leading narrative chunk, then delegate to ``inner``.
 
     Used by the auto-detect chat endpoint so the agent announces the detected
-    columns (\"поле X распознано как …\") before the task lifecycle starts.
+    columns (\"поле X определено как …\") before the task lifecycle starts.
+
+    A trailing blank line is appended so the streamed answer that follows starts
+    as a separate paragraph instead of being glued to the last narrative line.
     """
     if narrative:
-        yield narrative_chunk_sse(narrative)
+        yield narrative_chunk_sse(narrative + "\n\n")
     async for event in inner:
         yield event
 
@@ -631,7 +643,7 @@ async def task_stream_with_chat_generator(
     last_event_id = 0
     last_status: TaskStatus | None = None
     classification_context = ""
-    geo_layer: dict[str, Any] | None = None
+    geo_layers: list[dict[str, Any]] = []
     inputs_emitted = False
     while True:
         if await request.is_disconnected():
@@ -681,7 +693,7 @@ async def task_stream_with_chat_generator(
             # inside the session scope (need the task row), then stream the
             # answer outside any I/O on it.
             if current_status == TaskStatus.finished:
-                geo_layer = build_result_geo_layer(task, external_id, app_settings, request)
+                geo_layers = build_result_geo_layers(task, external_id, app_settings, request)
                 if include_report:
                     try:
                         if report_kind == "classify":
@@ -700,12 +712,15 @@ async def task_stream_with_chat_generator(
                         classification_context = build_classification_context(
                             chat_message=report.get("chat_message"),
                             object_zone_fit=report,
+                            vri_names=load_vri_names(
+                                app_settings.default_vri_classifier_path
+                            ),
                         )
                     except HTTPException as exc:
                         yield ServerSentEvent(
                             data=json.dumps({"error": exc.detail}), event="error"
                         )
-                if geo_layer is not None:
+                for geo_layer in geo_layers:
                     yield ServerSentEvent(
                         data=json.dumps({"type": "file", "content": geo_layer}),
                         event="file",
@@ -716,7 +731,7 @@ async def task_stream_with_chat_generator(
     # Conversational events use gMART's {"type", "content"} envelope.
     chat_id_final = chat_id
     streamed_answer = False
-    assistant_file_parts = [geo_layer_to_file_part(geo_layer)] if geo_layer else None
+    assistant_file_parts = [geo_layer_to_file_part(layer) for layer in geo_layers] or None
     if last_status == TaskStatus.finished:
         async for event in _stream_chat_answer_managed(
             app_settings,
@@ -854,6 +869,25 @@ _SLOT_LABELS: dict[str, tuple[str, str]] = {
 _RESULT_LABEL_PZZ = ("Результат проверки ПЗЗ", "pzz_check_result.geojson")
 _RESULT_LABEL_CLASSIFY = ("Результат классификации ВРИ", "classification_result.geojson")
 
+# building_pzz_check emits the result as TWO layers — здания and сервисы — split
+# from the single combined result by the «Категория_объекта» feature property.
+# These slots have no task column: /files/{slot} filters the combined result on
+# the fly (works for both local and MinIO storage). slot -> (category, name,
+# title, filename).
+_COL_CATEGORY = "Категория_объекта"
+_RESULT_SPLIT_SLOTS: dict[str, tuple[str, str, str, str]] = {
+    "result_buildings": ("Здание", "buildings_result", "Результат — здания", "buildings_result.geojson"),
+    "result_services": ("Сервис", "services_result", "Результат — сервисы", "services_result.geojson"),
+}
+
+
+def _is_building_task(task: PipelineTask) -> bool:
+    """True for building_pzz_check tasks (they carry detected building columns)."""
+    return bool(
+        getattr(task, "building_type_col", None)
+        or getattr(task, "building_service_col", None)
+    )
+
 
 def _result_label(include_pzz_check: bool | None) -> tuple[str, str]:
     """(title, download filename) for a result layer, by run mode.
@@ -943,6 +977,40 @@ def build_result_geo_layer(
     )
 
 
+def build_result_geo_layers(
+    task: PipelineTask,
+    external_id: str,
+    app_settings: Settings,
+    request: Request | None = None,
+) -> list[dict[str, Any]]:
+    """Result-layer link descriptors for a finished task (one or two layers).
+
+    building_pzz_check returns TWO layers — «здания» and «сервисы» — served by
+    filtering the combined result on the fly (durable ``url`` only, no presigned
+    ``download_url``). Every other mode returns the single combined result layer.
+    """
+    if task.status != "finished" or not task.result_path:
+        return []
+    if not _is_building_task(task):
+        single = build_result_geo_layer(task, external_id, app_settings, request)
+        return [single] if single is not None else []
+    layers: list[dict[str, Any]] = []
+    for slot, (_category, name, title, filename) in _RESULT_SPLIT_SLOTS.items():
+        layers.append(
+            {
+                "name": name,
+                "title": title,
+                "role": "result",
+                "url": _file_durable_url(slot, external_id, app_settings, request),
+                "download_url": None,
+                "filename": filename,
+                "mime_type": "application/geo+json",
+                "source_service": app_settings.app_name,
+            }
+        )
+    return layers
+
+
 def build_input_geo_layers(
     task: PipelineTask,
     external_id: str,
@@ -994,6 +1062,32 @@ def geo_layer_to_file_part(layer: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _serve_result_split(
+    task: PipelineTask, slot: str, app_settings: Settings
+) -> Response:
+    """Serve one half (здания / сервисы) of a building_pzz_check result.
+
+    Loads the combined result GeoJSON (local or MinIO), filters features by their
+    «Категория_объекта», and returns the filtered FeatureCollection as a download.
+    Generated on the fly so no second artefact is stored.
+    """
+    category, _name, _title, filename = _RESULT_SPLIT_SLOTS[slot]
+    if task.status != "finished" or not task.result_path:
+        raise HTTPException(status_code=404, detail="Task result not available yet")
+    geojson = _load_result_geojson(task.result_path, app_settings.outputs_dir)
+    features = [
+        f
+        for f in (geojson.get("features") or [])
+        if (f.get("properties") or {}).get(_COL_CATEGORY) == category
+    ]
+    fc = {"type": "FeatureCollection", "features": features}
+    return Response(
+        content=json.dumps(fc, ensure_ascii=False, default=str),
+        media_type="application/geo+json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/files/{slot}/{external_id}")
 def get_task_file_redirect(
     slot: str,
@@ -1008,6 +1102,10 @@ def get_task_file_redirect(
     the file when storage is local. Intentionally unauthenticated so links saved
     in chat history keep working — the ``external_id`` (a uuid) is the capability.
     """
+    if slot in _RESULT_SPLIT_SLOTS:
+        task = get_task_or_404(external_id, task_repo)
+        return _serve_result_split(task, slot, app_settings)
+
     column = _FILE_SLOTS.get(slot)
     if column is None:
         raise HTTPException(status_code=404, detail=f"Unknown file slot '{slot}'")
@@ -1050,6 +1148,7 @@ _COL_VERDICT = "Вердикт_ПЗЗ"
 _COL_REASON = "Причина"
 _COL_MATCHED_VRI_NAME = "Подобранный_ВРИ"
 _COL_MATCHED_VRI_CODE = "Код_подобранного_ВРИ"
+_COL_RESOLUTION_BASIS = "Основание_подбора_ВРИ"
 _COL_TOP1_CANDIDATE = "Топ1_возможный_ВРИ"
 _COL_TOP5_CANDIDATES = "Топ5_возможных_ВРИ"
 
@@ -1093,20 +1192,80 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[: max_chars - 1].rstrip() + "…"
 
 
-def _build_chat_message_objects(rows: list[dict[str, Any]], summary: dict[str, int]) -> str:
-    """Chatbot-friendly plain-text summary for group_by=object."""
+def _verdict_breakdown_lines(summary: dict[str, Any]) -> list[str]:
+    """Split the 'требуют ручной проверки' bucket by actual Вердикт_ПЗЗ reason.
+
+    Reads ``summary['by_verdict']`` (exact Russian-label counts) and keeps only
+    the labels outside correct/wrong — the reasons a parcel ends up needing
+    manual review (e.g. «Нет пересечения с ПЗЗ», «Нет описания зоны в шаблоне»).
+    Returns one '- «label»: N;' line per reason (most common first) so the answer
+    can tell the user exactly which «Вердикт_ПЗЗ» value to filter by, instead of
+    lumping distinct causes into one generic "требуют ручной проверки".
+    """
+    by_verdict = summary.get("by_verdict") or {}
+    reasons = {
+        label: count
+        for label, count in by_verdict.items()
+        if label and label not in _STATUS_CORRECT and label not in _STATUS_WRONG
+    }
+    if not reasons:
+        return []
     lines = [
-        f"Проверено объектов: {summary['total']}.",
-        "",
-        f"В подходящих зонах: {summary['in_correct_zone']}.",
-        f"Не в своих зонах: {summary['in_wrong_zone']}.",
+        "Причины ручной проверки (эти земельные участки можно проверить "
+        "по атрибуту «Вердикт_ПЗЗ»):"
     ]
+    for label, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
+        lines.append(f"- «{label}»: {count};")
+    return lines
+
+
+def _reconciled_intro(summary: dict[str, Any]) -> list[str]:
+    """Intro lines with totals that add up, using the exact counts in ``summary``.
+
+    Fixes the "277 находятся в границах 3 зон" contradiction: the no-intersection
+    parcels are reported separately (``not_in_zone``) and the real-zone count uses
+    ``zones_count`` (which excludes the empty bucket), not ``len(zones)``.
+    """
+    total = summary["total"]
+    correct = summary["in_correct_zone"]
+    wrong = summary["in_wrong_zone"]
+    unclear = summary["unclear"]
+    zones_count = summary.get("zones_count", 0)
+    not_in_zone = summary.get("not_in_zone", 0)
+
+    intro = f"Проверено земельных участков: {total}."
+    if not_in_zone:
+        intro += (
+            f" Из них {total - not_in_zone} находятся в границах {zones_count} "
+            f"территориальных зон ПЗЗ, {not_in_zone} не пересеклись ни с одной "
+            "зоной ПЗЗ."
+        )
+    elif zones_count:
+        intro += f" Все они находятся в границах {zones_count} территориальных зон ПЗЗ."
+    return [
+        "ВРИ — вид разрешённого использования земельного участка; ПЗЗ — правила "
+        "землепользования и застройки.",
+        "",
+        intro,
+        "Результат проверки соответствия ВРИ каждого земельного участка правилам "
+        f"его территориальной зоны ПЗЗ ({correct} + {wrong} + {unclear} = {total}):",
+        f"- ВРИ допустим, нарушений ПЗЗ нет: {correct};",
+        f"- ВРИ не соответствует зоне ПЗЗ (потенциальное нарушение): {wrong};",
+        f"- требуют ручной проверки: {unclear}.",
+    ]
+
+
+def _build_chat_message_objects(rows: list[dict[str, Any]], summary: dict[str, Any]) -> str:
+    """Chatbot-friendly plain-text summary for group_by=object."""
+    lines = _reconciled_intro(summary)
     if summary["unclear"]:
-        lines.append(f"Без чёткой оценки: {summary['unclear']}.")
+        breakdown = _verdict_breakdown_lines(summary)
+        if breakdown:
+            lines += ["", *breakdown]
 
     wrong = [r for r in rows if r["fit"] == "wrong"]
     if wrong:
-        lines += ["", "Объекты не в своих зонах:"]
+        lines += ["", "Земельные участки с недопустимым в их зоне ВРИ:"]
         for row in wrong[:10]:
             obj_label = row.get("vri_text") or "—"
             zone_label = row.get("zone_name") or row.get("zone_type_id") or "—"
@@ -1115,44 +1274,30 @@ def _build_chat_message_objects(rows: list[dict[str, Any]], summary: dict[str, i
                 f"- #{row['feature_index']}: «{obj_label}» в зоне «{zone_label}» — {reason}"
             )
         if len(wrong) > 10:
-            lines.append(f"...и ещё {len(wrong) - 10} объектов не в своих зонах.")
-    else:
-        lines += ["", "Все объекты находятся в подходящих зонах."]
+            lines.append(
+                f"...и ещё {len(wrong) - 10} земельных участков с недопустимым "
+                "в их зоне ВРИ."
+            )
+    elif not summary["unclear"]:
+        lines += ["", "У всех земельных участков ВРИ допустим в их территориальной зоне."]
 
     return "\n".join(lines)
 
 
-def _build_chat_message_zones(zones: list[dict[str, Any]], summary: dict[str, int]) -> str:
-    """Chatbot-friendly plain-text summary for group_by=zone."""
-    lines = [
-        f"Проверено объектов: {summary['total']} в {len(zones)} зонах.",
-        f"В подходящих зонах: {summary['in_correct_zone']}. "
-        f"Не в своих зонах: {summary['in_wrong_zone']}. "
-        f"Без чёткой оценки: {summary['unclear']}.",
-        "",
-    ]
-    for zone in zones:
-        z_sum = zone["summary"]
-        zone_label = zone.get("zone_name") or zone.get("zone_type_id") or "—"
-        total = z_sum["total"]
-        wrong = z_sum["in_wrong_zone"]
-        unclear_n = z_sum["unclear"]
+def _build_chat_message_zones(zones: list[dict[str, Any]], summary: dict[str, Any]) -> str:
+    """Chatbot-friendly plain-text summary for group_by=zone.
 
-        if wrong == 0 and unclear_n == 0:
-            note = f"все {total} в порядке"
-        elif wrong > 0:
-            note = f"{wrong} из {total} не в своей зоне"
-        else:
-            note = f"{unclear_n} из {total} требуют ручной проверки"
-        lines.append(f"Зона «{zone_label}»: {note}.")
-
-        if wrong > 0:
-            wrong_objs = [o for o in zone.get("objects") or [] if o["fit"] == "wrong"]
-            if wrong_objs:
-                first_reason = (wrong_objs[0].get("reason") or "").strip()
-                if first_reason:
-                    lines.append("    " + _truncate(first_reason.split(".")[0], 200))
-
+    Compact headline only — totals, per-verdict counts and manual-review reasons.
+    The per-zone breakdown deliberately lives in the conversational LLM answer
+    (grounded on the object-zone-fit report) so the two messages complement each
+    other instead of duplicating. ``zones`` is kept in the signature for a
+    uniform call site with the object variant.
+    """
+    lines = _reconciled_intro(summary)
+    if summary["unclear"]:
+        breakdown = _verdict_breakdown_lines(summary)
+        if breakdown:
+            lines += ["", *breakdown]
     return "\n".join(lines)
 
 
@@ -1221,13 +1366,26 @@ def build_object_zone_fit_response(
             "reason": props.get(_COL_REASON),
             "matched_vri_name": props.get(_COL_MATCHED_VRI_NAME),
             "matched_vri_code": props.get(_COL_MATCHED_VRI_CODE),
+            "resolution_basis": props.get(_COL_RESOLUTION_BASIS),
         })
 
+    by_verdict: dict[str, int] = {}
+    for r in rows:
+        label = r["verdict"] or "—"
+        by_verdict[label] = by_verdict.get(label, 0) + 1
     summary = {
         "total": len(rows),
         "in_correct_zone": sum(1 for r in rows if r["fit"] == "correct"),
         "in_wrong_zone": sum(1 for r in rows if r["fit"] == "wrong"),
         "unclear": sum(1 for r in rows if r["fit"] == "unclear"),
+        # Number of REAL territorial zones the parcels fall into (excludes the
+        # "no zone" bucket) and how many parcels fell outside every zone — so the
+        # answer can reconcile totals instead of counting the empty-zone bucket.
+        "zones_count": len({r["zone_type_id"] for r in rows if r["zone_type_id"]}),
+        "not_in_zone": sum(1 for r in rows if not r["zone_type_id"]),
+        # Exact per-verdict breakdown (Russian labels) so the answer can split
+        # "требуют ручной проверки" by reason without recomputing.
+        "by_verdict": by_verdict,
     }
 
     if group_by == "object":

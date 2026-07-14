@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from service.application.use_cases.detect_columns import (
+    BUILDING_TARGETS,
     CADASTRAL_TARGETS,
     PZZ_ZONE_TARGETS,
     VRI_TARGET,
@@ -98,6 +99,54 @@ def test_heuristic_resolves_known_defaults_without_llm() -> None:
     assert fake.calls == []  # heuristic fully resolved -> no LLM call
 
 
+def test_building_columns_resolve_by_heuristic() -> None:
+    # Urban-API-shaped buildings: type/service/floors resolve without an LLM call.
+    fc = _fc([{"physical_object_type_id": 4, "service_type_id": 22, "floors_count": 5}])
+    fake = RecordingFakeOllama()
+    suggestions = asyncio.run(detect_columns_for_file(fake, fc, BUILDING_TARGETS))
+    assert suggestions["building_type_col"].value == "physical_object_type_id"
+    assert suggestions["building_service_col"].value == "service_type_id"
+    assert suggestions["building_floors_col"].value == "floors_count"
+    assert fake.calls == []
+
+
+def test_profile_columns_discovers_late_appearing_column() -> None:
+    # Regression: a merged buildings+services layer lists all physical objects
+    # first and services only later. The service column must still be discovered
+    # (profiling scans every feature, not just the first window).
+    feats = [{"physical_object_type_id": 45} for _ in range(60)]
+    feats.append({"service_type_id": 87})  # first service well past the old 50 cap
+    profiles = {p.name: p for p in profile_columns(_fc(feats))}
+    assert "service_type_id" in profiles
+    assert profiles["service_type_id"].samples == ["87"]
+
+
+def test_building_service_column_resolved_when_only_in_late_features() -> None:
+    # End-to-end of the fix: detection maps building_service_col even though
+    # service_type_id appears only after 1500 physical-object features.
+    feats = [{"physical_object_type_id": 4} for _ in range(1500)]
+    feats += [{"service_type_id": 22} for _ in range(20)]
+    fake = RecordingFakeOllama()
+    suggestions = asyncio.run(detect_columns_for_file(fake, _fc(feats), BUILDING_TARGETS))
+    # type + service resolve by heuristic (floors is absent -> defers to LLM)
+    assert suggestions["building_type_col"].value == "physical_object_type_id"
+    assert suggestions["building_service_col"].value == "service_type_id"
+
+
+def test_building_text_name_columns_resolve_by_heuristic() -> None:
+    fc = _fc([{
+        "physical_object_type_name": "Жилой дом",
+        "service_type_name": "Школа",
+        "floors": 5,
+    }])
+    fake = RecordingFakeOllama()
+    suggestions = asyncio.run(detect_columns_for_file(fake, fc, BUILDING_TARGETS))
+    assert suggestions["building_type_col"].value == "physical_object_type_name"
+    assert suggestions["building_service_col"].value == "service_type_name"
+    assert suggestions["building_floors_col"].value == "floors"
+    assert fake.calls == []
+
+
 # --- LLM fallback + enum constraint ---------------------------------------
 
 def test_llm_resolves_unknown_column_names() -> None:
@@ -142,7 +191,8 @@ def test_narrative_lists_recognised_and_missing() -> None:
     suggestions = asyncio.run(detect_columns_for_file(fake, fc, CADASTRAL_TARGETS))
     text = render_detection_narrative(suggestions, CADASTRAL_TARGETS)
     assert "permitted_use" in text
-    assert "название ВРИ участка" in text
+    assert "вид разрешённого использования (ВРИ) участка" in text
+    assert "определено как" in text
     assert required_columns_resolved(suggestions, CADASTRAL_TARGETS) is True
 
 
@@ -196,3 +246,21 @@ def test_complete_json_raises_on_bad_content() -> None:
 
     with pytest.raises(OllamaChatError):
         asyncio.run(run())
+
+
+def test_complete_json_recovers_json_from_reasoning_wrapper() -> None:
+    # gpt-oss-style: chain-of-thought + fenced JSON around the actual object.
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        content = 'Let me think...\nThe answer is:\n```json\n{"n0": 26, "n1": null}\n```\n'
+        return httpx.Response(200, json={"message": {"content": content}})
+
+    async def run():
+        async with _real_client(handler) as oc:
+            return await oc.complete_json([{"role": "user", "content": "x"}], schema={})
+
+    result = asyncio.run(run())
+    assert result == {"n0": 26, "n1": None}
+    assert seen["body"]["think"] is False  # reasoning suppressed at the source

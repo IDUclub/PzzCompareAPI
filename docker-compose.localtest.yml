@@ -1,0 +1,106 @@
+# Self-contained LOCAL test stack (Windows/Docker Desktop friendly).
+# Brings up postgres + redis + one-shot migrate + api + worker with plain
+# named volumes (no host-path binds). Storage uses the reachable MinIO and
+# urban_api from the image's .env.development. Used to smoke-test the
+# deterministic scenario path end-to-end (API -> worker -> result).
+#
+#   docker compose -f docker-compose.localtest.yml up -d --build
+services:
+  postgres_pzz:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: pzz_pipeline
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    networks: [pzz_compare]
+    volumes:
+      - pgdata_local:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pzz_pipeline"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  redis:
+    image: redis:7
+    networks: [pzz_compare]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build: .
+    user: root
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres_pzz:5432/pzz_pipeline
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres_pzz:
+        condition: service_healthy
+    command: sh -c "python service/wait_for_db.py && alembic upgrade head"
+    networks: [pzz_compare]
+    restart: "no"
+
+  api:
+    build: .
+    user: root
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres_pzz:5432/pzz_pipeline
+      REDIS_URL: redis://redis:6379/0
+      RUN_MIGRATIONS_ON_STARTUP: "false"
+      SCENARIO_DETERMINISTIC: "true"
+    depends_on:
+      postgres_pzz:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8300:8000"
+    networks: [pzz_compare]
+    command: sh -c "python service/wait_for_db.py && uvicorn service.app:app --host 0.0.0.0 --port 8000"
+
+  worker:
+    build: .
+    user: root
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres_pzz:5432/pzz_pipeline
+      REDIS_URL: redis://redis:6379/0
+      SCENARIO_DETERMINISTIC: "true"
+    depends_on:
+      postgres_pzz:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [pzz_compare]
+    # Fast queue: deterministic scenario tasks + beat-scheduled jobs.
+    command: sh -c "python service/wait_for_db.py && celery -A service.tasks.celery_app worker -P threads --concurrency=4 -Q default --loglevel=INFO"
+
+  worker_llm:
+    build: .
+    user: root
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres_pzz:5432/pzz_pipeline
+      REDIS_URL: redis://redis:6379/0
+      SCENARIO_DETERMINISTIC: "true"
+    depends_on:
+      postgres_pzz:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [pzz_compare]
+    # GPU-bound queue: LLM upload pipelines. Low concurrency so the embedder /
+    # vLLM backends are not oversubscribed.
+    command: sh -c "python service/wait_for_db.py && celery -A service.tasks.celery_app worker -P threads --concurrency=2 -Q llm --loglevel=INFO"
+
+volumes:
+  pgdata_local:
+
+networks:
+  pzz_compare:
+    driver: bridge

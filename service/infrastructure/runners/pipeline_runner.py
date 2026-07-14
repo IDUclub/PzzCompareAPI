@@ -183,17 +183,20 @@ class PipelineRunnerFactory:
 
     @staticmethod
     def create(settings: "Settings", request: "PipelineRequest | None" = None) -> PipelineRunner:
-        if (
+        if request is not None and getattr(request, "is_building_upload", False):
+            from service.infrastructure.runners.uploaded_building_pzz_runner import (
+                UploadedBuildingPzzRunner,
+            )
+            inner: PipelineRunner = UploadedBuildingPzzRunner(settings)
+        elif (
             request is not None
             and getattr(request, "is_scenario", False)
             and getattr(settings, "scenario_deterministic", False)
         ):
-            # Scenario tasks classify via dictionary lookups (no LLM/embeddings).
-            # Imported lazily so the heavy geo deps load only in the worker.
             from service.infrastructure.runners.deterministic_scenario_runner import (
                 DeterministicScenarioRunner,
             )
-            inner: PipelineRunner = DeterministicScenarioRunner(settings)
+            inner = DeterministicScenarioRunner(settings)
         else:
             inner = PipelineRunnerFactory._create_inner(settings)
         return StorageAwarePipelineRunner(inner, get_object_storage())
