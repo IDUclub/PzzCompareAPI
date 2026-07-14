@@ -285,7 +285,7 @@ async def stream_chat_answer(
     *,
     ollama_client: OllamaChatClient,
     chat_storage_client: ChatStorageClient | None,
-    token: str | None,
+    user_id: str | None,
     system_prompt: str,
     user_query: str,
     classification_context: str = "",
@@ -300,13 +300,15 @@ async def stream_chat_answer(
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream a grounded assistant answer and persist the turn to ChatStorage.
 
-    Persistence requires both a token and a ChatStorage client; when either is
-    missing the answer is still streamed, just not stored.
+    Persistence requires both a ``user_id`` and a ChatStorage client; when
+    either is missing the answer is still streamed, just not stored. ChatStorage
+    is authenticated with our service token (inside the client) and the chat is
+    owned by ``user_id`` (sent as ``X-User-Id``).
 
     ``assistant_file_parts`` are ChatStorage ``file``-part payloads (geo-layer
     links) attached to the assistant message alongside the answer text.
     """
-    persist = chat_storage_client is not None and bool(token)
+    persist = chat_storage_client is not None and bool(user_id)
 
     # 0. For an existing chat (frontend supplied chat_id), load prior turns so
     # the model has conversational memory. Done before appending the new user
@@ -314,7 +316,7 @@ async def stream_chat_answer(
     history: list[dict[str, str]] = []
     if persist and chat_id:
         try:
-            existing = await chat_storage_client.get_chat(token, chat_id)
+            existing = await chat_storage_client.get_chat(user_id, chat_id)
             history = build_llm_history(existing.get("messages") or [])
         except ChatStorageError as exc:
             logger.warning("chat_storage get_chat (history) failed: %s", exc)
@@ -330,7 +332,7 @@ async def stream_chat_answer(
     if persist and not chat_id:
         try:
             created = await chat_storage_client.create_chat(
-                token,
+                user_id,
                 title=chat_title,
                 scenario_id=scenario_id,
                 project_id=project_id,
@@ -345,7 +347,7 @@ async def stream_chat_answer(
                 "stage": "create_chat",
                 "detail": str(exc),
                 "message": "Ответ сформирован, но не сохранён в историю чата "
-                "(проверьте токен). Сохраните его при необходимости.",
+                "(сервис истории недоступен).",
             }
             persist = False
 
@@ -353,7 +355,7 @@ async def stream_chat_answer(
     if persist and chat_id:
         try:
             await chat_storage_client.add_message(
-                token,
+                user_id,
                 chat_id,
                 role="user",
                 content=user_query,
@@ -366,7 +368,7 @@ async def stream_chat_answer(
                 "stage": "add_user_message",
                 "detail": str(exc),
                 "message": "Ответ сформирован, но не сохранён в историю чата "
-                "(проверьте токен). Сохраните его при необходимости.",
+                "(сервис истории недоступен).",
             }
 
     # 3. Stream the assistant answer from the dedicated chat LLM.
@@ -397,11 +399,11 @@ async def stream_chat_answer(
                     for payload in assistant_file_parts
                 )
                 stored = await chat_storage_client.add_message(
-                    token, chat_id, role="assistant", parts=parts, metadata=message_metadata
+                    user_id, chat_id, role="assistant", parts=parts, metadata=message_metadata
                 )
             else:
                 stored = await chat_storage_client.add_message(
-                    token, chat_id, role="assistant", content=answer, metadata=message_metadata
+                    user_id, chat_id, role="assistant", content=answer, metadata=message_metadata
                 )
             assistant_message_id = stored.get("message_id")
         except ChatStorageError as exc:
@@ -411,7 +413,7 @@ async def stream_chat_answer(
                 "stage": "add_assistant_message",
                 "detail": str(exc),
                 "message": "Ответ сформирован, но не сохранён в историю чата "
-                "(проверьте токен). Сохраните его при необходимости.",
+                "(сервис истории недоступен).",
             }
 
     yield {

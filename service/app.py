@@ -5,8 +5,9 @@ Endpoint logic lives in ``service/api/*`` routers, grouped by concern:
 This module only wires the app: startup lifecycle, dependency init,
 config defaults, and ``include_router`` calls.
 """
+import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
@@ -16,7 +17,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api import admin_config, classifier, scenarios, system, tasks
 from .api.utils import api_log
 from .db import session_scope
-from .dependencies import init_dependencies
+from .dependencies import (
+    build_keycloak_token_config,
+    init_dependencies,
+    keycloak_service_configured,
+    set_service_token_client,
+)
 from .infrastructure.repositories.sqlalchemy_config_repository import SqlAlchemyConfigRepository
 from .log_sink import setup_redis_sink
 from .logging_config import setup_logging
@@ -54,9 +60,34 @@ async def lifespan(app: FastAPI):
         for name, value, py_type in defaults:
             if config_repo.get(name) is None:
                 config_repo.set(name, value, py_type)
-    api_log("startup", "finished")
-    yield
-    api_log("shutdown", "finished")
+
+    async with AsyncExitStack() as stack:
+        # Shared Keycloak service-token client for outbound M2M auth to
+        # ChatStorage. Created once per process; background refresh keeps the
+        # token fresh so chat history persists even after the user's own token
+        # has expired mid-computation.
+        if keycloak_service_configured():
+            from idu_service_auth import KeycloakTokenClient
+
+            token_client = await stack.enter_async_context(
+                KeycloakTokenClient(build_keycloak_token_config())
+            )
+            set_service_token_client(token_client)
+            logging.getLogger("service.auth").info(
+                "Keycloak service token client initialized."
+            )
+        else:
+            logging.getLogger("service.auth").warning(
+                "Keycloak service credentials are not fully configured "
+                "(KEYCLOAK_URL/REALM/CLIENT_ID/CLIENT_SECRET); ChatStorage "
+                "history persistence is disabled."
+            )
+        api_log("startup", "finished")
+        try:
+            yield
+        finally:
+            set_service_token_client(None)
+            api_log("shutdown", "finished")
 
 
 app = FastAPI(title="PZZ Pipeline Background Service", lifespan=lifespan)

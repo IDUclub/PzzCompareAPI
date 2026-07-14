@@ -11,8 +11,17 @@ from service.infrastructure.chat_storage_client import (
 )
 
 
+class FakeTokenClient:
+    """Stand-in for ``idu_service_auth.KeycloakTokenClient`` (service token)."""
+
+    async def get_authorization_headers(self, *, force_refresh: bool = False) -> dict[str, str]:
+        return {"Authorization": "Bearer service-tok"}
+
+
 def _client(handler) -> ChatStorageClient:
-    client = ChatStorageClient(base_url="http://cs.local", timeout_seconds=5)
+    client = ChatStorageClient(
+        base_url="http://cs.local", token_client=FakeTokenClient(), timeout_seconds=5
+    )
     # Swap the real transport for a deterministic mock.
     client._client = httpx.AsyncClient(
         base_url="http://cs.local", transport=httpx.MockTransport(handler)
@@ -26,6 +35,7 @@ def test_create_chat_posts_contract_and_returns_summary() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         seen["url"] = str(request.url)
         seen["auth"] = request.headers.get("Authorization")
+        seen["x_user_id"] = request.headers.get("X-User-Id")
         seen["body"] = json.loads(request.content)
         return httpx.Response(
             201,
@@ -35,13 +45,16 @@ def test_create_chat_posts_contract_and_returns_summary() -> None:
     async def run() -> dict:
         async with _client(handler) as cs:
             return await cs.create_chat(
-                "tok", title="T", scenario_id=772, project_id=42, metadata={"k": "v"}
+                "user-1", title="T", scenario_id=772, project_id=42, metadata={"k": "v"}
             )
 
     result = asyncio.run(run())
     assert result["chat_id"] == "chat-1"
     assert seen["url"].endswith("/api/v1/chat_history/create_chat")
-    assert seen["auth"] == "Bearer tok"
+    # ChatStorage is authenticated with the SERVICE token; the end user is named
+    # via X-User-Id, not by the token.
+    assert seen["auth"] == "Bearer service-tok"
+    assert seen["x_user_id"] == "user-1"
     assert seen["body"]["scenario_id"] == 772
     assert seen["body"]["metadata"] == {"k": "v"}
 
@@ -51,18 +64,20 @@ def test_add_message_simple_text() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["url"] = str(request.url)
+        seen["x_user_id"] = request.headers.get("X-User-Id")
         seen["body"] = json.loads(request.content)
         return httpx.Response(201, json={"message_id": "m-1", "chat_id": "chat-1"})
 
     async def run() -> dict:
         async with _client(handler) as cs:
             return await cs.add_message(
-                "tok", "chat-1", role="user", content="привет"
+                "user-1", "chat-1", role="user", content="привет"
             )
 
     result = asyncio.run(run())
     assert result["message_id"] == "m-1"
     assert seen["url"].endswith("/api/v1/chat_history/chat-1/message")
+    assert seen["x_user_id"] == "user-1"
     assert seen["body"] == {"role": "user", "metadata": {}, "content": "привет"}
 
 

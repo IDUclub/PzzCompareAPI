@@ -97,7 +97,14 @@ curl -N -X POST "http://localhost:8000/tasks/pzz-check/chat/stream" \
 - Без `Authorization` → `401/403`.
 - Если `CHAT_STORAGE_BASE_URL` пуст → ответ всё равно стримится (`chunk`), но `service_event` нет
   и история не пишется.
-- Сбой ChatStorage/Ollama → событие `error` (`{message,stage}`), поток не рвётся, в конце `done`.
+- **История пишется сервисным токеном** (Keycloak client_credentials): для персиста нужны
+  `KEYCLOAK_URL`/`KEYCLOAK_REALM`/`KEYCLOAK_CLIENT_ID`/`KEYCLOAK_CLIENT_SECRET`. Если они не заданы,
+  сервисный токен не создаётся → история не пишется (в логах warning на старте), ответ всё равно
+  стримится. `user_id` (`sub`) извлекается из пользовательского токена в начале запроса и уходит в
+  ChatStorage заголовком `X-User-Id`, поэтому история сохраняется даже с протухшим к концу расчёта
+  пользовательским токеном.
+- Сбой персиста (ChatStorage/сервисный токен) → событие `warning` (`{message,stage}`), поток не
+  рвётся, ответ стримится; только сбой генерации ответа (`stage:"llm"`) → `error`. В конце `done`.
 
 ### 4e. Проверка персиста в ChatStorage
 
