@@ -226,6 +226,23 @@ get_scenario_classification_report(scenario_id, external_id) # отдать chat
 Параметры: `AUTH_SERVER_URL`, `AUTH_CLIENT_ID`, `AUTH_VERIFY_AUD`,
 `AUTH_VALID_AUDIENCES`, кеши `AUTH_JWKS_CACHE_TTL` / `AUTH_USER_CACHE_TTL`.
 
+### Сервисный токен для истории чата
+
+Чат-ручки принимают пользовательский токен с фронта, но **историю чата бэкенд
+сохраняет своим сервисным токеном** (Keycloak `client_credentials` через
+[`idu-service-auth`](https://github.com/IDUclub/idu-service-auth)), а не токеном
+пользователя. Причина: пользовательский токен успевает протухнуть за время
+долгого расчёта, и к моменту записи истории ChatStorage отверг бы его. Бэкенд
+извлекает `user_id` (`sub`) из пользовательского токена в начале запроса (пока
+он свежий) и передаёт его в ChatStorage заголовком `X-User-Id` — так история
+остаётся привязанной к реальному пользователю.
+
+Параметры: `KEYCLOAK_URL` (база, без `/realms`), `KEYCLOAK_REALM`,
+`KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`, опц. `KEYCLOAK_SCOPE`. Если они
+не заданы — сервисный токен не создаётся и персист истории выключен (ответ всё
+равно стримится). Клиент токена создаётся один раз на процесс в lifespan
+(`service/app.py`), с фоновым обновлением токена.
+
 ## Метрики
 
 Метрики задач (`queue_wait_seconds`, `task_run_seconds`, `task_fail_total`,
@@ -266,5 +283,6 @@ CI-пайплайн [`.github/workflows/deploy.yml`](.github/workflows/deploy.ym
 (см. `service/settings.py` и `.env.example`). Ключевое: `DATABASE_URL`,
 `REDIS_URL`, `LLM_BACKEND` + модели, `FILESERVER_*` (MinIO), `URBAN_API_BASE_URL`.
 Для чат-ручек: `CHAT_STORAGE_BASE_URL` (история диалогов; пусто — персист выключен),
-`CHAT_MODEL` (дефолтная модель чата на `OLLAMA_BASE_URL`), `CHAT_SYSTEM_PROMPT_PATH`.
+`CHAT_MODEL` (дефолтная модель чата на `OLLAMA_BASE_URL`), `CHAT_SYSTEM_PROMPT_PATH`,
+`KEYCLOAK_*` (сервисный токен для записи истории, см. «Аутентификация»).
 Секреты в репозиторий не коммитятся.

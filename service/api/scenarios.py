@@ -56,7 +56,7 @@ from .tasks import (
     task_stream_with_chat_generator,
     task_stream_with_report_generator,
 )
-from .security import verify_token
+from .security import AuthUser, get_current_user, verify_token
 from .utils import api_log
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
@@ -564,7 +564,7 @@ async def scenario_chat_stream_endpoint(
     poll_interval: float = Query(2.0, ge=0.5, le=10.0),
     idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
     idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
-    token: str = Depends(verify_token),
+    user: AuthUser = Depends(get_current_user),
     app_settings: Settings = Depends(get_app_settings),
     task_repo: TaskRepository = Depends(get_task_repo),
     event_repo: EventRepository = Depends(get_event_repo),
@@ -587,6 +587,10 @@ async def scenario_chat_stream_endpoint(
     if group_by not in ("zone", "object"):
         raise HTTPException(status_code=422, detail="group_by must be 'zone' or 'object'")
 
+    # The user's token is forwarded to urban_api (still fresh at request start);
+    # the user's id (sub) is what ChatStorage needs, sent later via the service
+    # token + X-User-Id, so persistence survives the token's expiry mid-compute.
+    token = user.token
     project_id = await _fetch_project_id(scenario_id, token, app_settings)
 
     task = await _build_scenario_classification_task(
@@ -614,7 +618,7 @@ async def scenario_chat_stream_endpoint(
             request=request,
             app_settings=app_settings,
             initial=initial,
-            token=token,
+            user_id=user.user_id,
             user_query=user_query,
             chat_id=chat_id,
             scenario_id=scenario_id,
