@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+import httpx
 
 from fastapi import (
     APIRouter,
@@ -75,6 +78,7 @@ from .tasks import (
 from .utils import api_log
 
 router = APIRouter(prefix="/tasks", tags=["classifier"])
+logger = logging.getLogger("service.api.classifier")
 
 
 def _stream_upload_to_file(
@@ -969,11 +973,25 @@ async def _run_building_pzz_auto(
     if review.action == "confirm":
         candidates = template_candidates(app_settings.default_pzz_zone_labels_path)
         messages, schema = build_suggestion_messages(review.uncovered, candidates)
+        llm_available = True
         try:
             async with build_ollama_chat_client(app_settings) as ollama_client:
                 parsed = await ollama_client.complete_json(messages, schema=schema, model=model)
-        except OllamaChatError:
-            parsed = {}
+        except (OllamaChatError, httpx.HTTPError) as exc:
+            # No suggestions possible without the model — degrade to the upload
+            # ask rather than 500 the whole request.
+            logger.warning("zone-suggestion LLM call failed (%s); asking for upload", exc)
+            parsed, llm_available = {}, False
+        if not llm_available:
+            detail = (
+                "Не удалось подобрать соответствия зон (модель недоступна). "
+                f"Не найдены в шаблоне ПЗЗ: {', '.join(review.uncovered_codes)}. "
+                "Загрузите описание разрешённых ВРИ вашего ПЗЗ (поле pzz_descriptions_file) "
+                "и повторите."
+            )
+            return EventSourceResponse(
+                zone_review_generator(narrative, detail, action="suggest_upload", suggestions=None)
+            )
         picks = parse_suggestions(review.uncovered, parsed, candidates)
         by_code = {c["code"]: c["name"] for c in candidates}
         payload = [

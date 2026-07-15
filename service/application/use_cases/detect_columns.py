@@ -34,6 +34,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
+
 from ...infrastructure.ollama_chat_client import OllamaChatClient, OllamaChatError
 
 logger = logging.getLogger("service.detect_columns")
@@ -383,7 +385,9 @@ async def detect_columns_for_file(
     schema = _detection_schema(unresolved, names)
     try:
         result = await ollama_client.complete_json(messages, schema=schema, model=model)
-    except OllamaChatError as exc:
+    except (OllamaChatError, httpx.HTTPError) as exc:
+        # LLM down/unreachable must not 500 the auto endpoint — the unresolved
+        # targets simply fall back to "not found" (heuristic-only detection).
         logger.warning("column-detection LLM call failed: %s", exc)
         result = {}
 
