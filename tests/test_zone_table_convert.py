@@ -347,6 +347,9 @@ def test_inline_table_converted_to_json_upload(monkeypatch):
     payload = json.loads(new_file.file.read().decode("utf-8"))
     assert {z["zone_code"] for z in payload} == {"Ж-1", "П-1"}
     assert "2 зон" in note
+    assert "ВРИ" not in note and "ПЗЗ" not in note  # spelled out before definition
+    assert "Подобранные колонки таблицы" in note
+    assert "код зоны — «Zone»" in note
 
 
 def test_inline_json_descriptions_pass_through(monkeypatch):

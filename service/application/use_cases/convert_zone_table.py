@@ -80,8 +80,8 @@ def convert_zone_table(
     warnings: list[str] = []
     if not permission_col:
         warnings.append(
-            "Колонка типа разрешения не найдена — все ВРИ отнесены к основным "
-            "(main)."
+            "Колонка типа разрешения не найдена — все виды разрешённого использования "
+            "отнесены к основным."
         )
 
     zones: dict[str, dict[str, Any]] = {}
@@ -140,7 +140,10 @@ def convert_zone_table(
     if skipped_no_zone:
         warnings.append(f"Пропущено строк без кода зоны: {skipped_no_zone}.")
     if skipped_no_vri:
-        warnings.append(f"Пропущено строк без кода ВРИ: {skipped_no_vri}.")
+        warnings.append(
+            "Пропущено строк без кода вида разрешённого использования: "
+            f"{skipped_no_vri}."
+        )
 
     result: list[dict[str, Any]] = []
     vri_total = 0

@@ -956,7 +956,8 @@ async def _convert_descriptions_if_table(
         rows, headers = read_table(data, descriptions_file.filename or "")
     except TableReadError as exc:
         raise _DescriptionsTableError(
-            f"Таблицу описаний зон ПЗЗ не удалось прочитать: {exc}."
+            "Таблицу описаний зон правил землепользования и застройки не удалось "
+            f"прочитать: {exc}."
         ) from exc
     feature_collection = {"features": [{"properties": r} for r in rows]}
     async with build_ollama_chat_client(app_settings) as ollama_client:
@@ -975,13 +976,30 @@ async def _convert_descriptions_if_table(
         zones, report = convert_zone_table(rows, resolved)
     except ConversionError as exc:
         raise _DescriptionsTableError(
-            f"В таблице описаний зон ПЗЗ не определить обязательную колонку ({exc}). "
-            f"Заголовки: {', '.join(headers)}. Задайте её или подайте описание в JSON."
+            f"В таблице описаний зон правил землепользования и застройки не определить "
+            f"обязательную колонку ({exc}). Заголовки: {', '.join(headers)}. "
+            "Задайте её или подайте описание в JSON."
         ) from exc
+    # Full spellings here: this note leads the narrative, before the model's
+    # «ВРИ — …; ПЗЗ — …» line defines the abbreviations.
+    role_labels = {
+        "zone_code": "код зоны",
+        "zone_name": "наименование зоны",
+        "permission": "тип разрешения",
+        "vri_code": "код вида разрешённого использования",
+        "vri_name": "наименование вида разрешённого использования",
+    }
+    columns = [
+        f"{role_labels[key]} — «{col}»"
+        for key, col in resolved.items()
+        if col and key in role_labels
+    ]
     note = (
-        f"Из таблицы описаний зон ПЗЗ распознано: {report.zones_count} зон, "
-        f"{report.vri_count} ВРИ."
+        "Из таблицы описаний зон правил землепользования и застройки распознано: "
+        f"{report.zones_count} зон, {report.vri_count} видов разрешённого использования."
     )
+    if columns:
+        note += " Подобранные колонки таблицы: " + "; ".join(columns) + "."
     if report.warnings:
         note += " Предупреждения: " + "; ".join(report.warnings)
     return _json_upload(zones, "pzz_descriptions_from_table.json"), note
