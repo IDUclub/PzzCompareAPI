@@ -1,6 +1,7 @@
 """Tests for zone-description table ingest: reader, conversion, convert endpoint."""
 
 import io
+import json
 
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
@@ -299,3 +300,78 @@ def test_convert_endpoint_bad_format(monkeypatch):
         files={"file": ("z.docx", b"nope", "application/octet-stream")},
     )
     assert resp.status_code == 400
+
+
+# --- inline table conversion in the auto/chat/stream building flow ------------
+
+
+class _NoLLMOllama:
+    """Async-context Ollama stub with no column suggestions (heuristic backstop)."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def complete_json(self, messages, schema=None, model=None):
+        return {}
+
+
+def _run_convert_helper(monkeypatch, upload):
+    import asyncio
+    from types import SimpleNamespace
+    import service.api.classifier as clf
+
+    monkeypatch.setattr(
+        clf, "build_ollama_chat_client", lambda settings=None: _NoLLMOllama()
+    )
+    return asyncio.run(
+        clf._convert_descriptions_if_table(upload, SimpleNamespace(), None)
+    )
+
+
+def test_inline_table_converted_to_json_upload(monkeypatch):
+    from fastapi import UploadFile
+
+    data = _xlsx_bytes(
+        ["Zone", "Code", "VRI_Code", "VRI"],
+        [
+            ["Ж-1", "Основной", "2.1", "Для ИЖС"],
+            ["П-1", "Вспомогательный", "6.9", "Склад"],
+        ],
+    )
+    up = UploadFile(file=io.BytesIO(data), filename="descr.xlsx")
+    new_file, note = _run_convert_helper(monkeypatch, up)
+    assert "descriptions_from_table" in new_file.filename
+    payload = json.loads(new_file.file.read().decode("utf-8"))
+    assert {z["zone_code"] for z in payload} == {"Ж-1", "П-1"}
+    assert "2 зон" in note
+
+
+def test_inline_json_descriptions_pass_through(monkeypatch):
+    from fastapi import UploadFile
+
+    up = UploadFile(file=io.BytesIO(b"[]"), filename="descr.json")
+    out, note = _run_convert_helper(monkeypatch, up)
+    assert out is up and note == ""
+
+
+def test_inline_none_descriptions_pass_through(monkeypatch):
+    out, note = _run_convert_helper(monkeypatch, None)
+    assert out is None and note == ""
+
+
+def test_inline_table_missing_required_column_raises(monkeypatch):
+    from fastapi import UploadFile
+    import service.api.classifier as clf
+
+    up = UploadFile(
+        file=io.BytesIO(_xlsx_bytes(["Zone"], [["Ж-1"]])), filename="descr.xlsx"
+    )
+    try:
+        _run_convert_helper(monkeypatch, up)
+    except clf._DescriptionsTableError:
+        pass
+    else:
+        raise AssertionError("expected _DescriptionsTableError")

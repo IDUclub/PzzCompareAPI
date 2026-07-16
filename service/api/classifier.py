@@ -37,12 +37,17 @@ from ..application.use_cases.building_zone_review import (
     review_building_zones,
     template_candidates,
 )
+from ..application.use_cases.convert_zone_table import (
+    ConversionError,
+    convert_zone_table,
+)
 from ..application.use_cases.detect_columns import (
     BUILDING_TARGETS,
     CADASTRAL_TARGETS,
     PZZ_ZONE_TARGETS,
     ZONE_CODE_TARGET,
     ZONE_NAME_TARGET,
+    ZONE_TABLE_TARGETS,
     detect_columns_for_file,
     render_detection_narrative,
     required_columns_resolved,
@@ -69,6 +74,7 @@ from ..settings import Settings
 from ..tasks import celery_app, enqueue_pipeline_task, execute_pipeline_task
 from .security import AuthUser, get_current_user
 from ..infrastructure.ollama_chat_client import OllamaChatError
+from ..infrastructure.table_reader import TableReadError, read_table
 from .tasks import (
     detection_failed_generator,
     prepend_narrative_generator,
@@ -917,6 +923,70 @@ _DEFAULT_BUILDING_AUTO_QUERY = (
 )
 
 
+class _DescriptionsTableError(Exception):
+    """A CSV/XLSX descriptions table could not be converted (bad table / missing column)."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+async def _convert_descriptions_if_table(
+    descriptions_file: UploadFile | None,
+    app_settings: Settings,
+    model: str | None,
+) -> tuple[UploadFile | None, str]:
+    """Convert a CSV/XLSX ``pzz_descriptions_file`` to the label JSON in place.
+
+    A JSON/GeoJSON descriptions file (or none) passes through unchanged. A table is
+    read, its columns detected (LLM-first, heuristic backstop) and folded into the
+    label schema, then returned as an in-memory JSON ``UploadFile`` so the rest of
+    the flow is oblivious to the input format. Returns ``(file, note)`` where
+    ``note`` is a leading-narrative line about what was recognised. Raises
+    :class:`_DescriptionsTableError` when the table is unreadable or a required
+    column can't be resolved, so the caller emits a terminal detection_failed.
+    """
+    if descriptions_file is None:
+        return None, ""
+    name = (descriptions_file.filename or "").lower()
+    if not (name.endswith(".csv") or name.endswith(".xlsx")):
+        return descriptions_file, ""
+    data = await descriptions_file.read()
+    try:
+        rows, headers = read_table(data, descriptions_file.filename or "")
+    except TableReadError as exc:
+        raise _DescriptionsTableError(
+            f"Таблицу описаний зон ПЗЗ не удалось прочитать: {exc}."
+        ) from exc
+    feature_collection = {"features": [{"properties": r} for r in rows]}
+    async with build_ollama_chat_client(app_settings) as ollama_client:
+        suggestions = await detect_columns_for_file(
+            ollama_client,
+            feature_collection,
+            ZONE_TABLE_TARGETS,
+            model=model,
+            heuristic_first=False,
+        )
+    resolved = {
+        t.key: (suggestions[t.key].value if suggestions.get(t.key) else None)
+        for t in ZONE_TABLE_TARGETS
+    }
+    try:
+        zones, report = convert_zone_table(rows, resolved)
+    except ConversionError as exc:
+        raise _DescriptionsTableError(
+            f"В таблице описаний зон ПЗЗ не определить обязательную колонку ({exc}). "
+            f"Заголовки: {', '.join(headers)}. Задайте её или подайте описание в JSON."
+        ) from exc
+    note = (
+        f"Из таблицы описаний зон ПЗЗ распознано: {report.zones_count} зон, "
+        f"{report.vri_count} ВРИ."
+    )
+    if report.warnings:
+        note += " Предупреждения: " + "; ".join(report.warnings)
+    return _json_upload(zones, "pzz_descriptions_from_table.json"), note
+
+
 async def _run_building_pzz_auto(
     *,
     request: Request,
@@ -944,7 +1014,17 @@ async def _run_building_pzz_auto(
     The uploaded-building counterpart of the ``pzz_check`` auto flow: buildings
     (physical_object_type_id / service_type_id + floors) are matched against the
     uploaded PZZ zones; the answer is grounded in the object-zone-fit report.
+
+    A CSV/XLSX ``pzz_descriptions_file`` is converted to the label JSON up front,
+    so the frontend can drop a spreadsheet without a separate ``/convert`` call.
     """
+    try:
+        descriptions_file, table_note = await _convert_descriptions_if_table(
+            descriptions_file, app_settings, model
+        )
+    except _DescriptionsTableError as exc:
+        return EventSourceResponse(detection_failed_generator("", exc.detail))
+
     max_bytes = app_settings.max_upload_bytes
     detect_dir = Path(app_settings.task_inputs_dir) / f"detect-{uuid4().hex}"
     try:
@@ -981,6 +1061,8 @@ async def _run_building_pzz_auto(
             )
         )
     narrative = render_detection_narrative(suggestions, announce_targets)
+    if table_note:
+        narrative = table_note + "\n\n" + narrative
 
     def _val(key: str) -> str | None:
         s = suggestions.get(key)
