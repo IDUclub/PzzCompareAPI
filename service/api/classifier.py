@@ -1068,6 +1068,7 @@ async def _run_building_pzz_auto(
         temperature=temperature,
         report_kind="object_zone_fit",
         emit_input_files=True,
+        system_prompt_path=app_settings.chat_system_prompt_building_path,
     )
     return EventSourceResponse(prepend_narrative_generator(narrative, inner))
 

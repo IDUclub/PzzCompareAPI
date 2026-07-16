@@ -430,6 +430,7 @@ async def _stream_chat_answer_managed(
     model: str | None = None,
     temperature: float | None = None,
     assistant_file_parts: list[dict[str, Any]] | None = None,
+    system_prompt_path: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Open the chat clients and delegate to ``stream_chat_answer``.
 
@@ -438,8 +439,13 @@ async def _stream_chat_answer_managed(
     present; otherwise the answer streams without being stored. The endpoint
     layer owns client lifetimes via ``async with`` here so the use-case stays
     pure and testable.
+
+    ``system_prompt_path`` overrides which system prompt grounds the answer
+    (e.g. the building-mode prompt); defaults to the parcel ``chat_system_prompt_path``.
     """
-    system_prompt = load_system_prompt(app_settings.chat_system_prompt_path)
+    system_prompt = load_system_prompt(
+        system_prompt_path or app_settings.chat_system_prompt_path
+    )
 
     async with build_ollama_chat_client(app_settings) as ollama_client:
         chat_storage_client = (
@@ -639,6 +645,7 @@ async def task_stream_with_chat_generator(
     include_report: bool = True,
     report_kind: str = "object_zone_fit",
     emit_input_files: bool = False,
+    system_prompt_path: str | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Stream a task to completion, then a grounded LLM answer over its report.
 
@@ -777,6 +784,7 @@ async def task_stream_with_chat_generator(
             chat_title=chat_title,
             model=model,
             temperature=temperature,
+            system_prompt_path=system_prompt_path,
         ):
             kind = event["type"]
             if kind == "token":
