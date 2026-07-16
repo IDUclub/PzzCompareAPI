@@ -20,7 +20,13 @@ from service.infrastructure.runners.uploaded_building_pzz_runner import (
 )
 
 
-def _settings(llm_fallback: bool = True) -> SimpleNamespace:
+def _settings(
+    llm_fallback: bool = True,
+    *,
+    vectorizer_url: str = "",
+    semantic_fallback: bool = True,
+    semantic_threshold: float = 0.6,
+) -> SimpleNamespace:
     return SimpleNamespace(
         physical_object_type_to_vri_path="data/physical_object_type_to_vri.json",
         service_type_to_vri_path="data/service_type_to_vri.json",
@@ -31,6 +37,11 @@ def _settings(llm_fallback: bool = True) -> SimpleNamespace:
         ollama_base_url="http://ollama.invalid",
         chat_model="test-model",
         generate_model="test-model",
+        vectorizer_url=vectorizer_url,
+        embed_model="test-embed",
+        embed_batch_size=32,
+        building_semantic_fallback=semantic_fallback,
+        building_semantic_threshold=semantic_threshold,
     )
 
 
@@ -266,12 +277,12 @@ def _unknown_service_layer() -> dict:
     }
 
 
-def test_needs_llm_only_for_unresolved_text_names() -> None:
+def test_needs_fallback_only_for_unresolved_text_names() -> None:
     r = _runner()
-    assert r._needs_llm("Учебный центр «Ромашка»", r._service_aliases) is True
-    assert r._needs_llm("22", r._service_aliases) is False        # numeric id
-    assert r._needs_llm("Школа", r._service_aliases) is False      # catalogue alias
-    assert r._needs_llm(None, r._service_aliases) is False
+    assert r._needs_fallback("Учебный центр «Ромашка»", r._service_aliases) is True
+    assert r._needs_fallback("22", r._service_aliases) is False        # numeric id
+    assert r._needs_fallback("Школа", r._service_aliases) is False      # catalogue alias
+    assert r._needs_fallback(None, r._service_aliases) is False
 
 
 def test_llm_fallback_resolves_unknown_service_name(tmp_path) -> None:
@@ -312,6 +323,97 @@ def test_no_llm_call_when_everything_resolves(tmp_path) -> None:
     r._llm_complete = lambda m, s: calls.__setitem__("n", calls["n"] + 1) or {}
     _run_buildings(r, tmp_path, _buildings(), building_type_col="po", building_floors_col="floors")
     assert calls["n"] == 0  # ids/known names never trigger the LLM
+
+
+# --- semantic (embedder) name fallback -----------------------------------------
+
+class _FakeEmb:
+    """Fake embeddings client: keyword-bucketed vectors, or an error."""
+
+    def __init__(self, fn=None, error: bool = False) -> None:
+        self._fn = fn
+        self._error = error
+        self.calls = 0
+
+    def embed(self, texts):
+        from service.infrastructure.embeddings_client import EmbeddingsError
+        self.calls += 1
+        if self._error:
+            raise EmbeddingsError("boom")
+        return self._fn(texts)
+
+
+def _bucket_embed(texts):
+    """4-dim one-hot by keyword; 'zzz' is a deliberately unmatchable bucket."""
+    out = []
+    for t in texts:
+        tl = str(t).lower()
+        if any(k in tl for k in ("школ", "учеб", "образов")):
+            out.append([1.0, 0.0, 0.0, 0.0])
+        elif any(k in tl for k in ("сад", "детс", "дошкол")):
+            out.append([0.0, 1.0, 0.0, 0.0])
+        elif "zzz" in tl:
+            out.append([0.0, 0.0, 0.0, 1.0])
+        else:
+            out.append([0.0, 0.0, 1.0, 0.0])
+    return out
+
+
+def _svc_layer(name: str) -> dict:
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "geometry": _point(0.5, 0.5), "properties": {"svc": name}},
+        ],
+    }
+
+
+def _semantic_runner(url: str) -> UploadedBuildingPzzRunner:
+    import service.infrastructure.runners.uploaded_building_pzz_runner as mod
+    mod._CATALOGUE_CACHE.clear()
+    return UploadedBuildingPzzRunner(_settings(vectorizer_url=url))
+
+
+def test_semantic_fallback_resolves_service_name(tmp_path) -> None:
+    r = _semantic_runner("http://vec.test/1")
+    r._embeddings_client = _FakeEmb(_bucket_embed)
+    llm = {"n": 0}
+    r._llm_complete = lambda m, s: llm.__setitem__("n", llm["n"] + 1) or {}
+    feats = _run_buildings(
+        r, tmp_path, _svc_layer("частная школа-интернат «Ромашка»"),
+        building_type_col="", building_service_col="svc", building_floors_col="",
+    )
+    p = feats[0]["properties"]
+    assert "по смыслу" in p[COL_RESOLUTION_BASIS]      # semantic-resolved
+    assert p[COL_MATCHED_VRI_CODE]                     # a VRI was picked
+    assert p[COL_CATEGORY] == CATEGORY_SERVICE
+    assert llm["n"] == 0                               # LLM not consulted
+
+
+def test_semantic_below_threshold_degrades_to_llm(tmp_path) -> None:
+    r = _semantic_runner("http://vec.test/2")
+    r._embeddings_client = _FakeEmb(_bucket_embed)
+    r._llm_complete = lambda m, s: {k: "22" for k in s["required"]}  # -> school 3.5.1
+    feats = _run_buildings(
+        r, tmp_path, _svc_layer("zzz неизвестный объект"),
+        building_type_col="", building_service_col="svc", building_floors_col="",
+    )
+    p = feats[0]["properties"]
+    assert p[COL_MATCHED_VRI_CODE] == "3.5.1"
+    assert "сопоставлено ИИ" in p[COL_RESOLUTION_BASIS]  # LLM degrade path
+
+
+def test_semantic_embedder_error_degrades_to_llm(tmp_path) -> None:
+    r = _semantic_runner("http://vec.test/3")
+    r._embeddings_client = _FakeEmb(error=True)
+    r._llm_complete = lambda m, s: {k: "22" for k in s["required"]}
+    feats = _run_buildings(
+        r, tmp_path, _unknown_service_layer(),
+        building_type_col="", building_service_col="svc", building_floors_col="",
+    )
+    p = feats[0]["properties"]
+    assert p[COL_MATCHED_VRI_CODE] == "3.5.1"
+    assert "сопоставлено ИИ" in p[COL_RESOLUTION_BASIS]
 
 
 def _pzz_index_zones() -> dict:

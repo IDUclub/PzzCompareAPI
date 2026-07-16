@@ -138,6 +138,13 @@ class Settings(BaseSettings):
     generate_model: str = Field(...)
     top_k: int = Field(default=10)
     embed_batch_size: int = Field(default=32)
+    vectorizer_url: str = Field(default="")
+    # Building type/service semantic name matching (embedder). When a text
+    # type/service name resolves neither as an id nor via the alias map, its
+    # embedding is matched against the catalogue; a match must clear this cosine
+    # threshold, else the object goes to manual review (no invented VRI).
+    building_semantic_fallback: bool = Field(default=True)
+    building_semantic_threshold: float = Field(default=0.6)
 
     # ── ChatStorage integration (IDUclub ChatStorage service) ────────────────
     # Persists assistant chat history. Leave CHAT_STORAGE_BASE_URL empty to
@@ -155,6 +162,9 @@ class Settings(BaseSettings):
     chat_temperature: float = Field(default=0.3)
     chat_request_timeout_seconds: float = Field(default=900.0)
     chat_system_prompt_path: str = Field(default="data/chat_system_prompt.txt")
+    chat_system_prompt_building_path: str = Field(
+        default="data/chat_system_prompt_building.txt"
+    )
 
     # ── Geo-layer download links ─────────────────────────────────────────────
     # Result GeoJSON layers are offered as links instead of inline payloads.
@@ -200,6 +210,9 @@ def _build_settings_cached() -> Settings:
         vllm_api_key=_get_required_env(config, "VLLM_API_KEY"),
         embed_model=_get_required_env(config, "EMBED_MODEL"),
         generate_model=_get_required_env(config, "GENERATE_MODEL"),
+        vectorizer_url=_get_optional_env(config, "VECTORIZER_URL"),
+        building_semantic_fallback=_get_optional_env(config, "BUILDING_SEMANTIC_FALLBACK", "true").lower() == "true",
+        building_semantic_threshold=float(_get_optional_env(config, "BUILDING_SEMANTIC_THRESHOLD", "0.6")),
         urban_api_base_url=(config.get("URBAN_API_BASE_URL") or "").rstrip("/"),
         urban_api_timeout_seconds=float("600"),
         chat_storage_base_url=_get_optional_env(config, "CHAT_STORAGE_BASE_URL").rstrip("/"),
@@ -208,6 +221,7 @@ def _build_settings_cached() -> Settings:
         chat_temperature=float(_get_optional_env(config, "CHAT_TEMPERATURE", "0.3")),
         chat_request_timeout_seconds=float(_get_optional_env(config, "CHAT_REQUEST_TIMEOUT_SECONDS", "900")),
         chat_system_prompt_path=_get_optional_env(config, "CHAT_SYSTEM_PROMPT_PATH", "data/chat_system_prompt.txt"),
+        chat_system_prompt_building_path=_get_optional_env(config, "CHAT_SYSTEM_PROMPT_BUILDING_PATH", "data/chat_system_prompt_building.txt"),
         keycloak_url=_get_optional_env(config, "KEYCLOAK_URL").rstrip("/"),
         keycloak_realm=_get_optional_env(config, "KEYCLOAK_REALM"),
         keycloak_client_id=_get_optional_env(config, "KEYCLOAK_CLIENT_ID"),
