@@ -130,6 +130,27 @@ def zone_code_display_map(zones: dict[str, Any], code_col: str) -> dict[str, str
     return display
 
 
+def zone_layer_name_map(
+    zones: dict[str, Any], code_col: str, name_col: str | None
+) -> dict[str, str]:
+    """Map a normalised zone key → the zone name carried by the zones layer itself.
+
+    A fallback source of a human-readable zone name when the uploaded descriptions
+    don't provide one. Keeps the first non-empty name per code; empty when no name
+    column is given.
+    """
+    display: dict[str, str] = {}
+    if not name_col:
+        return display
+    for f in zones.get("features") or []:
+        props = f.get("properties") or {}
+        key = normalise_zone_code(props.get(code_col))
+        name = props.get(name_col)
+        if key and name not in (None, "") and key not in display:
+            display[key] = str(name).strip()
+    return display
+
+
 def load_pzz_label_mapping(
     path: str,
 ) -> tuple[dict[str, dict[str, set[str]]], dict[str, str]]:

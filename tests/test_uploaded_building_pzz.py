@@ -664,3 +664,80 @@ def test_run_uploaded_descriptions_override(tmp_path) -> None:
     }
     feats = _run(tmp_path, descriptions=descriptions)
     assert feats[0]["properties"][COL_VERDICT] == "Не разрешен"
+
+
+# --- zone name: description -> zones-layer -> code fallback ---------------------
+
+
+def _pzz_index_zones_named() -> dict:
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": _square(0, 0),
+                "properties": {
+                    "Индекс_зоны": "Ж-1",
+                    "Название_зоны": "Зона жилой застройки",
+                },
+            },
+            {
+                "type": "Feature",
+                "geometry": _square(2, 0),
+                "properties": {
+                    "Индекс_зоны": "П-1",
+                    "Название_зоны": "Промышленная зона",
+                },
+            },
+        ],
+    }
+
+
+def _pzz_index_labels_no_name() -> list:
+    return [
+        {
+            "zone_code": "Ж-1",
+            "main": [{"vri_code": "2.1.1"}],
+            "conditional": [],
+            "auxiliary": [],
+        },
+        {
+            "zone_code": "П-1",
+            "main": [{"vri_code": "6.9"}],
+            "conditional": [],
+            "auxiliary": [],
+        },
+    ]
+
+
+def _run_named_zones(tmp_path, labels) -> list:
+    (tmp_path / "b.geojson").write_text(json.dumps(_buildings()), encoding="utf-8")
+    (tmp_path / "z.geojson").write_text(
+        json.dumps(_pzz_index_zones_named()), encoding="utf-8"
+    )
+    (tmp_path / "labels.json").write_text(json.dumps(labels), encoding="utf-8")
+    req = _req(
+        cadastral_data_path=str(tmp_path / "b.geojson"),
+        pzz_zones_data_path=str(tmp_path / "z.geojson"),
+        pzz_zone_vri_labels_path=str(tmp_path / "labels.json"),
+        pzz_zone_code_col="Индекс_зоны",
+        pzz_zone_name_col="Название_зоны",
+        outputs_dir=str(tmp_path / "out"),
+    )
+    return [
+        f["properties"]
+        for f in json.load(open(_runner().run(req), encoding="utf-8"))["features"]
+    ]
+
+
+def test_zone_name_falls_back_to_layer_when_descriptions_lack_it(tmp_path) -> None:
+    props = _run_named_zones(tmp_path, _pzz_index_labels_no_name())
+    # description has no zone_name -> the zones-layer name column is used, not «Ж-1»
+    assert props[0][COL_ZONE_NAME] == "Зона жилой застройки"
+    assert props[0][COL_ZONE_CODE] == "Ж-1"
+
+
+def test_description_zone_name_wins_over_layer(tmp_path) -> None:
+    # labels DO carry names -> those take precedence over the layer's name column
+    props = _run_named_zones(tmp_path, _pzz_index_labels())
+    assert props[0][COL_ZONE_NAME] == "Жилая зона"

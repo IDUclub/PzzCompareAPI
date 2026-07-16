@@ -40,6 +40,7 @@ from service.infrastructure.runners._deterministic_pzz import (
     verdict as compute_verdict,
     zone_code_display_map,
     zone_codes_are_numeric,
+    zone_layer_name_map,
 )
 from service.infrastructure.runners.pipeline_runner import (
     PipelineRunner,
@@ -128,6 +129,37 @@ def _source_note(source: str) -> str:
 # Per-process cache of catalogue embeddings, keyed by (url, model, kind) so a
 # static catalogue is embedded once per worker rather than on every task.
 _CATALOGUE_CACHE: dict[tuple[str, str, str], dict[int, list[float]]] = {}
+
+
+def _enrich_zone_names(
+    zone_nick: dict[Any, str],
+    code_display: dict[str, str],
+    zones: dict[str, Any],
+    code_col: str,
+    name_col: str | None,
+    numeric: bool,
+) -> dict[Any, str]:
+    """Final display name per zone: description name → zones-layer name → code.
+
+    ``zone_nick`` (from the descriptions) already substitutes the raw code when a
+    description carries no ``zone_name``; where that happened we prefer the zones
+    layer's own name column, so a reader sees «Жилая зона», not «Ж-1», even when
+    only the geometry layer names the zone. Numeric backends keep ``zone_nick``.
+    """
+    if numeric:
+        return zone_nick
+    layer_names = zone_layer_name_map(zones, code_col, name_col)
+    if not layer_names:
+        return zone_nick
+    enriched = dict(zone_nick)
+    for key, raw in code_display.items():
+        desc_name = zone_nick.get(key)
+        has_real_name = bool(desc_name) and desc_name != raw
+        if not has_real_name and layer_names.get(key):
+            enriched[key] = layer_names[key]
+        else:
+            enriched.setdefault(key, desc_name or raw)
+    return enriched
 
 
 class UploadedBuildingPzzRunner(PipelineRunner):
@@ -597,6 +629,16 @@ class UploadedBuildingPzzRunner(PipelineRunner):
             request, numeric_zones
         )
         code_display = {} if numeric_zones else zone_code_display_map(zones, code_col)
+        # Human-readable zone name for the result/answer: description name, else the
+        # zones-layer name column, else the code — so a reader isn't left with «Ж-1».
+        display_nick = _enrich_zone_names(
+            zone_nick,
+            code_display,
+            zones,
+            code_col,
+            request.pzz_zone_name_col,
+            numeric_zones,
+        )
 
         zgdf = build_zone_gdf(zones, code_col, numeric=numeric_zones)
         feats = [
@@ -633,7 +675,7 @@ class UploadedBuildingPzzRunner(PipelineRunner):
 
             fz = fz_by_obj.get(i)
             machine_verdict, reason, mcode, _ = compute_verdict(
-                vri, fz, zone_allowed, zone_nick
+                vri, fz, zone_allowed, display_nick
             )
             # Split key for the two download layers: a «Сервис» is any row whose
             # service column is populated and isn't residential — keyed on the raw
@@ -648,7 +690,7 @@ class UploadedBuildingPzzRunner(PipelineRunner):
             feature["properties"] = clean_result_properties(
                 vri_text=label,
                 fz_type_id=fz,
-                zone_nick=zone_nick,
+                zone_nick=display_nick,
                 machine_verdict=machine_verdict,
                 reason=reason,
                 matched_vri_code=mcode,
