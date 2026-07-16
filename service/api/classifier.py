@@ -1263,7 +1263,8 @@ async def create_auto_chat_stream_endpoint(
 
     ``mode``:
       - ``pzz_check`` (default) — needs cadastral + PZZ zones; detects all three
-        columns; answer grounded in the object-zone-fit report;
+        columns; answer grounded in the object-zone-fit report. A CSV/XLSX
+        ``pzz_zone_vri_labels_file`` is converted to the label JSON inline;
       - ``classify_only`` — needs only cadastral; detects the VRI column; answer
         grounded in the classify summary.
       - ``building_pzz_check`` — needs a buildings layer (``cadastral_…_file``:
@@ -1341,6 +1342,20 @@ async def create_auto_chat_stream_endpoint(
             detail="pzz_zones_feature_collection_file is required for mode=pzz_check",
         )
 
+    # A CSV/XLSX zone-labels file is converted to the label JSON up front (same as
+    # the building descriptions flow), so the pipeline receives the list schema it
+    # expects. JSON labels pass through unchanged.
+    labels_note = ""
+    if include_pzz_check:
+        try:
+            pzz_zone_vri_labels_file, labels_note = (
+                await _convert_descriptions_if_table(
+                    pzz_zone_vri_labels_file, app_settings, model
+                )
+            )
+        except _DescriptionsTableError as exc:
+            return EventSourceResponse(detection_failed_generator("", exc.detail))
+
     max_bytes = app_settings.max_upload_bytes
     detect_dir = Path(app_settings.task_inputs_dir) / f"detect-{uuid4().hex}"
     try:
@@ -1377,6 +1392,8 @@ async def create_auto_chat_stream_endpoint(
                 )
             )
     narrative = render_detection_narrative(suggestions, targets)
+    if labels_note:
+        narrative = labels_note + "\n\n" + narrative
 
     if not required_columns_resolved(suggestions, targets):
         return EventSourceResponse(
