@@ -14,7 +14,7 @@ from alembic.config import Config as AlembicConfig
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import admin_config, classifier, scenarios, system, tasks
+from .api import admin_config, classifier, scenarios, system, tasks, zone_descriptions
 from .api.utils import api_log
 from .db import session_scope
 from .dependencies import (
@@ -107,3 +107,4 @@ app.include_router(classifier.router)
 app.include_router(scenarios.router)
 app.include_router(tasks.router)
 app.include_router(admin_config.router)
+app.include_router(zone_descriptions.router)

@@ -181,6 +181,84 @@ BUILDING_TARGETS: list[DetectionTarget] = [
     BUILDING_FLOORS_TARGET,
 ]
 
+ZONE_TABLE_CODE_TARGET = DetectionTarget(
+    key="zone_code",
+    title_ru="код (индекс) зоны ПЗЗ",
+    description_ru=(
+        "Короткий индекс/шифр территориальной зоны ПЗЗ — напр. «Ж-1», «О-2», "
+        "«СХ-3». Это НЕ длинное наименование зоны и НЕ код ВРИ вида «2.1»."
+    ),
+    known_names=(
+        "zone_code",
+        "zone",
+        "зона",
+        "код зоны",
+        "индекс зоны",
+        "индекс",
+        "zone_index",
+        "id_zone",
+    ),
+)
+ZONE_TABLE_NAME_TARGET = DetectionTarget(
+    key="zone_name",
+    title_ru="наименование зоны ПЗЗ",
+    description_ru=(
+        "Человекочитаемое наименование зоны — длинный текст, напр. «Зона "
+        "застройки индивидуальными жилыми домами». НЕ короткий индекс «Ж-1»."
+    ),
+    known_names=("zone_name", "название зоны", "наименование зоны", "zone_title"),
+)
+ZONE_TABLE_PERMISSION_TARGET = DetectionTarget(
+    key="permission",
+    title_ru="тип разрешения ВРИ (основной/условный/вспомогательный)",
+    description_ru=(
+        "Категория разрешённого использования зоны: «Основной», «Условно "
+        "разрешённый», «Вспомогательный». Значения именно такого рода — НЕ код "
+        "и НЕ наименование ВРИ."
+    ),
+    known_names=(
+        "permission",
+        "code",
+        "тип",
+        "вид разрешения",
+        "тип разрешения",
+        "назначение",
+        "раздел",
+    ),
+)
+VRI_CODE_TARGET = DetectionTarget(
+    key="vri_code",
+    title_ru="код ВРИ",
+    description_ru=(
+        "Код вида разрешённого использования — напр. «2.1», «3.5.1», «12.0». "
+        "Числовой код с точками, НЕ индекс зоны «Ж-1»."
+    ),
+    known_names=("vri_code", "код ври", "шифр ври", "код вида", "vricode"),
+)
+VRI_NAME_TARGET = DetectionTarget(
+    key="vri_name",
+    title_ru="наименование ВРИ",
+    description_ru=(
+        "Текстовое наименование ВРИ — напр. «Магазины», «Для индивидуального "
+        "жилищного строительства». НЕ код."
+    ),
+    known_names=(
+        "vri_name",
+        "vri",
+        "ври",
+        "наименование ври",
+        "вид разрешенного использования",
+    ),
+)
+
+ZONE_TABLE_TARGETS: list[DetectionTarget] = [
+    ZONE_TABLE_CODE_TARGET,
+    ZONE_TABLE_NAME_TARGET,
+    ZONE_TABLE_PERMISSION_TARGET,
+    VRI_CODE_TARGET,
+    VRI_NAME_TARGET,
+]
+
 
 def _normalise(name: str) -> str:
     """Lowercase and strip separators so ``VRI_name`` ~= ``vri name``."""
@@ -356,19 +434,36 @@ async def detect_columns_for_file(
     *,
     model: str | None = None,
     max_sample_values: int = 5,
+    heuristic_first: bool = True,
 ) -> dict[str, ColumnSuggestion]:
-    """Detect each target's column: heuristic first, then one LLM call for the rest."""
+    """Detect each target's column from names + sample values.
+
+    ``heuristic_first=True`` (default, GeoJSON layers): an EXACT known-name match
+    resolves a role without an LLM call, and only the rest go to the model — safe
+    when column names are standard and a numeric "code companion" could otherwise
+    fool the LLM (see module docstring).
+
+    ``heuristic_first=False`` (tabular zone descriptions): the LLM decides ALL
+    roles from column names + sample values, because export headers are arbitrary
+    and generic ones (e.g. «Code», «Тип») make name-only matching ambiguous. The
+    heuristic then serves only as an offline BACKSTOP: any role the model leaves
+    empty — including every role when the model is unreachable — falls back to an
+    exact name match, so a standard export still converts without the LLM.
+    """
     profiles = profile_columns(feature_collection, max_sample_values=max_sample_values)
     names = [p.name for p in profiles]
     suggestions: dict[str, ColumnSuggestion] = {}
 
     unresolved: list[DetectionTarget] = []
-    for target in targets:
-        hit = _heuristic_match(target, profiles)
-        if hit is not None:
-            suggestions[target.key] = hit
-        else:
-            unresolved.append(target)
+    if heuristic_first:
+        for target in targets:
+            hit = _heuristic_match(target, profiles)
+            if hit is not None:
+                suggestions[target.key] = hit
+            else:
+                unresolved.append(target)
+    else:
+        unresolved = list(targets)
 
     if not unresolved or not names:
         for target in unresolved:
@@ -404,6 +499,10 @@ async def detect_columns_for_file(
                 reason=(reason if isinstance(reason, str) and reason else "определено моделью"),
                 candidates=names,
             )
+            continue
+        backstop = None if heuristic_first else _heuristic_match(target, profiles)
+        if backstop is not None:
+            suggestions[target.key] = backstop
         else:
             suggestions[target.key] = ColumnSuggestion(
                 value=None,
