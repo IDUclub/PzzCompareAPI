@@ -106,9 +106,10 @@ def _extract_problem_objects(
     """Return the wrong/unclear objects (key fields only), capped in count.
 
     Works for both ``group_by`` shapes: a flat ``objects`` list or per-zone
-    ``zones[].objects``. Keeps the answer-relevant fields — including the ВРИ
-    the runner assigned (code + name) and the verdict reason — so the model can
-    explain each problem parcel specifically without ingesting the whole report.
+    ``zones[].objects``. Keyed by the RESULT FILE's own Russian attribute names
+    (``Код_подобранного_ВРИ``, ``Подобранный_ВРИ``, ``Вердикт_ПЗЗ``…) so the model
+    can cite the exact attribute where each value is recorded, and so nothing
+    English-labelled leaks into the answer.
     """
     objects = object_zone_fit.get("objects")
     if not objects:
@@ -125,13 +126,13 @@ def _extract_problem_objects(
             name = vri_names.get(code, "")
         trimmed.append(
             {
-                "vri_text": obj.get("vri_text"),
-                "zone_name": obj.get("zone_name"),
-                "verdict": obj.get("verdict"),
-                "assigned_vri_code": code or None,
-                "assigned_vri_name": name or None,
-                "основание_подбора_ВРИ": obj.get("resolution_basis") or None,
-                "reason": (reason[:reason_chars] if isinstance(reason, str) else reason),
+                "ВРИ_ЕГРН": obj.get("vri_text"),
+                "Название_зоны_ПЗЗ": obj.get("zone_name"),
+                "Вердикт_ПЗЗ": obj.get("verdict"),
+                "Код_подобранного_ВРИ": code or None,
+                "Подобранный_ВРИ": name or None,
+                "Основание_подбора_ВРИ": obj.get("resolution_basis") or None,
+                "Причина": (reason[:reason_chars] if isinstance(reason, str) else reason),
             }
         )
     return trimmed
