@@ -28,6 +28,7 @@ the whole point of the feature.
 ``confidence`` is derived from the source (heuristic-exact 1.0 / llm 0.6 / none
 0.0), not from the model — LLM self-reported confidence is unreliable.
 """
+
 from __future__ import annotations
 
 import logging
@@ -320,7 +321,10 @@ def profile_columns(
             text = str(value)
             if len(text) > max_value_chars:
                 text = text[:max_value_chars] + "…"
-            if text not in seen_samples[name] and len(samples_by_col[name]) < max_sample_values:
+            if (
+                text not in seen_samples[name]
+                and len(samples_by_col[name]) < max_sample_values
+            ):
                 seen_samples[name].add(text)
                 samples_by_col[name].append(text)
 
@@ -496,7 +500,11 @@ async def detect_columns_for_file(
                 value=column,
                 confidence=_LLM,
                 source="llm",
-                reason=(reason if isinstance(reason, str) and reason else "определено моделью"),
+                reason=(
+                    reason
+                    if isinstance(reason, str) and reason
+                    else "определено моделью"
+                ),
                 candidates=names,
             )
             continue

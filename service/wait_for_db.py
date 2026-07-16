@@ -9,7 +9,7 @@ import psycopg
 def normalize_database_url(database_url: str) -> str:
     """Convert SQLAlchemy-style psycopg URL into a psycopg-compatible URL."""
     if database_url.startswith("postgresql+psycopg://"):
-        return "postgresql://" + database_url[len("postgresql+psycopg://"):]
+        return "postgresql://" + database_url[len("postgresql+psycopg://") :]
     return database_url
 
 

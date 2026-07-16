@@ -1,4 +1,5 @@
 """Tests for the sync embeddings (vectorizer) client."""
+
 import json
 
 import httpx
@@ -21,7 +22,9 @@ def test_embed_returns_vectors(monkeypatch):
     def handler(req):
         body = json.loads(req.content)
         assert body["model"] == "m" and body["input"] == ["a", "b"]
-        return httpx.Response(200, json={"data": [{"embedding": [1.0, 2.0]}, {"embedding": [3.0, 4.0]}]})
+        return httpx.Response(
+            200, json={"data": [{"embedding": [1.0, 2.0]}, {"embedding": [3.0, 4.0]}]}
+        )
 
     _mock_httpx(handler, monkeypatch)
     c = EmbeddingsClient(url="http://vec/v1/embeddings", model="m", batch_size=10)
@@ -34,7 +37,9 @@ def test_embed_batches(monkeypatch):
     def handler(req):
         body = json.loads(req.content)
         seen.append(len(body["input"]))
-        return httpx.Response(200, json={"data": [{"embedding": [0.0]} for _ in body["input"]]})
+        return httpx.Response(
+            200, json={"data": [{"embedding": [0.0]} for _ in body["input"]]}
+        )
 
     _mock_httpx(handler, monkeypatch)
     c = EmbeddingsClient(url="http://vec.test/e", model="m", batch_size=2)

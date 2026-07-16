@@ -1,4 +1,5 @@
 """MCP server config — read from env, no fancy validation."""
+
 from __future__ import annotations
 
 import os

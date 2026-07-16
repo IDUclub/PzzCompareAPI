@@ -1,4 +1,5 @@
 """Tests for the streaming Ollama /api/chat client (phase 2)."""
+
 import asyncio
 import json
 

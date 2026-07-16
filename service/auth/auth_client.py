@@ -8,6 +8,7 @@ Flow: fetch the realm's JWKS (public keys, cached), match the token's
 return the decoded payload. When ``config.verify`` is false, claims are
 decoded WITHOUT signature verification (dev/test).
 """
+
 from __future__ import annotations
 
 import asyncio

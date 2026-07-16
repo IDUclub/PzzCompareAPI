@@ -11,6 +11,7 @@ JSON-RPC error code conventions used here:
 
 See https://www.jsonrpc.org/specification#error_object.
 """
+
 from __future__ import annotations
 
 from functools import wraps
@@ -36,15 +37,17 @@ def _format_body(body: Any) -> str:
 def _api_error_to_mcp(exc: ApiError) -> McpError:
     """Map an HTTP-level error from upstream into a JSON-RPC McpError."""
     if exc.status in (401, 403):
-        return McpError(ErrorData(
-            code=-32002,
-            message=(
-                "AUTH_TOKEN_EXPIRED: the user's authorization token was rejected "
-                f"(HTTP {exc.status}). It is likely expired or invalid. Ask the "
-                "frontend/user to provide a fresh Bearer token, then retry the "
-                "same call. Do not retry with the old token."
-            ),
-        ))
+        return McpError(
+            ErrorData(
+                code=-32002,
+                message=(
+                    "AUTH_TOKEN_EXPIRED: the user's authorization token was rejected "
+                    f"(HTTP {exc.status}). It is likely expired or invalid. Ask the "
+                    "frontend/user to provide a fresh Bearer token, then retry the "
+                    "same call. Do not retry with the old token."
+                ),
+            )
+        )
     if 400 <= exc.status < 500:
         code = -32602
     elif 500 <= exc.status < 600:

@@ -18,19 +18,32 @@ from .application.use_cases.finish_task import finish_task
 from .application.use_cases.start_task import StartTaskResult, start_task
 from .db import session_scope
 from .domain.ports.task_repository import TaskNotFoundError
-from .infrastructure.repositories.sqlalchemy_config_repository import SqlAlchemyConfigRepository
-from .infrastructure.repositories.sqlalchemy_event_repository import SqlAlchemyEventRepository
-from .infrastructure.repositories.sqlalchemy_task_repository import SqlAlchemyTaskRepository
+from .infrastructure.repositories.sqlalchemy_config_repository import (
+    SqlAlchemyConfigRepository,
+)
+from .infrastructure.repositories.sqlalchemy_event_repository import (
+    SqlAlchemyEventRepository,
+)
+from .infrastructure.repositories.sqlalchemy_task_repository import (
+    SqlAlchemyTaskRepository,
+)
 from .log_sink import setup_redis_sink
 from .logging_config import setup_logging
-from .metrics import queue_wait_seconds, task_fail_total, task_retry_total, task_run_seconds
+from .metrics import (
+    queue_wait_seconds,
+    task_fail_total,
+    task_retry_total,
+    task_run_seconds,
+)
 from .models import PipelineTask, TaskStatus
 from .settings import get_settings
 from .time_utils import utc_now
 
 settings = get_settings()
 logger = logging.getLogger("service.tasks")
-celery_app = Celery("pzz_pipeline", broker=settings.redis_url, backend=settings.redis_url)
+celery_app = Celery(
+    "pzz_pipeline", broker=settings.redis_url, backend=settings.redis_url
+)
 celery_app.conf.beat_schedule = {
     "reconcile-priority-current-sum": {
         "task": "service.tasks.reconcile_priority_current_sum",
@@ -46,7 +59,9 @@ celery_app.conf.beat_schedule = {
 celery_app.conf.task_default_queue = "default"
 
 
-def enqueue_pipeline_task(task_id: int, *, is_scenario: bool, is_building_upload: bool = False):
+def enqueue_pipeline_task(
+    task_id: int, *, is_scenario: bool, is_building_upload: bool = False
+):
     """Enqueue execute_pipeline_task onto the queue that fits the task type.
 
     Deterministic runs (urban_api scenarios, and the uploaded-building PZZ check)
@@ -55,7 +70,9 @@ def enqueue_pipeline_task(task_id: int, *, is_scenario: bool, is_building_upload
     own low-concurrency worker so the embedder / vLLM backends are not
     oversubscribed.
     """
-    deterministic = (is_scenario and settings.scenario_deterministic) or is_building_upload
+    deterministic = (
+        is_scenario and settings.scenario_deterministic
+    ) or is_building_upload
     queue = "default" if deterministic else "llm"
     return execute_pipeline_task.apply_async(args=[task_id], queue=queue)
 
@@ -149,8 +166,12 @@ def execute_pipeline_task(self, task_id: int) -> None:
         task = session.get(PipelineTask, task_id)
         if task is None:
             _log_structured(
-                task_id=task_id, external_id=None, celery_task_id=celery_task_id,
-                stage="worker", status="task_not_visible_yet", level=logging.WARNING,
+                task_id=task_id,
+                external_id=None,
+                celery_task_id=celery_task_id,
+                stage="worker",
+                status="task_not_visible_yet",
+                level=logging.WARNING,
             )
             raise self.retry(countdown=1)
 
@@ -163,8 +184,11 @@ def execute_pipeline_task(self, task_id: int) -> None:
             queue_wait_seconds.observe(max(queue_wait, 0))
 
         _log_structured(
-            task_id=task_id, external_id=external_id, celery_task_id=celery_task_id,
-            stage="worker", status="start",
+            task_id=task_id,
+            external_id=external_id,
+            celery_task_id=celery_task_id,
+            stage="worker",
+            status="start",
         )
 
         task_repo = SqlAlchemyTaskRepository(session)
@@ -181,16 +205,23 @@ def execute_pipeline_task(self, task_id: int) -> None:
 
     if outcome is None:
         _log_structured(
-            task_id=task_id, external_id=external_id, celery_task_id=celery_task_id,
-            stage="worker", status="task_not_found", level=logging.WARNING,
+            task_id=task_id,
+            external_id=external_id,
+            celery_task_id=celery_task_id,
+            stage="worker",
+            status="task_not_found",
+            level=logging.WARNING,
         )
         return
 
     if outcome.retry_in_seconds > 0:
         task_retry_total.inc()
         _log_structured(
-            task_id=task_id, external_id=external_id, celery_task_id=celery_task_id,
-            stage="capacity", status="retry",
+            task_id=task_id,
+            external_id=external_id,
+            celery_task_id=celery_task_id,
+            stage="capacity",
+            status="retry",
         )
         try:
             raise self.retry(countdown=outcome.retry_in_seconds)
@@ -199,19 +230,33 @@ def execute_pipeline_task(self, task_id: int) -> None:
                 with session_scope() as session:
                     task_repo = SqlAlchemyTaskRepository(session)
                     event_repo = SqlAlchemyEventRepository(session)
-                    task_repo.update_status(task_id, TaskStatus.failed, finished_at=utc_now())
-                    task_repo.set_error(task_id, "Max retries exceeded waiting for capacity")
-                    event_repo.append_event(task_id=task_id, stage="capacity", status="max_retries_exceeded")
+                    task_repo.update_status(
+                        task_id, TaskStatus.failed, finished_at=utc_now()
+                    )
+                    task_repo.set_error(
+                        task_id, "Max retries exceeded waiting for capacity"
+                    )
+                    event_repo.append_event(
+                        task_id=task_id, stage="capacity", status="max_retries_exceeded"
+                    )
             except TaskNotFoundError:
                 _log_structured(
-                    task_id=task_id, external_id=external_id, celery_task_id=celery_task_id,
-                    stage="capacity", status="task_gone", level=logging.WARNING,
+                    task_id=task_id,
+                    external_id=external_id,
+                    celery_task_id=celery_task_id,
+                    stage="capacity",
+                    status="task_gone",
+                    level=logging.WARNING,
                 )
                 return
             task_fail_total.inc()
             _log_structured(
-                task_id=task_id, external_id=external_id, celery_task_id=celery_task_id,
-                stage="capacity", status="max_retries_exceeded", level=logging.ERROR,
+                task_id=task_id,
+                external_id=external_id,
+                celery_task_id=celery_task_id,
+                stage="capacity",
+                status="max_retries_exceeded",
+                level=logging.ERROR,
             )
             return
 
@@ -221,12 +266,17 @@ def execute_pipeline_task(self, task_id: int) -> None:
 
     stage_started = perf_counter()
     _log_structured(
-        task_id=task_id, external_id=external_id, celery_task_id=celery_task_id,
-        stage="external.pipeline", status="start",
+        task_id=task_id,
+        external_id=external_id,
+        celery_task_id=celery_task_id,
+        stage="external.pipeline",
+        status="start",
     )
 
     try:
-        output_path = PipelineRunnerFactory.create(settings, outcome.request).run(outcome.request)
+        output_path = PipelineRunnerFactory.create(settings, outcome.request).run(
+            outcome.request
+        )
     except Exception as exc:  # noqa: BLE001
         # CalledProcessError stringifies to just "...exit status 1"; the real
         # subprocess stderr (captured by SubprocessPipelineRunner) lives on
@@ -235,15 +285,22 @@ def execute_pipeline_task(self, task_id: int) -> None:
         stderr_tail = getattr(exc, "stderr", None)
         error_text = f"{exc}\n{stderr_tail}".strip() if stderr_tail else str(exc)
         _log_structured(
-            task_id=task_id, external_id=external_id, celery_task_id=celery_task_id,
-            stage="external.pipeline", status="error",
+            task_id=task_id,
+            external_id=external_id,
+            celery_task_id=celery_task_id,
+            stage="external.pipeline",
+            status="error",
             duration_ms=int((perf_counter() - stage_started) * 1000),
-            error=error_text, level=logging.ERROR,
+            error=error_text,
+            level=logging.ERROR,
         )
     else:
         _log_structured(
-            task_id=task_id, external_id=external_id, celery_task_id=celery_task_id,
-            stage="external.pipeline", status="finished",
+            task_id=task_id,
+            external_id=external_id,
+            celery_task_id=celery_task_id,
+            stage="external.pipeline",
+            status="finished",
             duration_ms=int((perf_counter() - stage_started) * 1000),
         )
 
@@ -264,8 +321,12 @@ def execute_pipeline_task(self, task_id: int) -> None:
             )
     except TaskNotFoundError:
         _log_structured(
-            task_id=task_id, external_id=external_id, celery_task_id=celery_task_id,
-            stage="worker", status="task_gone_in_finalize", level=logging.WARNING,
+            task_id=task_id,
+            external_id=external_id,
+            celery_task_id=celery_task_id,
+            stage="worker",
+            status="task_gone_in_finalize",
+            level=logging.WARNING,
         )
         return
 
@@ -275,13 +336,22 @@ def execute_pipeline_task(self, task_id: int) -> None:
     if error_text is not None:
         task_fail_total.inc()
         _log_structured(
-            task_id=task_id, external_id=external_id, celery_task_id=celery_task_id,
-            stage="worker", status="failed", duration_ms=duration_ms, level=logging.ERROR,
+            task_id=task_id,
+            external_id=external_id,
+            celery_task_id=celery_task_id,
+            stage="worker",
+            status="failed",
+            duration_ms=duration_ms,
+            level=logging.ERROR,
         )
     else:
         _log_structured(
-            task_id=task_id, external_id=external_id, celery_task_id=celery_task_id,
-            stage="worker", status="finished", duration_ms=duration_ms,
+            task_id=task_id,
+            external_id=external_id,
+            celery_task_id=celery_task_id,
+            stage="worker",
+            status="finished",
+            duration_ms=duration_ms,
         )
 
 
@@ -327,9 +397,15 @@ def cleanup_stale_output_files_task() -> dict[str, int]:
 
     referenced_paths: set[Path] = set()
     with session_scope() as session:
-        result_paths = session.execute(
-            select(PipelineTask.result_path).where(PipelineTask.result_path.is_not(None))
-        ).scalars().all()
+        result_paths = (
+            session.execute(
+                select(PipelineTask.result_path).where(
+                    PipelineTask.result_path.is_not(None)
+                )
+            )
+            .scalars()
+            .all()
+        )
         for result_path in result_paths:
             if result_path is None:
                 continue

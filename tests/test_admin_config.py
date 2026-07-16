@@ -1,4 +1,5 @@
 """Tests for the runtime config override admin API and the env-sync core."""
+
 from __future__ import annotations
 
 import os
@@ -6,16 +7,16 @@ from types import SimpleNamespace
 
 import pytest
 
-
 # ── env-sync core (no DB) ────────────────────────────────────────────────────
+
 
 def test_is_overridable_rules(monkeypatch):
     from service.infrastructure import config_runtime as cr
 
     monkeypatch.setenv("SOME_APP_PARAM", "1")
-    assert cr.is_overridable("SOME_APP_PARAM") is True          # known + not denied
-    assert cr.is_overridable("DATABASE_URL") is False           # credential (denied)
-    assert cr.is_overridable("VLLM_API_KEY") is False           # credential (denied)
+    assert cr.is_overridable("SOME_APP_PARAM") is True  # known + not denied
+    assert cr.is_overridable("DATABASE_URL") is False  # credential (denied)
+    assert cr.is_overridable("VLLM_API_KEY") is False  # credential (denied)
     assert cr.is_overridable("DEFINITELY_NOT_SET_XYZ") is False  # unknown key
 
 
@@ -49,6 +50,7 @@ def test_sync_env_ignores_denied_keys(monkeypatch):
 
 # ── admin auth gate ──────────────────────────────────────────────────────────
 
+
 def _client():
     from fastapi.testclient import TestClient
     from service import app as app_module
@@ -60,7 +62,9 @@ def test_admin_requires_token():
     from service.dependencies import get_app_settings
 
     client, app = _client()
-    app.dependency_overrides[get_app_settings] = lambda: SimpleNamespace(admin_api_token="secret")
+    app.dependency_overrides[get_app_settings] = lambda: SimpleNamespace(
+        admin_api_token="secret"
+    )
     try:
         # Token configured but no X-Admin-Token header -> rejected.
         resp = client.get("/admin/config/settings")
@@ -73,9 +77,13 @@ def test_admin_disabled_when_token_unset():
     from service.dependencies import get_app_settings
 
     client, app = _client()
-    app.dependency_overrides[get_app_settings] = lambda: SimpleNamespace(admin_api_token="")
+    app.dependency_overrides[get_app_settings] = lambda: SimpleNamespace(
+        admin_api_token=""
+    )
     try:
-        resp = client.get("/admin/config/settings", headers={"X-Admin-Token": "whatever"})
+        resp = client.get(
+            "/admin/config/settings", headers={"X-Admin-Token": "whatever"}
+        )
         assert resp.status_code == 503
     finally:
         app.dependency_overrides.clear()
@@ -85,7 +93,9 @@ def test_admin_wrong_token_rejected():
     from service.dependencies import get_app_settings
 
     client, app = _client()
-    app.dependency_overrides[get_app_settings] = lambda: SimpleNamespace(admin_api_token="secret")
+    app.dependency_overrides[get_app_settings] = lambda: SimpleNamespace(
+        admin_api_token="secret"
+    )
     try:
         resp = client.get("/admin/config/settings", headers={"X-Admin-Token": "nope"})
         assert resp.status_code == 401
@@ -97,7 +107,9 @@ def test_admin_settings_masks_secrets():
     from service.dependencies import get_app_settings
 
     client, app = _client()
-    app.dependency_overrides[get_app_settings] = lambda: SimpleNamespace(admin_api_token="secret")
+    app.dependency_overrides[get_app_settings] = lambda: SimpleNamespace(
+        admin_api_token="secret"
+    )
     try:
         resp = client.get("/admin/config/settings", headers={"X-Admin-Token": "secret"})
         assert resp.status_code == 200

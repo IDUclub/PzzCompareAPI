@@ -1,3 +1,9 @@
 [tool.black]
 line-length = 88
 target-version = ["py310", "py311"]
+# pipeline_modules/ is vendored third-party code — keep it as upstream ships it.
+extend-exclude = '''
+/(
+  pipeline_modules
+)/
+'''

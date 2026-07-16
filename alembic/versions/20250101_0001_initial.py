@@ -5,6 +5,7 @@ Revises:
 Create Date: 2025-01-01 00:00:00.000000+00:00
 
 """
+
 from __future__ import annotations
 
 from typing import Sequence, Union
@@ -36,10 +37,22 @@ def upgrade() -> None:
         sa.Column("pzz_zones_data_path", sa.String(length=512), nullable=False),
         sa.Column("pzz_zone_vri_labels_path", sa.String(length=512), nullable=False),
         sa.Column("vri_classifier_path", sa.String(length=512), nullable=False),
-        sa.Column("include_pzz_check", sa.Boolean(), nullable=False, server_default=sa.true()),
+        sa.Column(
+            "include_pzz_check", sa.Boolean(), nullable=False, server_default=sa.true()
+        ),
         sa.Column("cadastral_vri_col", sa.String(length=128), nullable=False),
-        sa.Column("pzz_zone_code_col", sa.String(length=128), nullable=False, server_default="Индекс_зоны"),
-        sa.Column("pzz_zone_name_col", sa.String(length=128), nullable=False, server_default="Код_объекта"),
+        sa.Column(
+            "pzz_zone_code_col",
+            sa.String(length=128),
+            nullable=False,
+            server_default="Индекс_зоны",
+        ),
+        sa.Column(
+            "pzz_zone_name_col",
+            sa.String(length=128),
+            nullable=False,
+            server_default="Код_объекта",
+        ),
         sa.Column("priority", sa.Integer(), nullable=False, server_default="1"),
         sa.Column("status", _task_status_enum, nullable=False, server_default="queued"),
         sa.Column("celery_task_id", sa.String(length=128), nullable=True),
@@ -51,8 +64,12 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("external_id", name="uq_pipeline_tasks_external_id"),
     )
-    op.create_index("ix_pipeline_tasks_external_id", "pipeline_tasks", ["external_id"], unique=False)
-    op.create_index("ix_pipeline_tasks_priority", "pipeline_tasks", ["priority"], unique=False)
+    op.create_index(
+        "ix_pipeline_tasks_external_id", "pipeline_tasks", ["external_id"], unique=False
+    )
+    op.create_index(
+        "ix_pipeline_tasks_priority", "pipeline_tasks", ["priority"], unique=False
+    )
     op.create_index(
         "ix_pipeline_tasks_status_created_at",
         "pipeline_tasks",
@@ -71,16 +88,30 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["task_id"], ["pipeline_tasks.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_pipeline_task_events_task_id", "pipeline_task_events", ["task_id"], unique=False)
-    op.create_index("ix_pipeline_task_events_stage", "pipeline_task_events", ["stage"], unique=False)
-    op.create_index("ix_pipeline_task_events_status", "pipeline_task_events", ["status"], unique=False)
+    op.create_index(
+        "ix_pipeline_task_events_task_id",
+        "pipeline_task_events",
+        ["task_id"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_pipeline_task_events_stage", "pipeline_task_events", ["stage"], unique=False
+    )
+    op.create_index(
+        "ix_pipeline_task_events_status",
+        "pipeline_task_events",
+        ["status"],
+        unique=False,
+    )
 
     op.create_table(
         "config",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("name", sa.String(length=128), nullable=False),
         sa.Column("value", sa.String(length=1024), nullable=False),
-        sa.Column("py_type", sa.String(length=64), nullable=False, server_default="str"),
+        sa.Column(
+            "py_type", sa.String(length=64), nullable=False, server_default="str"
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("name", name="uq_config_name"),
     )
@@ -98,9 +129,13 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("key", name="uq_task_idempotency_keys_key"),
-        sa.UniqueConstraint("task_external_id", name="uq_task_idempotency_keys_external_id"),
+        sa.UniqueConstraint(
+            "task_external_id", name="uq_task_idempotency_keys_external_id"
+        ),
     )
-    op.create_index("ix_task_idempotency_keys_key", "task_idempotency_keys", ["key"], unique=False)
+    op.create_index(
+        "ix_task_idempotency_keys_key", "task_idempotency_keys", ["key"], unique=False
+    )
     op.create_index(
         "ix_task_idempotency_keys_task_external_id",
         "task_idempotency_keys",

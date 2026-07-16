@@ -1,4 +1,5 @@
 """Tests for the gMART-format SSE mapping and chat endpoint auth (phase 4)."""
+
 import json
 
 import pytest
@@ -57,7 +58,10 @@ def test_warning_maps_to_warning_envelope() -> None:
     assert event == "warning"
     assert data["type"] == "warning"
     assert data["content"]["stage"] == "create_chat"
-    assert data["content"]["message"] == "Ответ сформирован, но не сохранён в историю чата."
+    assert (
+        data["content"]["message"]
+        == "Ответ сформирован, но не сохранён в историю чата."
+    )
     assert "401" in data["content"]["detail"]
 
 
@@ -146,7 +150,11 @@ def test_build_classify_summary_response(monkeypatch) -> None:
     report = tasks_module.build_classify_summary_response(task, "ext-1", app_settings)
 
     assert report["task_external_id"] == "ext-1"
-    assert report["summary"] == {"total": 2, "with_candidate": 1, "without_candidate": 1}
+    assert report["summary"] == {
+        "total": 2,
+        "with_candidate": 1,
+        "without_candidate": 1,
+    }
     assert report["objects"][0]["matched_vri"] == "4.4 Магазины"
     assert report["objects"][0]["fit"] == "matched"
     assert report["objects"][1]["matched_vri"] is None

@@ -5,6 +5,7 @@ the user's JWT signature + claims against the realm's JWKS before trusting
 it. Verification is opt-in via ``AUTH_VERIFY`` so dev/test environments
 without a configured realm keep working.
 """
+
 from .auth_config import AuthConfig, build_auth_config
 from .auth_client import AuthenticationClient
 from .exceptions import (

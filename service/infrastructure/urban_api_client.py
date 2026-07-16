@@ -14,6 +14,7 @@ Wraps the three endpoints we consume from the ``/scenarios/*`` flow:
 Auth: pass the incoming user's ``Authorization: Bearer ...`` header
 through unchanged.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -50,7 +51,6 @@ class UrbanApiClient:
     @staticmethod
     def _auth_headers(token: str | None) -> dict[str, str]:
         return {"Authorization": f"Bearer {token}"} if token else {}
-
 
     async def get_scenario_info(
         self, scenario_id: int, *, token: str | None = None
@@ -120,7 +120,6 @@ class UrbanApiClient:
             headers=self._auth_headers(token),
         )
         return self._json_or_raise(resp)
-
 
     @staticmethod
     def _json_or_raise(resp: httpx.Response) -> Any:

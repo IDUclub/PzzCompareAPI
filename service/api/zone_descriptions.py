@@ -5,6 +5,7 @@ Separate from the classifier router because this is a pure preview/conversion st
 was parsed, and only then feeds the resulting JSON to the building flow as the
 zone-descriptions file.
 """
+
 from __future__ import annotations
 
 import json
@@ -35,7 +36,9 @@ def _parse_column_map(raw: str | None) -> dict[str, str | None]:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"column_map is not valid JSON: {exc}") from exc
+        raise HTTPException(
+            status_code=400, detail=f"column_map is not valid JSON: {exc}"
+        ) from exc
     if not isinstance(parsed, dict):
         raise HTTPException(status_code=400, detail="column_map must be a JSON object")
     return {str(k): (str(v) if v is not None else None) for k, v in parsed.items()}
@@ -80,7 +83,11 @@ async def convert_zone_descriptions(
         resolved[target.key] = value
         columns_detected[target.key] = {
             "column": value,
-            "source": "override" if override else (suggestion.source if suggestion else "none"),
+            "source": (
+                "override"
+                if override
+                else (suggestion.source if suggestion else "none")
+            ),
             "title": target.title_ru,
         }
 

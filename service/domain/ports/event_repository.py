@@ -11,5 +11,4 @@ class EventRepository(Protocol):
         stage: str,
         status: str,
         details: str | None = None,
-    ) -> None:
-        ...
+    ) -> None: ...

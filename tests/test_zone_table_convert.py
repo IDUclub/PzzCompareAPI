@@ -1,4 +1,5 @@
 """Tests for zone-description table ingest: reader, conversion, convert endpoint."""
+
 import io
 
 from fastapi.testclient import TestClient
@@ -27,6 +28,7 @@ def _xlsx_bytes(headers, rows, *, sheet_title=None) -> bytes:
 
 
 # --- table_reader -----------------------------------------------------------
+
 
 def test_read_csv_cp1251_semicolon():
     text = "Zone;Code;VRI_Code;VRI\nЖ-1;Основной;2.1;Для ИЖС\n"
@@ -88,7 +90,12 @@ _MAP = {
 def test_convert_groups_and_buckets():
     rows = [
         {"Zone": "Ж-1", "Code": "Основной", "VRI_Code": "2.1", "VRI": "Для ИЖС"},
-        {"Zone": "Ж-1", "Code": "Условно разрешенный", "VRI_Code": "4.7", "VRI": "Гостиницы"},
+        {
+            "Zone": "Ж-1",
+            "Code": "Условно разрешенный",
+            "VRI_Code": "4.7",
+            "VRI": "Гостиницы",
+        },
         {"Zone": "Ж-1", "Code": "Вспомогательный", "VRI_Code": "4.9", "VRI": "Гаражи"},
         {"Zone": "П-1", "Code": "Основной", "VRI_Code": "6.0", "VRI": "Производство"},
     ]
@@ -163,6 +170,7 @@ def test_convert_missing_required_column_raises():
 
 # --- convert endpoint --------------------------------------------------------
 
+
 class _FakeOllama:
     """Async-context Ollama stub; returns no LLM column suggestions."""
 
@@ -177,7 +185,9 @@ class _FakeOllama:
 
 
 def test_convert_endpoint_xlsx(monkeypatch):
-    monkeypatch.setattr(zd, "build_ollama_chat_client", lambda settings=None: _FakeOllama())
+    monkeypatch.setattr(
+        zd, "build_ollama_chat_client", lambda settings=None: _FakeOllama()
+    )
     data = _xlsx_bytes(
         ["Zone", "Code", "VRI_Code", "VRI"],
         [
@@ -189,7 +199,13 @@ def test_convert_endpoint_xlsx(monkeypatch):
     client = TestClient(app_module.app)
     resp = client.post(
         "/pzz/zone-descriptions/convert",
-        files={"file": ("z.xlsx", data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        files={
+            "file": (
+                "z.xlsx",
+                data,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -220,7 +236,10 @@ class _ScriptedOllama:
 def test_convert_endpoint_llm_maps_nonstandard_headers(monkeypatch):
     scripted = _ScriptedOllama(
         {
-            "zone_code": {"column": "Территориальная зона", "reason": "короткий индекс"},
+            "zone_code": {
+                "column": "Территориальная зона",
+                "reason": "короткий индекс",
+            },
             "zone_name": {"column": None, "reason": "нет"},
             "permission": {"column": "Разрешение", "reason": "категории"},
             "vri_code": {"column": "Индекс ВРИ", "reason": "числа с точками"},
@@ -252,7 +271,9 @@ def test_convert_endpoint_llm_maps_nonstandard_headers(monkeypatch):
 
 def test_convert_endpoint_offline_backstop(monkeypatch):
     """LLM unreachable (returns nothing) → heuristic backstop still resolves standard headers."""
-    monkeypatch.setattr(zd, "build_ollama_chat_client", lambda settings=None: _FakeOllama())
+    monkeypatch.setattr(
+        zd, "build_ollama_chat_client", lambda settings=None: _FakeOllama()
+    )
     data = _xlsx_bytes(
         ["Zone", "Code", "VRI_Code", "VRI"],
         [["Ж-1", "Основной", "2.1", "Для ИЖС"]],
@@ -269,7 +290,9 @@ def test_convert_endpoint_offline_backstop(monkeypatch):
 
 
 def test_convert_endpoint_bad_format(monkeypatch):
-    monkeypatch.setattr(zd, "build_ollama_chat_client", lambda settings=None: _FakeOllama())
+    monkeypatch.setattr(
+        zd, "build_ollama_chat_client", lambda settings=None: _FakeOllama()
+    )
     client = TestClient(app_module.app)
     resp = client.post(
         "/pzz/zone-descriptions/convert",

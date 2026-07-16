@@ -16,6 +16,7 @@ Resolution priority for a building's VRI:
 Zone permitted-VRI set comes from the uploaded descriptions file when supplied,
 else the built-in fz_to_pzz mapping (fallback). Heavy geo deps load lazily.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -40,7 +41,10 @@ from service.infrastructure.runners._deterministic_pzz import (
     zone_code_display_map,
     zone_codes_are_numeric,
 )
-from service.infrastructure.runners.pipeline_runner import PipelineRunner, _build_output_glob
+from service.infrastructure.runners.pipeline_runner import (
+    PipelineRunner,
+    _build_output_glob,
+)
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -197,9 +201,12 @@ class UploadedBuildingPzzRunner(PipelineRunner):
                     "numeric" if numeric else "pzz-index",
                 )
             except (json.JSONDecodeError, OSError, KeyError) as exc:
-                logger.warning("failed to read uploaded zone descriptions (%s); fallback", exc)
+                logger.warning(
+                    "failed to read uploaded zone descriptions (%s); fallback", exc
+                )
         fallback_path = (
-            self._settings.default_fz_to_pzz_mapping_path if numeric
+            self._settings.default_fz_to_pzz_mapping_path
+            if numeric
             else self._settings.default_pzz_zone_labels_path
         )
         allowed, nick = load(fallback_path)
@@ -214,14 +221,18 @@ class UploadedBuildingPzzRunner(PipelineRunner):
             return False
         return _as_int(value) is None and _lookup_alias(aliases, value) is None
 
-    def _llm_complete(self, messages: list[dict[str, str]], schema: dict[str, Any]) -> dict[str, Any]:
+    def _llm_complete(
+        self, messages: list[dict[str, str]], schema: dict[str, Any]
+    ) -> dict[str, Any]:
         """Blocking structured LLM call (seam for tests). Runs the async Ollama
         client in a private event loop — the runner executes in a worker thread
         with no running loop."""
+
         async def _run() -> dict[str, Any]:
             async with OllamaChatClient(
                 base_url=self._settings.ollama_base_url,
-                default_model=self._settings.chat_model or self._settings.generate_model,
+                default_model=self._settings.chat_model
+                or self._settings.generate_model,
             ) as client:
                 return await client.complete_json(messages, schema=schema)
 
@@ -239,7 +250,9 @@ class UploadedBuildingPzzRunner(PipelineRunner):
             return {}
         id_enum = list(catalogue.keys())
         catalogue_lines = "\n".join(
-            f"- {cid}: {entry.get('name')}" for cid, entry in catalogue.items() if entry.get("name")
+            f"- {cid}: {entry.get('name')}"
+            for cid, entry in catalogue.items()
+            if entry.get("name")
         )
         indexed = {f"n{i}": name for i, name in enumerate(names)}
         schema = {
@@ -253,22 +266,30 @@ class UploadedBuildingPzzRunner(PipelineRunner):
         }
         listing = "\n".join(f"{key} = «{name}»" for key, name in indexed.items())
         messages = [
-            {"role": "system", "content": (
-                "Ты сопоставляешь произвольные названия объектов с каталогом "
-                f"({kind_label}). Для каждого названия верни id ближайшей по смыслу "
-                "записи каталога ИЗ ПРЕДЛОЖЕННОГО СПИСКА id, либо null, если "
-                "подходящей записи нет. Никогда не придумывай id. Ответ строго JSON "
-                "по схеме."
-            )},
-            {"role": "user", "content": (
-                f"Каталог ({kind_label}) — id: название:\n{catalogue_lines}\n\n"
-                f"Названия для сопоставления:\n{listing}"
-            )},
+            {
+                "role": "system",
+                "content": (
+                    "Ты сопоставляешь произвольные названия объектов с каталогом "
+                    f"({kind_label}). Для каждого названия верни id ближайшей по смыслу "
+                    "записи каталога ИЗ ПРЕДЛОЖЕННОГО СПИСКА id, либо null, если "
+                    "подходящей записи нет. Никогда не придумывай id. Ответ строго JSON "
+                    "по схеме."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Каталог ({kind_label}) — id: название:\n{catalogue_lines}\n\n"
+                    f"Названия для сопоставления:\n{listing}"
+                ),
+            },
         ]
         try:
             parsed = self._llm_complete(messages, schema)
         except OllamaChatError as exc:
-            logger.warning("building LLM name fallback failed (%s); names -> manual review", exc)
+            logger.warning(
+                "building LLM name fallback failed (%s); names -> manual review", exc
+            )
             return {}
         out: dict[str, int] = {}
         for key, name in indexed.items():
@@ -278,7 +299,9 @@ class UploadedBuildingPzzRunner(PipelineRunner):
                 out[_normalise_alias(name)] = cid
         return out
 
-    def _catalogue_vectors(self, kind: str, name_by_id: dict[int, str]) -> dict[int, list[float]]:
+    def _catalogue_vectors(
+        self, kind: str, name_by_id: dict[int, str]
+    ) -> dict[int, list[float]]:
         """Embed the catalogue (id -> name), cached per process by (url, model, kind)."""
         assert self._embeddings_client is not None
         key = (self._settings.vectorizer_url, self._settings.embed_model, kind)
@@ -338,24 +361,35 @@ class UploadedBuildingPzzRunner(PipelineRunner):
         if not names:
             return {}
         overrides: dict[str, tuple[int, str]] = {}
-        if self._embeddings_client is not None and self._settings.building_semantic_fallback:
+        if (
+            self._embeddings_client is not None
+            and self._settings.building_semantic_fallback
+        ):
             try:
                 overrides = self._semantic_map_names(names, catalogue, kind)
             except EmbeddingsError as exc:
-                logger.warning("building semantic fallback failed (%s); degrading to LLM", exc)
+                logger.warning(
+                    "building semantic fallback failed (%s); degrading to LLM", exc
+                )
                 overrides = {}
         remaining = [n for n in names if _normalise_alias(n) not in overrides]
         if remaining and getattr(self._settings, "building_llm_name_fallback", True):
-            for norm, cid in self._llm_map_names(remaining, catalogue, kind_label).items():
+            for norm, cid in self._llm_map_names(
+                remaining, catalogue, kind_label
+            ).items():
                 overrides[norm] = (cid, "llm")
         return overrides
 
-    def _resolve_unknown_names(self, feats: list[dict[str, Any]], request: PipelineRequest) -> None:
+    def _resolve_unknown_names(
+        self, feats: list[dict[str, Any]], request: PipelineRequest
+    ) -> None:
         """Populate the per-run override maps for text type/service names that
         don't resolve deterministically. No-op when disabled or nothing unknown."""
         self._type_overrides = {}
         self._service_overrides = {}
-        semantic_on = bool(self._embeddings_client) and self._settings.building_semantic_fallback
+        semantic_on = (
+            bool(self._embeddings_client) and self._settings.building_semantic_fallback
+        )
         llm_on = getattr(self._settings, "building_llm_name_fallback", True)
         if not semantic_on and not llm_on:
             return
@@ -375,23 +409,40 @@ class UploadedBuildingPzzRunner(PipelineRunner):
 
         if type_names:
             self._type_overrides = self._resolve_names(
-                list(type_names.values()), self._po2vri.get("by_type_id", {}),
-                "type", "тип физического объекта",
+                list(type_names.values()),
+                self._po2vri.get("by_type_id", {}),
+                "type",
+                "тип физического объекта",
             )
         if service_names:
             self._service_overrides = self._resolve_names(
-                list(service_names.values()), self._service_map,
-                "service", "тип сервиса",
+                list(service_names.values()),
+                self._service_map,
+                "service",
+                "тип сервиса",
             )
         if self._type_overrides or self._service_overrides:
-            logger.info(json.dumps({
-                "stage": "uploaded_building_pzz", "status": "name_fallback",
-                "external_id": request.task_external_id,
-                "types_resolved": len(self._type_overrides),
-                "services_resolved": len(self._service_overrides),
-                "semantic_types": sum(1 for v in self._type_overrides.values() if v[1] == "semantic"),
-                "semantic_services": sum(1 for v in self._service_overrides.values() if v[1] == "semantic"),
-            }))
+            logger.info(
+                json.dumps(
+                    {
+                        "stage": "uploaded_building_pzz",
+                        "status": "name_fallback",
+                        "external_id": request.task_external_id,
+                        "types_resolved": len(self._type_overrides),
+                        "services_resolved": len(self._service_overrides),
+                        "semantic_types": sum(
+                            1
+                            for v in self._type_overrides.values()
+                            if v[1] == "semantic"
+                        ),
+                        "semantic_services": sum(
+                            1
+                            for v in self._service_overrides.values()
+                            if v[1] == "semantic"
+                        ),
+                    }
+                )
+            )
 
     def _raw_type_service(self, props: dict[str, Any], request: PipelineRequest):
         """Return the raw (type_value, service_value) from a feature's properties.
@@ -401,14 +452,25 @@ class UploadedBuildingPzzRunner(PipelineRunner):
         numeric id or a text name/code — the same raw form the aliases and the
         LLM fallback both consume.
         """
-        type_raw = props.get(request.building_type_col) if request.building_type_col else None
-        type_raw = _dict_value(type_raw, "physical_object_type_id", "id", "name", "code")
+        type_raw = (
+            props.get(request.building_type_col) if request.building_type_col else None
+        )
+        type_raw = _dict_value(
+            type_raw, "physical_object_type_id", "id", "name", "code"
+        )
         if type_raw is None:
             type_raw = _dict_value(
                 props.get("physical_object_type"),
-                "physical_object_type_id", "id", "name", "code",
+                "physical_object_type_id",
+                "id",
+                "name",
+                "code",
             )
-        service_raw = props.get(request.building_service_col) if request.building_service_col else None
+        service_raw = (
+            props.get(request.building_service_col)
+            if request.building_service_col
+            else None
+        )
         service_raw = _dict_value(service_raw, "service_type_id", "id", "name", "code")
         if service_raw is None:
             service_raw = _dict_value(
@@ -422,10 +484,16 @@ class UploadedBuildingPzzRunner(PipelineRunner):
         ``sources`` = (type_source, service_source): "" for a deterministic match,
         else "semantic"/"llm" — how the id was recovered from a text name.
         """
-        nested = props.get("properties") if isinstance(props.get("properties"), dict) else {}
+        nested = (
+            props.get("properties") if isinstance(props.get("properties"), dict) else {}
+        )
         type_raw, service_raw = self._raw_type_service(props, request)
 
-        floors = props.get(request.building_floors_col) if request.building_floors_col else None
+        floors = (
+            props.get(request.building_floors_col)
+            if request.building_floors_col
+            else None
+        )
         if floors is None:
             floors = nested.get(_FLOORS_FIELD, props.get(_FLOORS_FIELD))
 
@@ -445,16 +513,26 @@ class UploadedBuildingPzzRunner(PipelineRunner):
                 is_residential = True
 
         service_source = ""
-        service_type_id = _as_int(service_raw) or _lookup_alias(self._service_aliases, service_raw)
+        service_type_id = _as_int(service_raw) or _lookup_alias(
+            self._service_aliases, service_raw
+        )
         if service_type_id is None:
             override = self._service_overrides.get(_normalise_alias(service_raw))
             if override is not None:
                 service_type_id, service_source = override
 
-        label = " / ".join(
-            str(x) for x in (type_raw, service_raw) if x not in (None, "")
-        ) or None
-        return po_type_id, is_residential, service_type_id, floors, label, (type_source, service_source)
+        label = (
+            " / ".join(str(x) for x in (type_raw, service_raw) if x not in (None, ""))
+            or None
+        )
+        return (
+            po_type_id,
+            is_residential,
+            service_type_id,
+            floors,
+            label,
+            (type_source, service_source),
+        )
 
     def _resolve_vri(
         self,
@@ -471,8 +549,16 @@ class UploadedBuildingPzzRunner(PipelineRunner):
         if is_residential:
             code, name = resolve_po_type_vri(self._po2vri, _RESIDENTIAL_PO_TYPE, floors)
             if code:
-                floors_txt = f", {floors} эт." if floors not in (None, "") else " (этажность не указана)"
-                return code, name, f"жилое здание — ВРИ подобран по этажности{floors_txt}{_source_note(type_source)}"
+                floors_txt = (
+                    f", {floors} эт."
+                    if floors not in (None, "")
+                    else " (этажность не указана)"
+                )
+                return (
+                    code,
+                    name,
+                    f"жилое здание — ВРИ подобран по этажности{floors_txt}{_source_note(type_source)}",
+                )
         if service_type_id is not None:
             entry = self._service_map.get(str(service_type_id))
             if entry and entry.get("vri_code"):
@@ -495,8 +581,12 @@ class UploadedBuildingPzzRunner(PipelineRunner):
         output_dir = Path(request.outputs_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        buildings = json.loads(Path(request.cadastral_data_path).read_text(encoding="utf-8"))
-        zones = json.loads(Path(request.pzz_zones_data_path).read_text(encoding="utf-8"))
+        buildings = json.loads(
+            Path(request.cadastral_data_path).read_text(encoding="utf-8")
+        )
+        zones = json.loads(
+            Path(request.pzz_zones_data_path).read_text(encoding="utf-8")
+        )
         code_col = request.pzz_zone_code_col or "zone_code"
 
         # Zone backend: numeric urban_api functional_zone_type_id vs a real ПЗЗ
@@ -506,20 +596,26 @@ class UploadedBuildingPzzRunner(PipelineRunner):
         zone_allowed, zone_nick, used_default_mapping = self._load_zone_mapping(
             request, numeric_zones
         )
-        code_display = (
-            {} if numeric_zones else zone_code_display_map(zones, code_col)
-        )
+        code_display = {} if numeric_zones else zone_code_display_map(zones, code_col)
 
         zgdf = build_zone_gdf(zones, code_col, numeric=numeric_zones)
-        feats = [f for f in (buildings.get("features") or []) if f.get("geometry") is not None]
+        feats = [
+            f
+            for f in (buildings.get("features") or [])
+            if f.get("geometry") is not None
+        ]
         fz_by_obj = join_objects_to_zones(feats, zgdf)
 
         # Zone codes present on the layer but absent from the mapping — surfaced so
         # the chat answer can flag them (and, when many, suggest uploading a proper
         # ПЗЗ description instead of the approximate built-in template).
-        uncovered_zones = sorted(
-            {code_display.get(k, k) for k in code_display if k not in zone_allowed}
-        ) if not numeric_zones else []
+        uncovered_zones = (
+            sorted(
+                {code_display.get(k, k) for k in code_display if k not in zone_allowed}
+            )
+            if not numeric_zones
+            else []
+        )
 
         # Deterministic-first: recover text type/service names that don't match the
         # catalogue — semantically via the embedder, then LLM; ids/known names never
@@ -528,13 +624,17 @@ class UploadedBuildingPzzRunner(PipelineRunner):
 
         for i, feature in enumerate(feats):
             props = feature.get("properties") or {}
-            po_type_id, is_residential, service_type_id, floors, label, sources = self._extract(props, request)
+            po_type_id, is_residential, service_type_id, floors, label, sources = (
+                self._extract(props, request)
+            )
             vri, vri_name, vri_basis = self._resolve_vri(
                 po_type_id, is_residential, service_type_id, floors, *sources
             )
 
             fz = fz_by_obj.get(i)
-            machine_verdict, reason, mcode, _ = compute_verdict(vri, fz, zone_allowed, zone_nick)
+            machine_verdict, reason, mcode, _ = compute_verdict(
+                vri, fz, zone_allowed, zone_nick
+            )
             # Split key for the two download layers: a «Сервис» is any row whose
             # service column is populated and isn't residential — keyed on the raw
             # value, not on resolution, so an unresolved service name (manual review)
@@ -559,16 +659,23 @@ class UploadedBuildingPzzRunner(PipelineRunner):
             )
 
         result = {"type": "FeatureCollection", "features": feats}
-        out_path = output_dir / f"pzz_compare_spatial_first_{request.task_external_id}.geojson"
+        out_path = (
+            output_dir / f"pzz_compare_spatial_first_{request.task_external_id}.geojson"
+        )
         out_path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         logger.info(
-            json.dumps({
-                "stage": "uploaded_building_pzz", "status": "finished",
-                "external_id": request.task_external_id,
-                "buildings": len(feats), "zones": len(zgdf), "matched_zone": len(fz_by_obj),
-                "zone_backend": "numeric" if numeric_zones else "pzz_index",
-                "used_default_mapping": used_default_mapping,
-                "uncovered_zones": len(uncovered_zones),
-            })
+            json.dumps(
+                {
+                    "stage": "uploaded_building_pzz",
+                    "status": "finished",
+                    "external_id": request.task_external_id,
+                    "buildings": len(feats),
+                    "zones": len(zgdf),
+                    "matched_zone": len(fz_by_obj),
+                    "zone_backend": "numeric" if numeric_zones else "pzz_index",
+                    "used_default_mapping": used_default_mapping,
+                    "uncovered_zones": len(uncovered_zones),
+                }
+            )
         )
         return _build_output_glob(output_dir, request.task_external_id)

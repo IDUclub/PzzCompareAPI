@@ -3,6 +3,7 @@
 Mirrors IDUclub ChatStorage's ``AuthConfig`` so the convention is familiar
 across services.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

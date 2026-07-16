@@ -1,4 +1,5 @@
 """Tests for the ChatStorage HTTP client (phase 2)."""
+
 import asyncio
 import json
 
@@ -14,7 +15,9 @@ from service.infrastructure.chat_storage_client import (
 class FakeTokenClient:
     """Stand-in for ``idu_service_auth.KeycloakTokenClient`` (service token)."""
 
-    async def get_authorization_headers(self, *, force_refresh: bool = False) -> dict[str, str]:
+    async def get_authorization_headers(
+        self, *, force_refresh: bool = False
+    ) -> dict[str, str]:
         return {"Authorization": "Bearer service-tok"}
 
 
@@ -39,7 +42,12 @@ def test_create_chat_posts_contract_and_returns_summary() -> None:
         seen["body"] = json.loads(request.content)
         return httpx.Response(
             201,
-            json={"chat_id": "chat-1", "title": "T", "scenario_id": 772, "project_id": 42},
+            json={
+                "chat_id": "chat-1",
+                "title": "T",
+                "scenario_id": 772,
+                "project_id": 42,
+            },
         )
 
     async def run() -> dict:

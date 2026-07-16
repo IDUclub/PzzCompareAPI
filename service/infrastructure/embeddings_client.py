@@ -8,6 +8,7 @@ executes in a worker thread with no event loop, so this client is plain-sync htt
 Endpoint contract (``POST {url}``): ``{"input": [str, ...], "model": name}`` ->
 ``{"data": [{"embedding": [float, ...]}, ...]}`` (OpenAI ``/v1/embeddings`` shape).
 """
+
 from __future__ import annotations
 
 import httpx

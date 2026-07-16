@@ -9,6 +9,7 @@ Windows-1251 with a ``;`` delimiter, not UTF-8/comma. Decoding blind mangles the
 Cyrillic, so the CSV path sniffs both encoding and delimiter. XLSX is XML/UTF-8
 internally — ``openpyxl`` yields proper ``str`` with no encoding guesswork.
 """
+
 from __future__ import annotations
 
 import csv
@@ -40,8 +41,7 @@ def read_table(
     if name.endswith(".csv"):
         return _read_csv(data)
     raise TableReadError(
-        "unsupported table format: expected .csv or .xlsx, got "
-        f"«{filename}»"
+        "unsupported table format: expected .csv or .xlsx, got " f"«{filename}»"
     )
 
 
@@ -51,9 +51,7 @@ def _decode_csv(data: bytes) -> str:
             return data.decode(enc)
         except UnicodeDecodeError:
             continue
-    raise TableReadError(
-        "cannot decode CSV: tried " + ", ".join(_CSV_ENCODINGS)
-    )
+    raise TableReadError("cannot decode CSV: tried " + ", ".join(_CSV_ENCODINGS))
 
 
 def _sniff_delimiter(sample: str) -> str:
@@ -113,7 +111,9 @@ def _matrix_to_rows(
     rows: list[dict[str, str]] = []
     for cells in matrix[1:]:
         row = {
-            headers[i]: (str(cells[i]).strip() if i < len(cells) and cells[i] is not None else "")
+            headers[i]: (
+                str(cells[i]).strip() if i < len(cells) and cells[i] is not None else ""
+            )
             for i in range(len(headers))
         }
         rows.append(row)

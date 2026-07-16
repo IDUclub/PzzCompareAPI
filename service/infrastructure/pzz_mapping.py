@@ -8,6 +8,7 @@ The mapping is currently city-specific (Долинск); future versions may
 move to per-scenario mappings fetched from urban_api or uploaded by the
 client. For now we have one global mapping.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -136,7 +137,9 @@ def _zone_label_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _stub_zone_label(zone_type_id: int | str, zone_name: str | None = None) -> dict[str, Any]:
+def _stub_zone_label(
+    zone_type_id: int | str, zone_name: str | None = None
+) -> dict[str, Any]:
     """Empty-permitted-VRI stub for zones that have no PZZ mapping.
 
     The pipeline still treats this as a known zone (so the verdict is

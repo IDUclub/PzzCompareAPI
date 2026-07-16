@@ -18,6 +18,7 @@ The LLM call itself lives in the endpoint (async); the prompt/response shaping a
 the overlay construction are pure and live here so they can be unit-tested without
 the SSE stack.
 """
+
 from __future__ import annotations
 
 import json
@@ -37,9 +38,9 @@ from service.infrastructure.runners._deterministic_pzz import (
 class UncoveredZone:
     """A zone code present on the uploaded layer but absent from the mapping."""
 
-    code: str   # user's verbatim display code, e.g. «СХ-3»
-    name: str   # user's zone name (from the name column), may be ""
-    norm: str   # normalised match key
+    code: str  # user's verbatim display code, e.g. «СХ-3»
+    name: str  # user's zone name (from the name column), may be ""
+    norm: str  # normalised match key
 
 
 @dataclass
@@ -54,7 +55,9 @@ class ZoneReview:
         return [z.code for z in self.uncovered]
 
 
-def _zone_names(zones_fc: dict[str, Any], code_col: str, name_col: str | None) -> dict[str, str]:
+def _zone_names(
+    zones_fc: dict[str, Any], code_col: str, name_col: str | None
+) -> dict[str, str]:
     """Map a normalised zone key to the first non-empty name seen for it."""
     names: dict[str, str] = {}
     if not name_col:
@@ -100,15 +103,24 @@ def review_building_zones(
     )
     # Template- or overlay-based ⇒ approximate regardless of the branch below.
     if confirmed_map or not uncovered:
-        return ZoneReview(numeric=False, approximate=True, action="proceed", uncovered=uncovered)
+        return ZoneReview(
+            numeric=False, approximate=True, action="proceed", uncovered=uncovered
+        )
     if len(uncovered) >= threshold:
         return ZoneReview(
-            numeric=False, approximate=True, action="suggest_upload", uncovered=uncovered
+            numeric=False,
+            approximate=True,
+            action="suggest_upload",
+            uncovered=uncovered,
         )
-    return ZoneReview(numeric=False, approximate=True, action="confirm", uncovered=uncovered)
+    return ZoneReview(
+        numeric=False, approximate=True, action="confirm", uncovered=uncovered
+    )
 
 
-def remaining_uncovered(uncovered: list[UncoveredZone], confirmed_map: dict[str, str] | None) -> list[str]:
+def remaining_uncovered(
+    uncovered: list[UncoveredZone], confirmed_map: dict[str, str] | None
+) -> list[str]:
     """Display codes still without a mapping after applying confirmations."""
     confirmed_norm = {normalise_zone_code(k) for k in (confirmed_map or {})}
     return [z.code for z in uncovered if z.norm not in confirmed_norm]
@@ -123,15 +135,19 @@ def build_disclaimer(remaining: list[str]) -> str:
     ]
     if remaining:
         lines.append(
-            "Зоны без описания в шаблоне (вердикт не вынесен): " + ", ".join(remaining) + "."
+            "Зоны без описания в шаблоне (вердикт не вынесен): "
+            + ", ".join(remaining)
+            + "."
         )
     return "\n".join(lines)
 
 
 def _template_entries(template_path: str) -> list[dict[str, Any]]:
     raw = json.loads(Path(template_path).read_text(encoding="utf-8"))
-    entries = raw if isinstance(raw, list) else (
-        raw.get("zones") or raw.get("labels") or raw.get("pzz_zones") or []
+    entries = (
+        raw
+        if isinstance(raw, list)
+        else (raw.get("zones") or raw.get("labels") or raw.get("pzz_zones") or [])
     )
     return [e for e in entries if isinstance(e, dict)]
 
@@ -143,7 +159,9 @@ def template_candidates(template_path: str) -> list[dict[str, str]]:
         code = e.get("zone_code")
         if code in (None, ""):
             continue
-        out.append({"code": str(code).strip(), "name": str(e.get("zone_name") or "").strip()})
+        out.append(
+            {"code": str(code).strip(), "name": str(e.get("zone_name") or "").strip()}
+        )
     return out
 
 
@@ -169,27 +187,36 @@ def build_suggestion_messages(
     }
     catalogue = "\n".join(f"- {c['code']}: {c['name']}" for c in candidates)
     listing = "\n".join(
-        f"{key} = «{z.code}»" + (f" — {z.name}" if z.name else "") for key, z in indexed.items()
+        f"{key} = «{z.code}»" + (f" — {z.name}" if z.name else "")
+        for key, z in indexed.items()
     )
     messages = [
-        {"role": "system", "content": (
-            "Ты сопоставляешь территориальные зоны ПЗЗ пользователя с зонами "
-            "шаблона по смыслу их наименований. Для каждой зоны верни код "
-            "ближайшей по смыслу зоны шаблона ИЗ ПРЕДЛОЖЕННОГО СПИСКА кодов, либо "
-            "null, если подходящей зоны нет. Никогда не придумывай код. Это "
-            "предварительная подсказка — окончательное решение принимает человек. "
-            "Ответ строго JSON по схеме."
-        )},
-        {"role": "user", "content": (
-            f"Зоны шаблона — код: наименование:\n{catalogue}\n\n"
-            f"Зоны пользователя для сопоставления:\n{listing}"
-        )},
+        {
+            "role": "system",
+            "content": (
+                "Ты сопоставляешь территориальные зоны ПЗЗ пользователя с зонами "
+                "шаблона по смыслу их наименований. Для каждой зоны верни код "
+                "ближайшей по смыслу зоны шаблона ИЗ ПРЕДЛОЖЕННОГО СПИСКА кодов, либо "
+                "null, если подходящей зоны нет. Никогда не придумывай код. Это "
+                "предварительная подсказка — окончательное решение принимает человек. "
+                "Ответ строго JSON по схеме."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Зоны шаблона — код: наименование:\n{catalogue}\n\n"
+                f"Зоны пользователя для сопоставления:\n{listing}"
+            ),
+        },
     ]
     return messages, schema
 
 
 def parse_suggestions(
-    uncovered: list[UncoveredZone], parsed: dict[str, Any], candidates: list[dict[str, str]]
+    uncovered: list[UncoveredZone],
+    parsed: dict[str, Any],
+    candidates: list[dict[str, str]],
 ) -> dict[str, str]:
     """Turn the LLM response into `{user_code: suggested_template_code}` for the
     confident hits (a valid candidate code); nulls / unknowns are dropped."""

@@ -7,6 +7,7 @@ Call ``setup_redis_sink(redis_url, service_name)`` once at startup — after
 ``setup_logging()`` — to wire up the sink.  The sink runs in a background
 thread (loguru enqueue=True) and never blocks the caller.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,6 @@ import traceback
 from typing import Any
 
 from loguru import logger
-
 
 LOG_STREAM_KEY = "logs:stream"
 _DEFAULT_MAX_ENTRIES = 10_000

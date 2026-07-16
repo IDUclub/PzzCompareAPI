@@ -1,4 +1,5 @@
 """Task management endpoints: get / list / cancel / recompute / events / result / stream."""
+
 from __future__ import annotations
 
 import asyncio
@@ -88,7 +89,10 @@ def build_cancel_task_response(
 ) -> TaskOut:
     """Cancel an already-authorized task; shared logic between routers."""
     if task.status in {TaskStatus.finished, TaskStatus.failed}:
-        raise HTTPException(status_code=409, detail=f"Task already in terminal state: {task.status.value}")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task already in terminal state: {task.status.value}",
+        )
 
     if task.celery_task_id:
         celery_app.control.revoke(task.celery_task_id, terminate=True, signal="SIGTERM")
@@ -117,7 +121,12 @@ def build_recompute_task_response(
     ``waiting_capacity`` (e.g. Celery message was lost) the old Celery task
     is revoked before a fresh one is enqueued.
     """
-    _rerunnable = {TaskStatus.finished, TaskStatus.failed, TaskStatus.queued, TaskStatus.waiting_capacity}
+    _rerunnable = {
+        TaskStatus.finished,
+        TaskStatus.failed,
+        TaskStatus.queued,
+        TaskStatus.waiting_capacity,
+    }
     if task.status not in _rerunnable:
         raise HTTPException(
             status_code=409,
@@ -125,7 +134,10 @@ def build_recompute_task_response(
         )
 
     # Revoke the stale Celery message so it doesn't race with the new one.
-    if task.celery_task_id and task.status in {TaskStatus.queued, TaskStatus.waiting_capacity}:
+    if task.celery_task_id and task.status in {
+        TaskStatus.queued,
+        TaskStatus.waiting_capacity,
+    }:
         try:
             celery_app.control.revoke(task.celery_task_id)
         except Exception:  # noqa: BLE001
@@ -153,7 +165,9 @@ def build_recompute_task_response(
             status="recompute_enqueue_error",
             details=str(exc),
         )
-        raise HTTPException(status_code=503, detail=f"Failed to enqueue: {exc}") from exc
+        raise HTTPException(
+            status_code=503, detail=f"Failed to enqueue: {exc}"
+        ) from exc
 
     celery_task_id = getattr(celery_result, "id", None)
     task_repo.update_status(task.id, TaskStatus.queued, celery_task_id=celery_task_id)
@@ -170,13 +184,19 @@ def build_recompute_task_response(
     return TaskOut.model_validate(task)
 
 
-def build_task_events_response(task: PipelineTask, session: Session) -> list[TaskEventOut]:
+def build_task_events_response(
+    task: PipelineTask, session: Session
+) -> list[TaskEventOut]:
     """Return events for an already-authorized task; shared logic."""
-    events = session.execute(
-        select(TaskEvent)
-        .where(TaskEvent.task_id == task.id)
-        .order_by(TaskEvent.created_at.asc(), TaskEvent.id.asc())
-    ).scalars().all()
+    events = (
+        session.execute(
+            select(TaskEvent)
+            .where(TaskEvent.task_id == task.id)
+            .order_by(TaskEvent.created_at.asc(), TaskEvent.id.asc())
+        )
+        .scalars()
+        .all()
+    )
     return [TaskEventOut.model_validate(event) for event in events]
 
 
@@ -246,9 +266,13 @@ def list_tasks_endpoint(
         try:
             parsed_status = TaskStatus(status)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail="invalid status filter") from exc
+            raise HTTPException(
+                status_code=400, detail="invalid status filter"
+            ) from exc
 
-    items, total = task_repo.list_tasks(status=parsed_status, limit=limit, offset=offset)
+    items, total = task_repo.list_tasks(
+        status=parsed_status, limit=limit, offset=offset
+    )
     return TaskListOut(
         items=[TaskOut.model_validate(task) for task in items],
         total=total,
@@ -275,19 +299,27 @@ async def _task_sse_generator(
             ).scalar_one_or_none()
 
             if task is None:
-                yield ServerSentEvent(data=json.dumps({"error": "Task not found"}), event="error")
+                yield ServerSentEvent(
+                    data=json.dumps({"error": "Task not found"}), event="error"
+                )
                 break
 
-            new_events = session.execute(
-                select(TaskEvent)
-                .where(TaskEvent.task_id == task.id, TaskEvent.id > last_event_id)
-                .order_by(TaskEvent.id.asc())
-            ).scalars().all()
+            new_events = (
+                session.execute(
+                    select(TaskEvent)
+                    .where(TaskEvent.task_id == task.id, TaskEvent.id > last_event_id)
+                    .order_by(TaskEvent.id.asc())
+                )
+                .scalars()
+                .all()
+            )
 
             for ev in new_events:
                 last_event_id = ev.id
                 yield ServerSentEvent(
-                    data=json.dumps(TaskEventOut.model_validate(ev).model_dump(mode="json")),
+                    data=json.dumps(
+                        TaskEventOut.model_validate(ev).model_dump(mode="json")
+                    ),
                     event="task_event",
                 )
 
@@ -295,7 +327,9 @@ async def _task_sse_generator(
             if current_status != last_status:
                 last_status = current_status
                 yield ServerSentEvent(
-                    data=json.dumps(TaskOut.model_validate(task).model_dump(mode="json")),
+                    data=json.dumps(
+                        TaskOut.model_validate(task).model_dump(mode="json")
+                    ),
                     event="status",
                 )
 
@@ -350,26 +384,36 @@ async def task_stream_with_report_generator(
                 select(PipelineTask).where(PipelineTask.external_id == external_id)
             ).scalar_one_or_none()
             if task is None:
-                yield ServerSentEvent(data=json.dumps({"error": "Task not found"}), event="error")
+                yield ServerSentEvent(
+                    data=json.dumps({"error": "Task not found"}), event="error"
+                )
                 break
 
             if emit_input_files and not inputs_emitted:
                 inputs_emitted = True
-                for layer in build_input_geo_layers(task, external_id, app_settings, request):
+                for layer in build_input_geo_layers(
+                    task, external_id, app_settings, request
+                ):
                     yield ServerSentEvent(
                         data=json.dumps({"type": "file", "content": layer}),
                         event="file",
                     )
 
-            new_events = session.execute(
-                select(TaskEvent)
-                .where(TaskEvent.task_id == task.id, TaskEvent.id > last_event_id)
-                .order_by(TaskEvent.id.asc())
-            ).scalars().all()
+            new_events = (
+                session.execute(
+                    select(TaskEvent)
+                    .where(TaskEvent.task_id == task.id, TaskEvent.id > last_event_id)
+                    .order_by(TaskEvent.id.asc())
+                )
+                .scalars()
+                .all()
+            )
             for ev in new_events:
                 last_event_id = ev.id
                 yield ServerSentEvent(
-                    data=json.dumps(TaskEventOut.model_validate(ev).model_dump(mode="json")),
+                    data=json.dumps(
+                        TaskEventOut.model_validate(ev).model_dump(mode="json")
+                    ),
                     event="task_event",
                 )
 
@@ -377,7 +421,9 @@ async def task_stream_with_report_generator(
             if current_status != last_status:
                 last_status = current_status
                 yield ServerSentEvent(
-                    data=json.dumps(TaskOut.model_validate(task).model_dump(mode="json")),
+                    data=json.dumps(
+                        TaskOut.model_validate(task).model_dump(mode="json")
+                    ),
                     event="status",
                 )
 
@@ -395,7 +441,9 @@ async def task_stream_with_report_generator(
                             report = build_object_zone_fit_response(
                                 task, external_id, group_by, app_settings
                             )
-                            yield ServerSentEvent(data=json.dumps(report), event="report")
+                            yield ServerSentEvent(
+                                data=json.dumps(report), event="report"
+                            )
                     except HTTPException as exc:
                         yield ServerSentEvent(
                             data=json.dumps({"error": exc.detail}), event="error"
@@ -403,7 +451,9 @@ async def task_stream_with_report_generator(
                     # Durable link(s) to the result layer(s) (alongside inline geojson,
                     # so the frontend can switch to download-by-link for big files).
                     # building_pzz_check yields two — здания + сервисы.
-                    for layer in build_result_geo_layers(task, external_id, app_settings, request):
+                    for layer in build_result_geo_layers(
+                        task, external_id, app_settings, request
+                    ):
                         yield ServerSentEvent(
                             data=json.dumps({"type": "file", "content": layer}),
                             event="file",
@@ -527,7 +577,10 @@ def _chat_event_to_sse(event: dict[str, Any]) -> ServerSentEvent | None:
             data=json.dumps(
                 {
                     "type": "error",
-                    "content": {"message": event.get("detail"), "stage": event.get("stage")},
+                    "content": {
+                        "message": event.get("detail"),
+                        "stage": event.get("stage"),
+                    },
                 }
             ),
             event="error",
@@ -613,10 +666,16 @@ async def zone_review_generator(
     if narrative:
         yield narrative_chunk_sse(narrative)
     yield ServerSentEvent(
-        data=json.dumps({
-            "type": "zone_review",
-            "content": {"message": detail, "action": action, "suggestions": suggestions or []},
-        }),
+        data=json.dumps(
+            {
+                "type": "zone_review",
+                "content": {
+                    "message": detail,
+                    "action": action,
+                    "suggestions": suggestions or [],
+                },
+            }
+        ),
         event="zone_review",
     )
     yield _final_answer_chunk_sse()
@@ -693,26 +752,36 @@ async def task_stream_with_chat_generator(
                 select(PipelineTask).where(PipelineTask.external_id == external_id)
             ).scalar_one_or_none()
             if task is None:
-                yield ServerSentEvent(data=json.dumps({"error": "Task not found"}), event="error")
+                yield ServerSentEvent(
+                    data=json.dumps({"error": "Task not found"}), event="error"
+                )
                 break
 
             if emit_input_files and not inputs_emitted:
                 inputs_emitted = True
-                for layer in build_input_geo_layers(task, external_id, app_settings, request):
+                for layer in build_input_geo_layers(
+                    task, external_id, app_settings, request
+                ):
                     yield ServerSentEvent(
                         data=json.dumps({"type": "file", "content": layer}),
                         event="file",
                     )
 
-            new_events = session.execute(
-                select(TaskEvent)
-                .where(TaskEvent.task_id == task.id, TaskEvent.id > last_event_id)
-                .order_by(TaskEvent.id.asc())
-            ).scalars().all()
+            new_events = (
+                session.execute(
+                    select(TaskEvent)
+                    .where(TaskEvent.task_id == task.id, TaskEvent.id > last_event_id)
+                    .order_by(TaskEvent.id.asc())
+                )
+                .scalars()
+                .all()
+            )
             for ev in new_events:
                 last_event_id = ev.id
                 yield ServerSentEvent(
-                    data=json.dumps(TaskEventOut.model_validate(ev).model_dump(mode="json")),
+                    data=json.dumps(
+                        TaskEventOut.model_validate(ev).model_dump(mode="json")
+                    ),
                     event="task_event",
                 )
 
@@ -720,7 +789,9 @@ async def task_stream_with_chat_generator(
             if current_status != last_status:
                 last_status = current_status
                 yield ServerSentEvent(
-                    data=json.dumps(TaskOut.model_validate(task).model_dump(mode="json")),
+                    data=json.dumps(
+                        TaskOut.model_validate(task).model_dump(mode="json")
+                    ),
                     event="status",
                 )
 
@@ -732,7 +803,9 @@ async def task_stream_with_chat_generator(
             # inside the session scope (need the task row), then stream the
             # answer outside any I/O on it.
             if current_status == TaskStatus.finished:
-                geo_layers = build_result_geo_layers(task, external_id, app_settings, request)
+                geo_layers = build_result_geo_layers(
+                    task, external_id, app_settings, request
+                )
                 if include_report:
                     try:
                         if report_kind == "classify":
@@ -770,7 +843,9 @@ async def task_stream_with_chat_generator(
     # Conversational events use gMART's {"type", "content"} envelope.
     chat_id_final = chat_id
     streamed_answer = False
-    assistant_file_parts = [geo_layer_to_file_part(layer) for layer in geo_layers] or None
+    assistant_file_parts = [
+        geo_layer_to_file_part(layer) for layer in geo_layers
+    ] or None
     if last_status == TaskStatus.finished:
         async for event in _stream_chat_answer_managed(
             app_settings,
@@ -840,10 +915,14 @@ def build_task_result_response(
     """Build the streaming result response for an already-authorized task."""
 
     if task.status in {"queued", "running", "waiting_capacity"}:
-        raise HTTPException(status_code=409, detail=f"Task is not ready yet (status: {task.status})")
+        raise HTTPException(
+            status_code=409, detail=f"Task is not ready yet (status: {task.status})"
+        )
 
     if task.status == "failed":
-        raise HTTPException(status_code=422, detail=task.error_text or "Task execution failed")
+        raise HTTPException(
+            status_code=422, detail=task.error_text or "Task execution failed"
+        )
 
     if task.status != "finished" or not task.result_path:
         raise HTTPException(status_code=404, detail="Task result not found")
@@ -874,7 +953,9 @@ def build_task_result_response(
     try:
         resolved_path.relative_to(outputs_dir)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Result path is outside outputs directory") from exc
+        raise HTTPException(
+            status_code=400, detail="Result path is outside outputs directory"
+        ) from exc
 
     if not resolved_path.is_file():
         raise HTTPException(status_code=404, detail="Task result file not found")
@@ -907,7 +988,10 @@ _SLOT_LABELS: dict[str, tuple[str, str]] = {
     "zones": ("Зоны ПЗЗ", "pzz_zones.geojson"),
 }
 _RESULT_LABEL_PZZ = ("Результат проверки ПЗЗ", "pzz_check_result.geojson")
-_RESULT_LABEL_CLASSIFY = ("Результат классификации ВРИ", "classification_result.geojson")
+_RESULT_LABEL_CLASSIFY = (
+    "Результат классификации ВРИ",
+    "classification_result.geojson",
+)
 
 # building_pzz_check emits the result as TWO layers — здания and сервисы — split
 # from the single combined result by the «Категория_объекта» feature property.
@@ -916,8 +1000,18 @@ _RESULT_LABEL_CLASSIFY = ("Результат классификации ВРИ"
 # title, filename).
 _COL_CATEGORY = "Категория_объекта"
 _RESULT_SPLIT_SLOTS: dict[str, tuple[str, str, str, str]] = {
-    "result_buildings": ("Здание", "buildings_result", "Результат — здания", "buildings_result.geojson"),
-    "result_services": ("Сервис", "services_result", "Результат — сервисы", "services_result.geojson"),
+    "result_buildings": (
+        "Здание",
+        "buildings_result",
+        "Результат — здания",
+        "buildings_result.geojson",
+    ),
+    "result_services": (
+        "Сервис",
+        "services_result",
+        "Результат — сервисы",
+        "services_result.geojson",
+    ),
 }
 
 
@@ -1171,7 +1265,9 @@ def get_task_file_redirect(
     try:
         local_path.relative_to(inputs_root)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="File path is outside inputs directory") from exc
+        raise HTTPException(
+            status_code=400, detail="File path is outside inputs directory"
+        ) from exc
     if not local_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(
@@ -1295,7 +1391,9 @@ def _reconciled_intro(summary: dict[str, Any]) -> list[str]:
     ]
 
 
-def _build_chat_message_objects(rows: list[dict[str, Any]], summary: dict[str, Any]) -> str:
+def _build_chat_message_objects(
+    rows: list[dict[str, Any]], summary: dict[str, Any]
+) -> str:
     """Chatbot-friendly plain-text summary for group_by=object."""
     lines = _reconciled_intro(summary)
     if summary["unclear"]:
@@ -1319,12 +1417,17 @@ def _build_chat_message_objects(rows: list[dict[str, Any]], summary: dict[str, A
                 "в их зоне ВРИ."
             )
     elif not summary["unclear"]:
-        lines += ["", "У всех земельных участков ВРИ допустим в их территориальной зоне."]
+        lines += [
+            "",
+            "У всех земельных участков ВРИ допустим в их территориальной зоне.",
+        ]
 
     return "\n".join(lines)
 
 
-def _build_chat_message_zones(zones: list[dict[str, Any]], summary: dict[str, Any]) -> str:
+def _build_chat_message_zones(
+    zones: list[dict[str, Any]], summary: dict[str, Any]
+) -> str:
     """Chatbot-friendly plain-text summary for group_by=zone.
 
     Compact headline only — totals, per-verdict counts and manual-review reasons.
@@ -1395,19 +1498,21 @@ def build_object_zone_fit_response(
         props = feature.get("properties") or {}
         verdict = props.get(_COL_VERDICT)
         fit = _classify_verdict(verdict)
-        rows.append({
-            "feature_index": idx,
-            "vri_text": props.get(_COL_VRI_TEXT),
-            "zone_type_id": props.get(_COL_ZONE_CODE),
-            "zone_name": props.get(_COL_ZONE_NAME),
-            "verdict": verdict,
-            "is_in_correct_zone": fit == "correct",
-            "fit": fit,
-            "reason": props.get(_COL_REASON),
-            "matched_vri_name": props.get(_COL_MATCHED_VRI_NAME),
-            "matched_vri_code": props.get(_COL_MATCHED_VRI_CODE),
-            "resolution_basis": props.get(_COL_RESOLUTION_BASIS),
-        })
+        rows.append(
+            {
+                "feature_index": idx,
+                "vri_text": props.get(_COL_VRI_TEXT),
+                "zone_type_id": props.get(_COL_ZONE_CODE),
+                "zone_name": props.get(_COL_ZONE_NAME),
+                "verdict": verdict,
+                "is_in_correct_zone": fit == "correct",
+                "fit": fit,
+                "reason": props.get(_COL_REASON),
+                "matched_vri_name": props.get(_COL_MATCHED_VRI_NAME),
+                "matched_vri_code": props.get(_COL_MATCHED_VRI_CODE),
+                "resolution_basis": props.get(_COL_RESOLUTION_BASIS),
+            }
+        )
 
     by_verdict: dict[str, int] = {}
     for r in rows:
@@ -1447,7 +1552,12 @@ def build_object_zone_fit_response(
                 "zone_name": row["zone_name"],
                 "pzz_summary": lookup_zone_summary(row["zone_type_id"]),
                 "objects": [],
-                "summary": {"total": 0, "in_correct_zone": 0, "in_wrong_zone": 0, "unclear": 0},
+                "summary": {
+                    "total": 0,
+                    "in_correct_zone": 0,
+                    "in_wrong_zone": 0,
+                    "unclear": 0,
+                },
             }
             zones_by_id[z_id] = bucket
         bucket["objects"].append(row)
@@ -1472,7 +1582,9 @@ def build_object_zone_fit_response(
     }
 
 
-def _build_chat_message_classify(rows: list[dict[str, Any]], summary: dict[str, int]) -> str:
+def _build_chat_message_classify(
+    rows: list[dict[str, Any]], summary: dict[str, int]
+) -> str:
     """Chatbot-friendly plain-text summary for a classify-only run.
 
     Classify-only has no zones / spatial verdict — each object just gets a
@@ -1492,7 +1604,9 @@ def _build_chat_message_classify(rows: list[dict[str, Any]], summary: dict[str, 
         for row in sample:
             obj_label = row.get("vri_text") or "—"
             matched = row.get("matched_vri") or "кандидат не найден"
-            lines.append(f"- #{row['feature_index']}: «{obj_label}» → {_truncate(matched, 200)}")
+            lines.append(
+                f"- #{row['feature_index']}: «{obj_label}» → {_truncate(matched, 200)}"
+            )
         if len(rows) > 10:
             lines.append(f"...и ещё {len(rows) - 10} объектов.")
 
@@ -1546,16 +1660,18 @@ def build_classify_summary_response(
         top1 = props.get(_COL_TOP1_CANDIDATE)
         top5 = props.get(_COL_TOP5_CANDIDATES)
         matched_vri = top1.strip() if isinstance(top1, str) and top1.strip() else None
-        rows.append({
-            "feature_index": idx,
-            "vri_text": props.get(_COL_VRI_TEXT),
-            "matched_vri": matched_vri,
-            "candidates": top5 if isinstance(top5, str) and top5.strip() else None,
-            "reason": props.get(_COL_REASON),
-            # Reuse the object-zone-fit "fit" vocabulary so the shared grounding
-            # context builder can surface the no-candidate objects on big runs.
-            "fit": "matched" if matched_vri else "unclear",
-        })
+        rows.append(
+            {
+                "feature_index": idx,
+                "vri_text": props.get(_COL_VRI_TEXT),
+                "matched_vri": matched_vri,
+                "candidates": top5 if isinstance(top5, str) and top5.strip() else None,
+                "reason": props.get(_COL_REASON),
+                # Reuse the object-zone-fit "fit" vocabulary so the shared grounding
+                # context builder can surface the no-candidate objects on big runs.
+                "fit": "matched" if matched_vri else "unclear",
+            }
+        )
 
     summary = {
         "total": len(rows),

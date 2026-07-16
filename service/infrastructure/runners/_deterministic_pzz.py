@@ -8,6 +8,7 @@ live in the runners; the pieces that don't live here.
 
 Heavy geo deps are imported lazily by the callers, so this module stays cheap.
 """
+
 from __future__ import annotations
 
 import json
@@ -145,8 +146,10 @@ def load_pzz_label_mapping(
     letter indices instead of urban_api ids.
     """
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    entries = raw if isinstance(raw, list) else (
-        raw.get("zones") or raw.get("labels") or raw.get("pzz_zones") or []
+    entries = (
+        raw
+        if isinstance(raw, list)
+        else (raw.get("zones") or raw.get("labels") or raw.get("pzz_zones") or [])
     )
     allowed: dict[str, dict[str, set[str]]] = {}
     nick: dict[str, str] = {}
@@ -204,21 +207,37 @@ def verdict(
 ) -> tuple[str, str, str, str]:
     """Return ``(machine_verdict, reason, matched_vri_code, matched_vri_name)``."""
     if fz_type_id is None:
-        return "no_actual_zone", "Объект не пересекается ни с одной функциональной зоной.", "", ""
+        return (
+            "no_actual_zone",
+            "Объект не пересекается ни с одной функциональной зоной.",
+            "",
+            "",
+        )
     zone_name = zone_nick.get(fz_type_id, str(fz_type_id))
     if vri is None:
         return "unclear", "Для типа объекта нет сопоставленного ВРИ в словаре.", "", ""
     sections = zone_allowed.get(fz_type_id)
     if not sections or not any(sections.values()):
-        return "no_zone_metadata", f"Для зоны «{zone_name}» нет описания разрешённых ВРИ.", vri, ""
+        return (
+            "no_zone_metadata",
+            f"Для зоны «{zone_name}» нет описания разрешённых ВРИ.",
+            vri,
+            "",
+        )
     for section in ("main", "conditional", "auxiliary"):
         if is_allowed(vri, sections.get(section) or set()):
             return (
                 f"allowed_{section}",
                 f"ВРИ {vri} разрешён в зоне «{zone_name}» ({section}).",
-                vri, "",
+                vri,
+                "",
             )
-    return "not_allowed", f"ВРИ {vri} не входит в разрешённые в зоне «{zone_name}».", vri, ""
+    return (
+        "not_allowed",
+        f"ВРИ {vri} не входит в разрешённые в зоне «{zone_name}».",
+        vri,
+        "",
+    )
 
 
 def build_zone_gdf(zones: dict[str, Any], code_col: str, *, numeric: bool = True):
@@ -268,7 +287,9 @@ def join_objects_to_zones(feats: list[dict[str, Any]], zgdf) -> dict[int, Any]:
     from shapely.geometry import shape
 
     o_geom = [shape(f["geometry"]) for f in feats]
-    ogdf = gpd.GeoDataFrame({"_i": list(range(len(feats)))}, geometry=o_geom, crs="EPSG:4326")
+    ogdf = gpd.GeoDataFrame(
+        {"_i": list(range(len(feats)))}, geometry=o_geom, crs="EPSG:4326"
+    )
 
     fz_by_obj: dict[int, int] = {}
     if len(ogdf) and len(zgdf):
@@ -276,8 +297,10 @@ def join_objects_to_zones(feats: list[dict[str, Any]], zgdf) -> dict[int, Any]:
         pts = ogdf.to_crs(metric).copy()
         pts["geometry"] = pts.representative_point()
         joined = gpd.sjoin(
-            pts, zgdf.to_crs(metric)[["fz_type_id", "geometry"]],
-            how="left", predicate="within",
+            pts,
+            zgdf.to_crs(metric)[["fz_type_id", "geometry"]],
+            how="left",
+            predicate="within",
         )
         joined = joined[~joined.index.duplicated(keep="first")]
         for idx, row in joined.iterrows():
@@ -319,7 +342,8 @@ def clean_result_properties(
     props: dict[str, Any] = {
         COL_VRI_TEXT: vri_text,
         COL_ZONE_CODE: (
-            zone_code_display if zone_code_display is not None
+            zone_code_display
+            if zone_code_display is not None
             else (str(fz_type_id) if fz_type_id is not None else "")
         ),
         COL_ZONE_NAME: zone_nick.get(fz_type_id, "") if fz_type_id is not None else "",

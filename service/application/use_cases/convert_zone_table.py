@@ -10,6 +10,7 @@ The mapping from a permission label to its bucket is deterministic substring
 matching on the Russian regulation vocabulary; the column→role mapping is resolved
 upstream (heuristic + LLM) and passed in as ``column_map``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -137,13 +138,9 @@ def convert_zone_table(
             + ", ".join(sorted(unknown_permissions))
         )
     if skipped_no_zone:
-        warnings.append(
-            f"Пропущено строк без кода зоны: {skipped_no_zone}."
-        )
+        warnings.append(f"Пропущено строк без кода зоны: {skipped_no_zone}.")
     if skipped_no_vri:
-        warnings.append(
-            f"Пропущено строк без кода ВРИ: {skipped_no_vri}."
-        )
+        warnings.append(f"Пропущено строк без кода ВРИ: {skipped_no_vri}.")
 
     result: list[dict[str, Any]] = []
     vri_total = 0

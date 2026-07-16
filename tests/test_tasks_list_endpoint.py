@@ -24,7 +24,9 @@ class StubTaskRepo:
 _id_counter = 0
 
 
-def _make_task(external_id: str, status: TaskStatus, created_at: datetime) -> PipelineTask:
+def _make_task(
+    external_id: str, status: TaskStatus, created_at: datetime
+) -> PipelineTask:
     global _id_counter
     _id_counter += 1
     return PipelineTask(
@@ -63,7 +65,9 @@ def test_list_tasks_with_status_filter():
     ]
     client = _make_client(tasks)
 
-    response = client.get("/tasks_list", params={"status": "queued", "limit": 10, "offset": 0})
+    response = client.get(
+        "/tasks_list", params={"status": "queued", "limit": 10, "offset": 0}
+    )
 
     assert response.status_code == 200
     payload = response.json()

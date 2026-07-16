@@ -9,13 +9,13 @@ The backend is chosen at startup based on settings: when both
 ``FILESERVER_ACCESS_KEY`` and ``FILESERVER_SECRET_KEY`` are non-empty MinIO
 is used; otherwise a no-op local backend keeps the existing behaviour.
 """
+
 from __future__ import annotations
 
 import shutil
 from abc import ABC, abstractmethod
 from functools import lru_cache
 from pathlib import Path
-
 
 _MINIO_SCHEME = "minio://"
 
@@ -44,7 +44,9 @@ class ObjectStorage(ABC):
     def delete(self, stored_path: str) -> None:
         """Best-effort delete; never raises."""
 
-    def presigned_url(self, stored_path: str, expires_seconds: int = 3600) -> str | None:
+    def presigned_url(
+        self, stored_path: str, expires_seconds: int = 3600
+    ) -> str | None:
         """Return a time-limited direct download URL, or None if unsupported.
 
         Only the remote (MinIO) backend can mint one; local storage returns
@@ -108,7 +110,7 @@ class MinioStorage(ObjectStorage):
 
     @staticmethod
     def _strip_scheme(path: str) -> str:
-        return path[len(_MINIO_SCHEME):] if path.startswith(_MINIO_SCHEME) else path
+        return path[len(_MINIO_SCHEME) :] if path.startswith(_MINIO_SCHEME) else path
 
     def upload_file(self, local_path: str, object_key: str) -> str:
         self._client.fput_object(self._bucket, object_key, local_path)
@@ -127,7 +129,9 @@ class MinioStorage(ObjectStorage):
         except Exception:  # noqa: BLE001 — delete is best-effort
             pass
 
-    def presigned_url(self, stored_path: str, expires_seconds: int = 3600) -> str | None:
+    def presigned_url(
+        self, stored_path: str, expires_seconds: int = 3600
+    ) -> str | None:
         from datetime import timedelta
 
         object_key = self._strip_scheme(stored_path)

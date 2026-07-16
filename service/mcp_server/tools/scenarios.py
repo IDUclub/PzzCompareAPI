@@ -15,6 +15,7 @@ Parameter model:
 Long runs report progress via ``ctx.report_progress`` so a client on the
 streamable-HTTP transport sees live updates.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -27,7 +28,6 @@ from fastmcp.server.dependencies import get_http_headers
 from ..api_client import ApiClient
 from ..dependencies import get_api_client
 from ..exceptions import map_errors
-
 
 scenarios_mcp = FastMCP("PZZ Pipeline Scenarios")
 

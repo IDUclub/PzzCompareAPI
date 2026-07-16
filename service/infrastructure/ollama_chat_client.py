@@ -19,6 +19,7 @@ Request shape (Ollama):
 Each streamed line is a JSON object ``{"message": {"content": "..."},
 "done": false}``; the final line sets ``"done": true``.
 """
+
 from __future__ import annotations
 
 import json
@@ -71,11 +72,15 @@ class OllamaChatClient:
         if not base_url:
             raise RuntimeError("ollama_base_url is not configured.")
         if not default_model:
-            raise RuntimeError("a chat model must be configured (CHAT_MODEL / GENERATE_MODEL).")
+            raise RuntimeError(
+                "a chat model must be configured (CHAT_MODEL / GENERATE_MODEL)."
+            )
         self._base_url = base_url.rstrip("/")
         self._default_model = default_model
         self._temperature = temperature
-        self._client = httpx.AsyncClient(base_url=self._base_url, timeout=timeout_seconds)
+        self._client = httpx.AsyncClient(
+            base_url=self._base_url, timeout=timeout_seconds
+        )
 
     async def __aenter__(self) -> "OllamaChatClient":
         return self

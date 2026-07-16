@@ -1,4 +1,5 @@
 """Task submission endpoints (pzz-check, classify-only) and their helpers."""
+
 from __future__ import annotations
 
 import json
@@ -187,7 +188,14 @@ def _ingest_geo_upload(
     """
     if is_geojson_filename(upload.filename):
         return _ingest_upload(
-            upload, task_dir, filename, dict, field_name, max_bytes, external_id, storage
+            upload,
+            task_dir,
+            filename,
+            dict,
+            field_name,
+            max_bytes,
+            external_id,
+            storage,
         )
 
     suffix = Path(upload.filename or "").suffix.lower()
@@ -210,7 +218,9 @@ def _ingest_geo_upload(
     finally:
         raw_path.unlink(missing_ok=True)
 
-    return persist_geojson_dict(feature_collection, task_dir, filename, external_id, storage)
+    return persist_geojson_dict(
+        feature_collection, task_dir, filename, external_id, storage
+    )
 
 
 def _upload_to_feature_collection(
@@ -325,16 +335,24 @@ def _create_pipeline_task(
     storage = get_object_storage()
 
     stored_cadastral = _ingest_geo_upload(
-        cadastral_file, task_dir, "cadastral_feature_collection.geojson",
+        cadastral_file,
+        task_dir,
+        "cadastral_feature_collection.geojson",
         "cadastral_feature_collection_file",
-        app_settings.max_upload_bytes, external_id, storage,
+        app_settings.max_upload_bytes,
+        external_id,
+        storage,
     )
 
     if pzz_zones_file is not None:
         stored_pzz_zones = _ingest_geo_upload(
-            pzz_zones_file, task_dir, "pzz_zones_feature_collection.geojson",
+            pzz_zones_file,
+            task_dir,
+            "pzz_zones_feature_collection.geojson",
             "pzz_zones_feature_collection_file",
-            app_settings.max_upload_bytes, external_id, storage,
+            app_settings.max_upload_bytes,
+            external_id,
+            storage,
         )
     else:
         stored_pzz_zones = ""
@@ -348,17 +366,27 @@ def _create_pipeline_task(
         # mapping matching whichever backend the zone codes imply.
         if labels_file is not None:
             stored_labels = _ingest_upload(
-                labels_file, task_dir, "pzz_zone_descriptions.json",
-                (dict, list), "pzz_descriptions_file",
-                app_settings.max_upload_bytes, external_id, storage,
+                labels_file,
+                task_dir,
+                "pzz_zone_descriptions.json",
+                (dict, list),
+                "pzz_descriptions_file",
+                app_settings.max_upload_bytes,
+                external_id,
+                storage,
             )
         else:
             stored_labels = ""
     elif labels_file is not None:
         stored_labels = _ingest_upload(
-            labels_file, task_dir, "pzz_zone_vri_labels.json",
-            list, "pzz_zone_vri_labels_file",
-            app_settings.max_upload_bytes, external_id, storage,
+            labels_file,
+            task_dir,
+            "pzz_zone_vri_labels.json",
+            list,
+            "pzz_zone_vri_labels_file",
+            app_settings.max_upload_bytes,
+            external_id,
+            storage,
         )
     elif include_pzz_check:
         stored_labels = str(Path(app_settings.default_pzz_zone_labels_path).resolve())
@@ -367,12 +395,19 @@ def _create_pipeline_task(
 
     if classifier_file is not None:
         stored_classifier = _ingest_upload(
-            classifier_file, task_dir, "vri_classifier.json",
-            (dict, list), "vri_classifier_file",
-            app_settings.max_upload_bytes, external_id, storage,
+            classifier_file,
+            task_dir,
+            "vri_classifier.json",
+            (dict, list),
+            "vri_classifier_file",
+            app_settings.max_upload_bytes,
+            external_id,
+            storage,
         )
     else:
-        stored_classifier = str(Path(app_settings.default_vri_classifier_path).resolve())
+        stored_classifier = str(
+            Path(app_settings.default_vri_classifier_path).resolve()
+        )
 
     input_paths = {
         "cadastral_data_path": stored_cadastral,
@@ -425,10 +460,13 @@ def _create_pipeline_task(
     session.flush()
     session.refresh(task)
     api_log(
-        "create_task", "accepted",
-        task_id=task.id, external_id=task.external_id,
+        "create_task",
+        "accepted",
+        task_id=task.id,
+        external_id=task.external_id,
         mode=(
-            "building_pzz_check" if building_upload
+            "building_pzz_check"
+            if building_upload
             else ("pzz_check" if include_pzz_check else "classify_only")
         ),
     )
@@ -499,7 +537,9 @@ def create_pzz_check_task_endpoint(
     )
 
 
-create_pzz_check_task_endpoint.__doc__ = (create_pzz_check_task_endpoint.__doc__ or "") + "\n    " + _TASK_RERUN_DOCSTRING
+create_pzz_check_task_endpoint.__doc__ = (
+    (create_pzz_check_task_endpoint.__doc__ or "") + "\n    " + _TASK_RERUN_DOCSTRING
+)
 
 
 @router.post("/classify-only", response_model=TaskOut)
@@ -544,7 +584,11 @@ def create_classify_only_task_endpoint(
     )
 
 
-create_classify_only_task_endpoint.__doc__ = (create_classify_only_task_endpoint.__doc__ or "") + "\n    " + _TASK_RERUN_DOCSTRING
+create_classify_only_task_endpoint.__doc__ = (
+    (create_classify_only_task_endpoint.__doc__ or "")
+    + "\n    "
+    + _TASK_RERUN_DOCSTRING
+)
 
 
 @router.post("/pzz-check/stream")
@@ -725,7 +769,9 @@ async def create_pzz_check_chat_stream_endpoint(
     client (native EventSource cannot POST multipart or set Authorization).
     """
     if group_by not in ("zone", "object"):
-        raise HTTPException(status_code=422, detail="group_by must be 'zone' or 'object'")
+        raise HTTPException(
+            status_code=422, detail="group_by must be 'zone' or 'object'"
+        )
 
     task_out = await run_in_threadpool(
         _create_pipeline_task,
@@ -904,11 +950,17 @@ async def _run_building_pzz_auto(
     try:
         buildings_fc = await run_in_threadpool(
             _upload_to_feature_collection,
-            buildings_file, detect_dir, "buildings_feature_collection_file", max_bytes,
+            buildings_file,
+            detect_dir,
+            "buildings_feature_collection_file",
+            max_bytes,
         )
         zones_fc = await run_in_threadpool(
             _upload_to_feature_collection,
-            zones_file, detect_dir, "pzz_zones_feature_collection_file", max_bytes,
+            zones_file,
+            detect_dir,
+            "pzz_zones_feature_collection_file",
+            max_bytes,
         )
     finally:
         shutil.rmtree(detect_dir, ignore_errors=True)
@@ -922,7 +974,10 @@ async def _run_building_pzz_auto(
         )
         suggestions.update(
             await detect_columns_for_file(
-                ollama_client, zones_fc, [ZONE_CODE_TARGET, ZONE_NAME_TARGET], model=model
+                ollama_client,
+                zones_fc,
+                [ZONE_CODE_TARGET, ZONE_NAME_TARGET],
+                model=model,
             )
         )
     narrative = render_detection_narrative(suggestions, announce_targets)
@@ -968,7 +1023,9 @@ async def _run_building_pzz_auto(
             "разрешённых ВРИ вашего ПЗЗ (поле pzz_descriptions_file) и повторите."
         )
         return EventSourceResponse(
-            zone_review_generator(narrative, detail, action="suggest_upload", suggestions=None)
+            zone_review_generator(
+                narrative, detail, action="suggest_upload", suggestions=None
+            )
         )
     if review.action == "confirm":
         candidates = template_candidates(app_settings.default_pzz_zone_labels_path)
@@ -976,11 +1033,15 @@ async def _run_building_pzz_auto(
         llm_available = True
         try:
             async with build_ollama_chat_client(app_settings) as ollama_client:
-                parsed = await ollama_client.complete_json(messages, schema=schema, model=model)
+                parsed = await ollama_client.complete_json(
+                    messages, schema=schema, model=model
+                )
         except (OllamaChatError, httpx.HTTPError) as exc:
             # No suggestions possible without the model — degrade to the upload
             # ask rather than 500 the whole request.
-            logger.warning("zone-suggestion LLM call failed (%s); asking for upload", exc)
+            logger.warning(
+                "zone-suggestion LLM call failed (%s); asking for upload", exc
+            )
             parsed, llm_available = {}, False
         if not llm_available:
             detail = (
@@ -990,7 +1051,9 @@ async def _run_building_pzz_auto(
                 "и повторите."
             )
             return EventSourceResponse(
-                zone_review_generator(narrative, detail, action="suggest_upload", suggestions=None)
+                zone_review_generator(
+                    narrative, detail, action="suggest_upload", suggestions=None
+                )
             )
         picks = parse_suggestions(review.uncovered, parsed, candidates)
         by_code = {c["code"]: c["name"] for c in candidates}
@@ -1009,7 +1072,9 @@ async def _run_building_pzz_auto(
             "confirmed_zone_map."
         )
         return EventSourceResponse(
-            zone_review_generator(narrative, detail, action="confirm", suggestions=payload)
+            zone_review_generator(
+                narrative, detail, action="confirm", suggestions=payload
+            )
         )
 
     # action == "proceed". Build the confirmed overlay (if any), and prepend the
@@ -1019,10 +1084,16 @@ async def _run_building_pzz_auto(
         overlay = build_confirmed_overlay(
             app_settings.default_pzz_zone_labels_path, confirmed_zone_map
         )
-        effective_descriptions = _json_upload(overlay, "pzz_zone_confirmed_overlay.json")
+        effective_descriptions = _json_upload(
+            overlay, "pzz_zone_confirmed_overlay.json"
+        )
     if review.approximate:
-        narrative = narrative + "\n\n" + build_disclaimer(
-            remaining_uncovered(review.uncovered, confirmed_zone_map)
+        narrative = (
+            narrative
+            + "\n\n"
+            + build_disclaimer(
+                remaining_uncovered(review.uncovered, confirmed_zone_map)
+            )
         )
 
     task_out = await run_in_threadpool(
@@ -1133,7 +1204,9 @@ async def create_auto_chat_stream_endpoint(
             detail="mode must be 'pzz_check', 'classify_only' or 'building_pzz_check'",
         )
     if group_by not in ("zone", "object"):
-        raise HTTPException(status_code=422, detail="group_by must be 'zone' or 'object'")
+        raise HTTPException(
+            status_code=422, detail="group_by must be 'zone' or 'object'"
+        )
 
     if mode == "building_pzz_check":
         if pzz_zones_feature_collection_file is None:
@@ -1208,7 +1281,9 @@ async def create_auto_chat_stream_endpoint(
     finally:
         shutil.rmtree(detect_dir, ignore_errors=True)
 
-    targets = list(CADASTRAL_TARGETS) + (list(PZZ_ZONE_TARGETS) if include_pzz_check else [])
+    targets = list(CADASTRAL_TARGETS) + (
+        list(PZZ_ZONE_TARGETS) if include_pzz_check else []
+    )
     async with build_ollama_chat_client(app_settings) as ollama_client:
         suggestions = await detect_columns_for_file(
             ollama_client, cadastral_fc, CADASTRAL_TARGETS, model=model
@@ -1224,7 +1299,8 @@ async def create_auto_chat_stream_endpoint(
     if not required_columns_resolved(suggestions, targets):
         return EventSourceResponse(
             detection_failed_generator(
-                narrative, "не удалось определить обязательные колонки из загруженных данных"
+                narrative,
+                "не удалось определить обязательные колонки из загруженных данных",
             )
         )
 
@@ -1236,8 +1312,12 @@ async def create_auto_chat_stream_endpoint(
         classifier_file=vri_classifier_file,
         include_pzz_check=include_pzz_check,
         cadastral_vri_col=suggestions["cadastral_vri_col"].value,
-        pzz_zone_code_col=(suggestions.get("pzz_zone_code_col").value if include_pzz_check else ""),
-        pzz_zone_name_col=(suggestions.get("pzz_zone_name_col").value if include_pzz_check else ""),
+        pzz_zone_code_col=(
+            suggestions.get("pzz_zone_code_col").value if include_pzz_check else ""
+        ),
+        pzz_zone_name_col=(
+            suggestions.get("pzz_zone_name_col").value if include_pzz_check else ""
+        ),
         priority=priority,
         retry_failed=False,
         force_recompute=force_recompute,

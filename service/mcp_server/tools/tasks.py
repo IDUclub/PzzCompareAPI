@@ -9,6 +9,7 @@ intent from prose.
 Upstream errors are translated to JSON-RPC error codes via
 ``@map_errors`` so the LLM sees actionable messages, not stack traces.
 """
+
 from __future__ import annotations
 
 from typing import Annotated, Any
@@ -19,7 +20,6 @@ from fastmcp.dependencies import Depends
 from ..api_client import ApiClient
 from ..dependencies import get_api_client
 from ..exceptions import map_errors
-
 
 tasks_mcp = FastMCP("PZZ Pipeline Tasks")
 
@@ -90,7 +90,9 @@ async def submit_classify_only_task(
         "Property name holding the cadastral VRI text (e.g. 'Вид разреш').",
     ],
     priority: Annotated[int, "Scheduling priority 1-10."] = 1,
-    force_recompute: Annotated[bool, "Force re-run when Idempotency-Key matches."] = False,
+    force_recompute: Annotated[
+        bool, "Force re-run when Idempotency-Key matches."
+    ] = False,
     api: ApiClient = Depends(get_api_client),
 ) -> dict[str, Any]:
     return await api.submit_classify_only(
@@ -138,11 +140,15 @@ NEXT STEP: poll get_task_status(external_id) until terminal status, then call ge
 )
 @map_errors
 async def submit_pzz_check_task(
-    cadastral_geojson: Annotated[dict[str, Any], "Cadastral parcels GeoJSON in EPSG:4326."],
+    cadastral_geojson: Annotated[
+        dict[str, Any], "Cadastral parcels GeoJSON in EPSG:4326."
+    ],
     pzz_zones_geojson: Annotated[dict[str, Any], "PZZ zones GeoJSON in EPSG:4326."],
     cadastral_vri_col: Annotated[str, "Property name with cadastral VRI text."],
     pzz_zone_code_col: Annotated[str, "Property name with PZZ zone code."],
-    pzz_zone_name_col: Annotated[str, "Property name with PZZ zone human-readable name."],
+    pzz_zone_name_col: Annotated[
+        str, "Property name with PZZ zone human-readable name."
+    ],
     priority: Annotated[int, "Scheduling priority 1-10."] = 1,
     force_recompute: Annotated[bool, "Force re-run."] = False,
     api: ApiClient = Depends(get_api_client),

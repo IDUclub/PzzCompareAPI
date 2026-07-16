@@ -5,6 +5,7 @@ Endpoint logic lives in ``service/api/*`` routers, grouped by concern:
 This module only wires the app: startup lifecycle, dependency init,
 config defaults, and ``include_router`` calls.
 """
+
 import logging
 import os
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -23,7 +24,9 @@ from .dependencies import (
     keycloak_service_configured,
     set_service_token_client,
 )
-from .infrastructure.repositories.sqlalchemy_config_repository import SqlAlchemyConfigRepository
+from .infrastructure.repositories.sqlalchemy_config_repository import (
+    SqlAlchemyConfigRepository,
+)
 from .log_sink import setup_redis_sink
 from .logging_config import setup_logging
 from .settings import get_settings
@@ -40,6 +43,7 @@ def _run_migrations() -> None:
     so multiple replicas starting simultaneously won't conflict.
     """
     import pathlib
+
     project_root = pathlib.Path(__file__).resolve().parent.parent
     alembic_cfg = AlembicConfig(str(project_root / "alembic.ini"))
     alembic_command.upgrade(alembic_cfg, "head")
