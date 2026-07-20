@@ -1,0 +1,5 @@
+# Development tooling (not needed at runtime).
+# Install:  pip install -r requirements-dev.txt
+# Then:     pre-commit install
+black==26.5.1
+pre-commit==4.6.0

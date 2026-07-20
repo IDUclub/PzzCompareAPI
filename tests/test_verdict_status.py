@@ -1,4 +1,5 @@
 """ICII-57: ``Вердикт_ПЗЗ`` now holds the Russian label (not machine ``allowed_main``)."""
+
 import json
 from pathlib import Path
 
@@ -32,29 +33,55 @@ def test_object_zone_fit_reads_status_and_ignores_urban_api(tmp_path: Path):
     result = {
         "type": "FeatureCollection",
         "features": [
-            {"type": "Feature", "geometry": None, "properties": {
-                "Вердикт_ПЗЗ": "Разрешен", "ВРИ_ЕГРН": "Ж",
-                "Код фактической зоны нахождения кадастра": "Ж-1",
-                # urban_api passthrough must not affect the report:
-                "PHYSICAL_OBJECT_ID": 411484, "physical_object_type": {"name": "Жилой дом"}}},
-            {"type": "Feature", "geometry": None, "properties": {
-                "Вердикт_ПЗЗ": "Не разрешен", "ВРИ_ЕГРН": "П",
-                "Код фактической зоны нахождения кадастра": "П-1"}},
-            {"type": "Feature", "geometry": None, "properties": {
-                # no zone → counts toward not_in_zone
-                "Вердикт_ПЗЗ": "Нет пересечения с ПЗЗ"}},
+            {
+                "type": "Feature",
+                "geometry": None,
+                "properties": {
+                    "Вердикт_ПЗЗ": "Разрешен",
+                    "ВРИ_ЕГРН": "Ж",
+                    "Код фактической зоны нахождения кадастра": "Ж-1",
+                    # urban_api passthrough must not affect the report:
+                    "PHYSICAL_OBJECT_ID": 411484,
+                    "physical_object_type": {"name": "Жилой дом"},
+                },
+            },
+            {
+                "type": "Feature",
+                "geometry": None,
+                "properties": {
+                    "Вердикт_ПЗЗ": "Не разрешен",
+                    "ВРИ_ЕГРН": "П",
+                    "Код фактической зоны нахождения кадастра": "П-1",
+                },
+            },
+            {
+                "type": "Feature",
+                "geometry": None,
+                "properties": {
+                    # no zone → counts toward not_in_zone
+                    "Вердикт_ПЗЗ": "Нет пересечения с ПЗЗ"
+                },
+            },
         ],
     }
     f = tmp_path / "r.geojson"
     f.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
 
-    resp = build_object_zone_fit_response(_Task(str(f)), "ext-1", "object", _settings(tmp_path))
+    resp = build_object_zone_fit_response(
+        _Task(str(f)), "ext-1", "object", _settings(tmp_path)
+    )
 
     assert resp["summary"] == {
-        "total": 3, "in_correct_zone": 1, "in_wrong_zone": 1, "unclear": 1,
-        "zones_count": 2, "not_in_zone": 1,
+        "total": 3,
+        "in_correct_zone": 1,
+        "in_wrong_zone": 1,
+        "unclear": 1,
+        "zones_count": 2,
+        "not_in_zone": 1,
         "by_verdict": {"Разрешен": 1, "Не разрешен": 1, "Нет пересечения с ПЗЗ": 1},
     }
     assert [o["verdict"] for o in resp["objects"]] == [
-        "Разрешен", "Не разрешен", "Нет пересечения с ПЗЗ"
+        "Разрешен",
+        "Не разрешен",
+        "Нет пересечения с ПЗЗ",
     ]

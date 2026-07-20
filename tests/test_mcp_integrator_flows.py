@@ -29,7 +29,12 @@ class FakeScenarioApi:
         self.task = task
         self.report = report or {
             "task_external_id": "sc-task",
-            "summary": {"total": 0, "in_correct_zone": 0, "in_wrong_zone": 0, "unclear": 0},
+            "summary": {
+                "total": 0,
+                "in_correct_zone": 0,
+                "in_wrong_zone": 0,
+                "unclear": 0,
+            },
             "chat_message": "ok",
             "zones": [],
         }
@@ -50,7 +55,9 @@ class FakeScenarioApi:
 
 
 def test_mcp_get_task_result_returns_actionable_status_when_running():
-    api = FakeTaskApi({"external_id": "task-1", "status": "running", "error_text": None})
+    api = FakeTaskApi(
+        {"external_id": "task-1", "status": "running", "error_text": None}
+    )
 
     result = _run(get_task_result("task-1", api=api))
 
@@ -85,7 +92,9 @@ def test_mcp_get_task_result_downloads_geojson_when_finished():
 
 
 def test_mcp_scenario_report_returns_actionable_status_when_not_finished():
-    api = FakeScenarioApi({"external_id": "sc-task", "status": "queued", "error_text": None})
+    api = FakeScenarioApi(
+        {"external_id": "sc-task", "status": "queued", "error_text": None}
+    )
 
     result = _run(get_scenario_classification_report(42, "sc-task", api=api))
 

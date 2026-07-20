@@ -1,4 +1,5 @@
 """Tests for LLM-assisted column detection (auto detect+run flow)."""
+
 import asyncio
 import json
 
@@ -24,8 +25,11 @@ def _fc(rows: list[dict]) -> dict:
     return {
         "type": "FeatureCollection",
         "features": [
-            {"type": "Feature", "geometry": {"type": "Point", "coordinates": [0, 0]},
-             "properties": row}
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [0, 0]},
+                "properties": row,
+            }
             for row in rows
         ],
     }
@@ -54,12 +58,15 @@ class RecordingFakeOllama:
 
 # --- profiling -------------------------------------------------------------
 
+
 def test_profile_columns_excludes_geometry_and_dedups_samples() -> None:
-    fc = _fc([
-        {"vri_name": "Для ИЖС", "index": "Ж-1"},
-        {"vri_name": "Для ИЖС", "index": "О-2"},
-        {"vri_name": "Многоэтажная жилая застройка", "index": "Ж-1"},
-    ])
+    fc = _fc(
+        [
+            {"vri_name": "Для ИЖС", "index": "Ж-1"},
+            {"vri_name": "Для ИЖС", "index": "О-2"},
+            {"vri_name": "Многоэтажная жилая застройка", "index": "Ж-1"},
+        ]
+    )
     profiles = {p.name: p for p in profile_columns(fc)}
     assert set(profiles) == {"vri_name", "index"}  # no "geometry"
     assert profiles["vri_name"].dtype == "str"
@@ -70,29 +77,35 @@ def test_profile_columns_excludes_geometry_and_dedups_samples() -> None:
 
 def test_profile_columns_truncates_long_values() -> None:
     long = "x" * 200
-    profiles = {p.name: p for p in profile_columns(_fc([{"c": long}]), max_value_chars=10)}
+    profiles = {
+        p.name: p for p in profile_columns(_fc([{"c": long}]), max_value_chars=10)
+    }
     assert profiles["c"].samples == ["x" * 10 + "…"]
 
 
 # --- heuristics ------------------------------------------------------------
 
+
 def test_heuristic_ignores_code_companion_decoy() -> None:
     # Regression: when the real VRI column is named non-standardly, the numeric
     # "Код_<known>" companion must NOT be picked by the heuristic — it should
     # return None and defer to the LLM (else it silently classifies on codes).
-    fc = _fc([
-        {"permitted_use": "Для ИЖС", "Код_Вид_разрешенного_исп": "13.2"},
-        {"permitted_use": "Ведение садоводства", "Код_Вид_разрешенного_исп": "12.0"},
-    ])
+    fc = _fc(
+        [
+            {"permitted_use": "Для ИЖС", "Код_Вид_разрешенного_исп": "13.2"},
+            {
+                "permitted_use": "Ведение садоводства",
+                "Код_Вид_разрешенного_исп": "12.0",
+            },
+        ]
+    )
     assert _heuristic_match(VRI_TARGET, profile_columns(fc)) is None
 
 
 def test_heuristic_resolves_known_defaults_without_llm() -> None:
     fc = _fc([{"Индекс_зоны": "Ж-1", "Код_объекта": "Зона Ж-1"}])
     fake = RecordingFakeOllama()
-    suggestions = asyncio.run(
-        detect_columns_for_file(fake, fc, PZZ_ZONE_TARGETS)
-    )
+    suggestions = asyncio.run(detect_columns_for_file(fake, fc, PZZ_ZONE_TARGETS))
     assert suggestions["pzz_zone_code_col"].value == "Индекс_зоны"
     assert suggestions["pzz_zone_code_col"].source == "heuristic"
     assert suggestions["pzz_zone_name_col"].value == "Код_объекта"
@@ -127,18 +140,24 @@ def test_building_service_column_resolved_when_only_in_late_features() -> None:
     feats = [{"physical_object_type_id": 4} for _ in range(1500)]
     feats += [{"service_type_id": 22} for _ in range(20)]
     fake = RecordingFakeOllama()
-    suggestions = asyncio.run(detect_columns_for_file(fake, _fc(feats), BUILDING_TARGETS))
+    suggestions = asyncio.run(
+        detect_columns_for_file(fake, _fc(feats), BUILDING_TARGETS)
+    )
     # type + service resolve by heuristic (floors is absent -> defers to LLM)
     assert suggestions["building_type_col"].value == "physical_object_type_id"
     assert suggestions["building_service_col"].value == "service_type_id"
 
 
 def test_building_text_name_columns_resolve_by_heuristic() -> None:
-    fc = _fc([{
-        "physical_object_type_name": "Жилой дом",
-        "service_type_name": "Школа",
-        "floors": 5,
-    }])
+    fc = _fc(
+        [
+            {
+                "physical_object_type_name": "Жилой дом",
+                "service_type_name": "Школа",
+                "floors": 5,
+            }
+        ]
+    )
     fake = RecordingFakeOllama()
     suggestions = asyncio.run(detect_columns_for_file(fake, fc, BUILDING_TARGETS))
     assert suggestions["building_type_col"].value == "physical_object_type_name"
@@ -148,6 +167,7 @@ def test_building_text_name_columns_resolve_by_heuristic() -> None:
 
 
 # --- LLM fallback + enum constraint ---------------------------------------
+
 
 def test_llm_resolves_unknown_column_names() -> None:
     fc = _fc([{"permitted_use": "Для ИЖС", "other": "x"}])
@@ -183,6 +203,7 @@ def test_llm_error_degrades_to_none() -> None:
 
 # --- narrative + required check -------------------------------------------
 
+
 def test_narrative_lists_recognised_and_missing() -> None:
     fc = _fc([{"permitted_use": "Для ИЖС"}])
     fake = RecordingFakeOllama(
@@ -207,8 +228,11 @@ def test_required_not_resolved_when_missing() -> None:
 
 # --- complete_json client (structured output) -----------------------------
 
+
 def _real_client(handler) -> OllamaChatClient:
-    client = OllamaChatClient(base_url="http://llm.local", default_model="m", timeout_seconds=5)
+    client = OllamaChatClient(
+        base_url="http://llm.local", default_model="m", timeout_seconds=5
+    )
     client._client = httpx.AsyncClient(
         base_url="http://llm.local", transport=httpx.MockTransport(handler)
     )
@@ -221,7 +245,12 @@ def test_complete_json_sends_format_and_parses_content() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         seen["body"] = json.loads(request.content)
         return httpx.Response(
-            200, json={"message": {"content": json.dumps({"cadastral_vri_col": {"column": "a"}})}}
+            200,
+            json={
+                "message": {
+                    "content": json.dumps({"cadastral_vri_col": {"column": "a"}})
+                }
+            },
         )
 
     async def run():
@@ -254,7 +283,9 @@ def test_complete_json_recovers_json_from_reasoning_wrapper() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["body"] = json.loads(request.content)
-        content = 'Let me think...\nThe answer is:\n```json\n{"n0": 26, "n1": null}\n```\n'
+        content = (
+            'Let me think...\nThe answer is:\n```json\n{"n0": 26, "n1": null}\n```\n'
+        )
         return httpx.Response(200, json={"message": {"content": content}})
 
     async def run():

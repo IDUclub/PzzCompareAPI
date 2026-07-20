@@ -13,6 +13,7 @@ physical_object_type. Re-run after editing ``_CODE_TO_VRI``:
 
     python -m scripts.build_service_type_to_vri
 """
+
 from __future__ import annotations
 
 import json
@@ -203,9 +204,7 @@ def build() -> dict[str, Any]:
 
 def main() -> None:
     result = build()
-    _DST.write_text(
-        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    _DST.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     meta = result["metadata"]
     print(
         f"wrote {_DST}: {meta['resolved']}/{meta['total']} resolved; "

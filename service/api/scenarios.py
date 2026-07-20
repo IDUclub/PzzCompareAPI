@@ -10,6 +10,7 @@ same as the upload path.
 Auth: the user's incoming ``Authorization: Bearer ...`` header is
 forwarded to urban_api verbatim.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -18,7 +19,16 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Form, Header, HTTPException, Path as FastPath, Query, Request as FastRequest
+from fastapi import (
+    APIRouter,
+    Depends,
+    Form,
+    Header,
+    HTTPException,
+    Path as FastPath,
+    Query,
+    Request as FastRequest,
+)
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
@@ -34,7 +44,9 @@ from ..infrastructure.pzz_mapping import (
     lookup_zone_summary,
     mapping_version,
 )
-from ..infrastructure.repositories.sqlalchemy_task_repository import SqlAlchemyTaskRepository
+from ..infrastructure.repositories.sqlalchemy_task_repository import (
+    SqlAlchemyTaskRepository,
+)
 from ..infrastructure.storage import get_object_storage
 from ..infrastructure.urban_api_client import UrbanApiClient, UrbanApiError
 from ..models import PipelineTask, TaskEvent, TaskStatus
@@ -95,7 +107,9 @@ def _get_scenario_task_or_404(
 
 def _raise_urban_api_http_exception(exc: UrbanApiError) -> None:
     if exc.status in {401, 403, 404}:
-        raise HTTPException(status_code=exc.status, detail=f"urban_api: {exc.body}") from exc
+        raise HTTPException(
+            status_code=exc.status, detail=f"urban_api: {exc.body}"
+        ) from exc
     raise HTTPException(status_code=502, detail=f"urban_api: {exc}") from exc
 
 
@@ -138,7 +152,9 @@ def _flatten_physical_object_features(
         props = feature.setdefault("properties", {})
         po_type = props.get("physical_object_type") or {}
         type_name = (po_type.get("name") if isinstance(po_type, dict) else None) or ""
-        nested = props.get("properties") if isinstance(props.get("properties"), dict) else {}
+        nested = (
+            props.get("properties") if isinstance(props.get("properties"), dict) else {}
+        )
         floors = nested.get("Количество этажей") or props.get("Количество этажей")
         if type_name and floors:
             props[vri_col] = f"{type_name}, {floors} этажей"
@@ -199,7 +215,9 @@ def _persist_and_create_scenario_task(
     Synchronous and I/O-heavy (three MinIO writes); intended to run in a
     threadpool so the API event loop stays responsive under concurrent submits.
     """
-    objects_fc = _flatten_physical_object_features(objects_fc, vri_col=_CADASTRAL_VRI_COL)
+    objects_fc = _flatten_physical_object_features(
+        objects_fc, vri_col=_CADASTRAL_VRI_COL
+    )
     zones_fc = _flatten_functional_zone_features(
         zones_fc, code_col=_PZZ_ZONE_CODE_COL, name_col=_PZZ_ZONE_NAME_COL
     )
@@ -209,7 +227,11 @@ def _persist_and_create_scenario_task(
     storage = get_object_storage()
 
     stored_cadastral = persist_geojson_dict(
-        objects_fc, task_dir, "cadastral_feature_collection.geojson", external_id, storage
+        objects_fc,
+        task_dir,
+        "cadastral_feature_collection.geojson",
+        external_id,
+        storage,
     )
     stored_pzz_zones = persist_geojson_dict(
         zones_fc, task_dir, "pzz_zones_feature_collection.geojson", external_id, storage
@@ -221,7 +243,9 @@ def _persist_and_create_scenario_task(
         code = (props.get(_PZZ_ZONE_CODE_COL) or "").strip()
         if code and code not in observed_zone_types:
             observed_zone_types[code] = props.get(_PZZ_ZONE_NAME_COL) or None
-    scenario_labels = build_pipeline_zone_labels(observed_zone_types=observed_zone_types)
+    scenario_labels = build_pipeline_zone_labels(
+        observed_zone_types=observed_zone_types
+    )
     stored_labels = persist_geojson_dict(
         scenario_labels, task_dir, "pzz_zone_vri_labels.json", external_id, storage
     )
@@ -230,7 +254,9 @@ def _persist_and_create_scenario_task(
         "cadastral_data_path": stored_cadastral,
         "pzz_zones_data_path": stored_pzz_zones,
         "pzz_zone_vri_labels_path": stored_labels,
-        "vri_classifier_path": str(Path(app_settings.default_vri_classifier_path).resolve()),
+        "vri_classifier_path": str(
+            Path(app_settings.default_vri_classifier_path).resolve()
+        ),
     }
 
     payload = TaskCreate(
@@ -349,7 +375,11 @@ async def _build_scenario_classification_task(
             raise HTTPException(status_code=502, detail=f"urban_api: {exc}") from exc
 
         wants = (int(year), source)
-        available = [(int(s.get("year")), s.get("source")) for s in sources if s.get("year") is not None]
+        available = [
+            (int(s.get("year")), s.get("source"))
+            for s in sources
+            if s.get("year") is not None
+        ]
         if wants not in available:
             raise HTTPException(
                 status_code=422,
@@ -485,7 +515,9 @@ async def classify_scenario_stream_endpoint(
     fetch-based SSE client.
     """
     if group_by not in ("zone", "object"):
-        raise HTTPException(status_code=422, detail="group_by must be 'zone' or 'object'")
+        raise HTTPException(
+            status_code=422, detail="group_by must be 'zone' or 'object'"
+        )
 
     task = await _build_scenario_classification_task(
         scenario_id=scenario_id,
@@ -585,7 +617,9 @@ async def scenario_chat_stream_endpoint(
     fetch-based SSE client.
     """
     if group_by not in ("zone", "object"):
-        raise HTTPException(status_code=422, detail="group_by must be 'zone' or 'object'")
+        raise HTTPException(
+            status_code=422, detail="group_by must be 'zone' or 'object'"
+        )
 
     # The user's token is forwarded to urban_api (still fresh at request start);
     # the user's id (sub) is what ChatStorage needs, sent later via the service
@@ -679,16 +713,18 @@ async def get_scenario_zones_info(
         else:
             zone_type_id = None
             zone_type_name = None
-        items.append({
-            "functional_zone_id": props.get("functional_zone_id"),
-            "zone_type_id": zone_type_id,
-            "zone_type_name": zone_type_name,
-            "name": props.get("name"),
-            "year": props.get("year"),
-            "source": props.get("source"),
-            "properties": props.get("properties"),
-            "pzz_summary": lookup_zone_summary(zone_type_id),
-        })
+        items.append(
+            {
+                "functional_zone_id": props.get("functional_zone_id"),
+                "zone_type_id": zone_type_id,
+                "zone_type_name": zone_type_name,
+                "name": props.get("name"),
+                "year": props.get("year"),
+                "source": props.get("source"),
+                "properties": props.get("properties"),
+                "pzz_summary": lookup_zone_summary(zone_type_id),
+            }
+        )
 
     return {
         "scenario_id": scenario_id,
@@ -877,24 +913,28 @@ async def _scenario_task_sse_generator(
                 else:
                     zone_type_id = None
                     zone_type_name = None
-                items.append({
-                    "functional_zone_id": props.get("functional_zone_id"),
-                    "zone_type_id": zone_type_id,
-                    "zone_type_name": zone_type_name,
-                    "name": props.get("name"),
-                    "year": props.get("year"),
-                    "source": props.get("source"),
-                    "properties": props.get("properties"),
-                    "pzz_summary": lookup_zone_summary(zone_type_id),
-                })
+                items.append(
+                    {
+                        "functional_zone_id": props.get("functional_zone_id"),
+                        "zone_type_id": zone_type_id,
+                        "zone_type_name": zone_type_name,
+                        "name": props.get("name"),
+                        "year": props.get("year"),
+                        "source": props.get("source"),
+                        "properties": props.get("properties"),
+                        "pzz_summary": lookup_zone_summary(zone_type_id),
+                    }
+                )
             yield ServerSentEvent(
-                data=json.dumps({
-                    "scenario_id": scenario_id,
-                    "year": year,
-                    "source": source,
-                    "total": len(items),
-                    "items": items,
-                }),
+                data=json.dumps(
+                    {
+                        "scenario_id": scenario_id,
+                        "year": year,
+                        "source": source,
+                        "total": len(items),
+                        "items": items,
+                    }
+                ),
                 event="zones_info",
             )
         except Exception:
@@ -914,19 +954,27 @@ async def _scenario_task_sse_generator(
             ).scalar_one_or_none()
 
             if task is None:
-                yield ServerSentEvent(data=json.dumps({"error": "Task not found"}), event="error")
+                yield ServerSentEvent(
+                    data=json.dumps({"error": "Task not found"}), event="error"
+                )
                 break
 
-            new_events = session.execute(
-                select(TaskEvent)
-                .where(TaskEvent.task_id == task.id, TaskEvent.id > last_event_id)
-                .order_by(TaskEvent.id.asc())
-            ).scalars().all()
+            new_events = (
+                session.execute(
+                    select(TaskEvent)
+                    .where(TaskEvent.task_id == task.id, TaskEvent.id > last_event_id)
+                    .order_by(TaskEvent.id.asc())
+                )
+                .scalars()
+                .all()
+            )
 
             for ev in new_events:
                 last_event_id = ev.id
                 yield ServerSentEvent(
-                    data=json.dumps(TaskEventOut.model_validate(ev).model_dump(mode="json")),
+                    data=json.dumps(
+                        TaskEventOut.model_validate(ev).model_dump(mode="json")
+                    ),
                     event="task_event",
                 )
 
@@ -934,7 +982,9 @@ async def _scenario_task_sse_generator(
             if current_status != last_status:
                 last_status = current_status
                 yield ServerSentEvent(
-                    data=json.dumps(TaskOut.model_validate(task).model_dump(mode="json")),
+                    data=json.dumps(
+                        TaskOut.model_validate(task).model_dump(mode="json")
+                    ),
                     event="status",
                 )
 
@@ -942,7 +992,9 @@ async def _scenario_task_sse_generator(
                 # 3. On success emit object_zone_fit and result
                 if current_status == TaskStatus.finished:
                     try:
-                        ozone = build_object_zone_fit_response(task, external_id, "zone", app_settings)
+                        ozone = build_object_zone_fit_response(
+                            task, external_id, "zone", app_settings
+                        )
                         yield ServerSentEvent(
                             data=json.dumps(ozone, default=str),
                             event="object_zone_fit",
@@ -951,7 +1003,11 @@ async def _scenario_task_sse_generator(
                         pass
                     try:
                         from pathlib import Path
-                        from ..infrastructure.storage import get_object_storage, is_remote_path
+                        from ..infrastructure.storage import (
+                            get_object_storage,
+                            is_remote_path,
+                        )
+
                         result_path = task.result_path
                         if result_path:
                             if is_remote_path(result_path):
@@ -959,7 +1015,9 @@ async def _scenario_task_sse_generator(
                                 outputs_dir.mkdir(parents=True, exist_ok=True)
                                 cache_path = outputs_dir / result_path.split("/")[-1]
                                 if not cache_path.is_file():
-                                    get_object_storage().download_file(result_path, str(cache_path))
+                                    get_object_storage().download_file(
+                                        result_path, str(cache_path)
+                                    )
                                 result_path = str(cache_path)
                             yield ServerSentEvent(
                                 data=Path(result_path).read_text(encoding="utf-8"),
@@ -1007,7 +1065,9 @@ async def stream_scenario_task_status_endpoint(
         task_repo=task_repo,
     )
     return EventSourceResponse(
-        _scenario_task_sse_generator(scenario_id, external_id, poll_interval, request, token, app_settings)
+        _scenario_task_sse_generator(
+            scenario_id, external_id, poll_interval, request, token, app_settings
+        )
     )
 
 

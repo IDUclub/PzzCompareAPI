@@ -42,21 +42,36 @@ class SqlAlchemyTaskRepository:
             ~TaskIdempotencyKey.key.startswith("sc:"),
         )
 
-        query = select(PipelineTask).outerjoin(
-            TaskIdempotencyKey,
-            TaskIdempotencyKey.task_external_id == PipelineTask.external_id,
-        ).where(public_task_filter)
-        count_query = select(func.count()).select_from(PipelineTask).outerjoin(
-            TaskIdempotencyKey,
-            TaskIdempotencyKey.task_external_id == PipelineTask.external_id,
-        ).where(public_task_filter)
+        query = (
+            select(PipelineTask)
+            .outerjoin(
+                TaskIdempotencyKey,
+                TaskIdempotencyKey.task_external_id == PipelineTask.external_id,
+            )
+            .where(public_task_filter)
+        )
+        count_query = (
+            select(func.count())
+            .select_from(PipelineTask)
+            .outerjoin(
+                TaskIdempotencyKey,
+                TaskIdempotencyKey.task_external_id == PipelineTask.external_id,
+            )
+            .where(public_task_filter)
+        )
         for condition in filters:
             query = query.where(condition)
             count_query = count_query.where(condition)
 
-        items = self.session.execute(
-            query.order_by(PipelineTask.created_at.desc()).limit(limit).offset(offset)
-        ).scalars().all()
+        items = (
+            self.session.execute(
+                query.order_by(PipelineTask.created_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            .scalars()
+            .all()
+        )
         total = self.session.execute(count_query).scalar_one()
         return items, total
 
@@ -70,7 +85,9 @@ class SqlAlchemyTaskRepository:
 
     def get_idempotency_key_by_external_id(self, external_id: str) -> str | None:
         return self.session.execute(
-            select(TaskIdempotencyKey.key).where(TaskIdempotencyKey.task_external_id == external_id)
+            select(TaskIdempotencyKey.key).where(
+                TaskIdempotencyKey.task_external_id == external_id
+            )
         ).scalar_one_or_none()
 
     def bind_idempotency_key(self, *, key: str, external_id: str) -> None:

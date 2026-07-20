@@ -1,4 +1,5 @@
 """Result-layer property hygiene: pandas NA must serialise as JSON null."""
+
 import json
 
 import geopandas as gpd

@@ -12,10 +12,10 @@ class TaskStatus(str, Enum):
 
 
 _ALLOWED_TRANSITIONS: dict[str, set[str]] = {
-    "queued":            {"waiting_capacity", "running", "failed"},
-    "waiting_capacity":  {"running", "failed"},
-    "running":           {"finished", "failed"},
-    "failed":            {"queued"},
+    "queued": {"waiting_capacity", "running", "failed"},
+    "waiting_capacity": {"running", "failed"},
+    "running": {"finished", "failed"},
+    "failed": {"queued"},
 }
 
 

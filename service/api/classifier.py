@@ -1,11 +1,16 @@
 """Task submission endpoints (pzz-check, classify-only) and their helpers."""
+
 from __future__ import annotations
 
 import json
+import logging
 import shutil
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+import httpx
 
 from fastapi import (
     APIRouter,
@@ -23,11 +28,26 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from ..application.use_cases.create_task import create_task
+from ..application.use_cases.building_zone_review import (
+    build_confirmed_overlay,
+    build_disclaimer,
+    build_suggestion_messages,
+    parse_suggestions,
+    remaining_uncovered,
+    review_building_zones,
+    template_candidates,
+)
+from ..application.use_cases.convert_zone_table import (
+    ConversionError,
+    convert_zone_table,
+)
 from ..application.use_cases.detect_columns import (
     BUILDING_TARGETS,
     CADASTRAL_TARGETS,
     PZZ_ZONE_TARGETS,
     ZONE_CODE_TARGET,
+    ZONE_NAME_TARGET,
+    ZONE_TABLE_TARGETS,
     detect_columns_for_file,
     render_detection_narrative,
     required_columns_resolved,
@@ -53,15 +73,19 @@ from ..output_version import PIPELINE_OUTPUT_VERSION
 from ..settings import Settings
 from ..tasks import celery_app, enqueue_pipeline_task, execute_pipeline_task
 from .security import AuthUser, get_current_user
+from ..infrastructure.ollama_chat_client import OllamaChatError
+from ..infrastructure.table_reader import TableReadError, read_table
 from .tasks import (
     detection_failed_generator,
     prepend_narrative_generator,
     task_stream_with_chat_generator,
     task_stream_with_report_generator,
+    zone_review_generator,
 )
 from .utils import api_log
 
 router = APIRouter(prefix="/tasks", tags=["classifier"])
+logger = logging.getLogger("service.api.classifier")
 
 
 def _stream_upload_to_file(
@@ -90,6 +114,15 @@ def _stream_upload_to_file(
                     detail=f"{field_name} exceeds limit of {max_bytes} bytes",
                 )
             fh.write(chunk)
+
+
+def _json_upload(obj: Any, filename: str) -> UploadFile:
+    """Wrap an in-memory JSON object as an ``UploadFile`` so a server-generated
+    labels file (the confirmed zone overlay) flows through the same ingest path as
+    a real upload. ``_stream_upload_to_file`` reads ``.file`` synchronously, so a
+    ``BytesIO`` is sufficient."""
+    data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    return UploadFile(file=BytesIO(data), filename=filename)
 
 
 def _validate_json_file(
@@ -161,7 +194,14 @@ def _ingest_geo_upload(
     """
     if is_geojson_filename(upload.filename):
         return _ingest_upload(
-            upload, task_dir, filename, dict, field_name, max_bytes, external_id, storage
+            upload,
+            task_dir,
+            filename,
+            dict,
+            field_name,
+            max_bytes,
+            external_id,
+            storage,
         )
 
     suffix = Path(upload.filename or "").suffix.lower()
@@ -184,7 +224,9 @@ def _ingest_geo_upload(
     finally:
         raw_path.unlink(missing_ok=True)
 
-    return persist_geojson_dict(feature_collection, task_dir, filename, external_id, storage)
+    return persist_geojson_dict(
+        feature_collection, task_dir, filename, external_id, storage
+    )
 
 
 def _upload_to_feature_collection(
@@ -299,38 +341,58 @@ def _create_pipeline_task(
     storage = get_object_storage()
 
     stored_cadastral = _ingest_geo_upload(
-        cadastral_file, task_dir, "cadastral_feature_collection.geojson",
+        cadastral_file,
+        task_dir,
+        "cadastral_feature_collection.geojson",
         "cadastral_feature_collection_file",
-        app_settings.max_upload_bytes, external_id, storage,
+        app_settings.max_upload_bytes,
+        external_id,
+        storage,
     )
 
     if pzz_zones_file is not None:
         stored_pzz_zones = _ingest_geo_upload(
-            pzz_zones_file, task_dir, "pzz_zones_feature_collection.geojson",
+            pzz_zones_file,
+            task_dir,
+            "pzz_zones_feature_collection.geojson",
             "pzz_zones_feature_collection_file",
-            app_settings.max_upload_bytes, external_id, storage,
+            app_settings.max_upload_bytes,
+            external_id,
+            storage,
         )
     else:
         stored_pzz_zones = ""
 
     if building_upload:
         # The building flow's optional "descriptions" file is a zone→permitted-VRI
-        # mapping (dict with ``functional_zone_mappings``), reusing the labels slot.
-        # When absent, leave empty so the runner falls back to the built-in
-        # fz_to_pzz mapping (NOT the parcel LLM labels template).
+        # mapping, reusing the labels slot. Two schemas are accepted: the urban_api
+        # ``functional_zone_mappings`` dict (numeric functional_zone_type_id) and
+        # the ПЗЗ letter-index label list (like pzz_zone_llm_labels_template.json,
+        # keyed by «Ж-1»). When absent, the runner falls back to the built-in
+        # mapping matching whichever backend the zone codes imply.
         if labels_file is not None:
             stored_labels = _ingest_upload(
-                labels_file, task_dir, "pzz_zone_descriptions.json",
-                dict, "pzz_descriptions_file",
-                app_settings.max_upload_bytes, external_id, storage,
+                labels_file,
+                task_dir,
+                "pzz_zone_descriptions.json",
+                (dict, list),
+                "pzz_descriptions_file",
+                app_settings.max_upload_bytes,
+                external_id,
+                storage,
             )
         else:
             stored_labels = ""
     elif labels_file is not None:
         stored_labels = _ingest_upload(
-            labels_file, task_dir, "pzz_zone_vri_labels.json",
-            list, "pzz_zone_vri_labels_file",
-            app_settings.max_upload_bytes, external_id, storage,
+            labels_file,
+            task_dir,
+            "pzz_zone_vri_labels.json",
+            list,
+            "pzz_zone_vri_labels_file",
+            app_settings.max_upload_bytes,
+            external_id,
+            storage,
         )
     elif include_pzz_check:
         stored_labels = str(Path(app_settings.default_pzz_zone_labels_path).resolve())
@@ -339,12 +401,19 @@ def _create_pipeline_task(
 
     if classifier_file is not None:
         stored_classifier = _ingest_upload(
-            classifier_file, task_dir, "vri_classifier.json",
-            (dict, list), "vri_classifier_file",
-            app_settings.max_upload_bytes, external_id, storage,
+            classifier_file,
+            task_dir,
+            "vri_classifier.json",
+            (dict, list),
+            "vri_classifier_file",
+            app_settings.max_upload_bytes,
+            external_id,
+            storage,
         )
     else:
-        stored_classifier = str(Path(app_settings.default_vri_classifier_path).resolve())
+        stored_classifier = str(
+            Path(app_settings.default_vri_classifier_path).resolve()
+        )
 
     input_paths = {
         "cadastral_data_path": stored_cadastral,
@@ -397,10 +466,13 @@ def _create_pipeline_task(
     session.flush()
     session.refresh(task)
     api_log(
-        "create_task", "accepted",
-        task_id=task.id, external_id=task.external_id,
+        "create_task",
+        "accepted",
+        task_id=task.id,
+        external_id=task.external_id,
         mode=(
-            "building_pzz_check" if building_upload
+            "building_pzz_check"
+            if building_upload
             else ("pzz_check" if include_pzz_check else "classify_only")
         ),
     )
@@ -471,7 +543,9 @@ def create_pzz_check_task_endpoint(
     )
 
 
-create_pzz_check_task_endpoint.__doc__ = (create_pzz_check_task_endpoint.__doc__ or "") + "\n    " + _TASK_RERUN_DOCSTRING
+create_pzz_check_task_endpoint.__doc__ = (
+    (create_pzz_check_task_endpoint.__doc__ or "") + "\n    " + _TASK_RERUN_DOCSTRING
+)
 
 
 @router.post("/classify-only", response_model=TaskOut)
@@ -516,7 +590,11 @@ def create_classify_only_task_endpoint(
     )
 
 
-create_classify_only_task_endpoint.__doc__ = (create_classify_only_task_endpoint.__doc__ or "") + "\n    " + _TASK_RERUN_DOCSTRING
+create_classify_only_task_endpoint.__doc__ = (
+    (create_classify_only_task_endpoint.__doc__ or "")
+    + "\n    "
+    + _TASK_RERUN_DOCSTRING
+)
 
 
 @router.post("/pzz-check/stream")
@@ -697,7 +775,9 @@ async def create_pzz_check_chat_stream_endpoint(
     client (native EventSource cannot POST multipart or set Authorization).
     """
     if group_by not in ("zone", "object"):
-        raise HTTPException(status_code=422, detail="group_by must be 'zone' or 'object'")
+        raise HTTPException(
+            status_code=422, detail="group_by must be 'zone' or 'object'"
+        )
 
     task_out = await run_in_threadpool(
         _create_pipeline_task,
@@ -843,12 +923,95 @@ _DEFAULT_BUILDING_AUTO_QUERY = (
 )
 
 
+class _DescriptionsTableError(Exception):
+    """A CSV/XLSX descriptions table could not be converted (bad table / missing column)."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+async def _convert_descriptions_if_table(
+    descriptions_file: UploadFile | None,
+    app_settings: Settings,
+    model: str | None,
+) -> tuple[UploadFile | None, str]:
+    """Convert a CSV/XLSX ``pzz_descriptions_file`` to the label JSON in place.
+
+    A JSON/GeoJSON descriptions file (or none) passes through unchanged. A table is
+    read, its columns detected (LLM-first, heuristic backstop) and folded into the
+    label schema, then returned as an in-memory JSON ``UploadFile`` so the rest of
+    the flow is oblivious to the input format. Returns ``(file, note)`` where
+    ``note`` is a leading-narrative line about what was recognised. Raises
+    :class:`_DescriptionsTableError` when the table is unreadable or a required
+    column can't be resolved, so the caller emits a terminal detection_failed.
+    """
+    if descriptions_file is None:
+        return None, ""
+    name = (descriptions_file.filename or "").lower()
+    if not (name.endswith(".csv") or name.endswith(".xlsx")):
+        return descriptions_file, ""
+    data = await descriptions_file.read()
+    try:
+        rows, headers = read_table(data, descriptions_file.filename or "")
+    except TableReadError as exc:
+        raise _DescriptionsTableError(
+            "Таблицу описаний зон правил землепользования и застройки не удалось "
+            f"прочитать: {exc}."
+        ) from exc
+    feature_collection = {"features": [{"properties": r} for r in rows]}
+    async with build_ollama_chat_client(app_settings) as ollama_client:
+        suggestions = await detect_columns_for_file(
+            ollama_client,
+            feature_collection,
+            ZONE_TABLE_TARGETS,
+            model=model,
+            heuristic_first=False,
+        )
+    resolved = {
+        t.key: (suggestions[t.key].value if suggestions.get(t.key) else None)
+        for t in ZONE_TABLE_TARGETS
+    }
+    try:
+        zones, report = convert_zone_table(rows, resolved)
+    except ConversionError as exc:
+        raise _DescriptionsTableError(
+            f"В таблице описаний зон правил землепользования и застройки не определить "
+            f"обязательную колонку ({exc}). Заголовки: {', '.join(headers)}. "
+            "Задайте её или подайте описание в JSON."
+        ) from exc
+    # Full spellings here: this note leads the narrative, before the model's
+    # «ВРИ — …; ПЗЗ — …» line defines the abbreviations.
+    role_labels = {
+        "zone_code": "код зоны",
+        "zone_name": "наименование зоны",
+        "permission": "тип разрешения",
+        "vri_code": "код вида разрешённого использования",
+        "vri_name": "наименование вида разрешённого использования",
+    }
+    columns = [
+        f"{role_labels[key]} — «{col}»"
+        for key, col in resolved.items()
+        if col and key in role_labels
+    ]
+    note = (
+        "Из таблицы описаний зон правил землепользования и застройки распознано: "
+        f"{report.zones_count} зон, {report.vri_count} видов разрешённого использования."
+    )
+    if columns:
+        note += " Подобранные колонки таблицы: " + "; ".join(columns) + "."
+    if report.warnings:
+        note += " Предупреждения: " + "; ".join(report.warnings)
+    return _json_upload(zones, "pzz_descriptions_from_table.json"), note
+
+
 async def _run_building_pzz_auto(
     *,
     request: Request,
     buildings_file: UploadFile,
     zones_file: UploadFile,
     descriptions_file: UploadFile | None,
+    confirmed_zone_map: dict[str, str] | None,
     user_query: str | None,
     chat_id: str | None,
     group_by: str,
@@ -869,38 +1032,62 @@ async def _run_building_pzz_auto(
     The uploaded-building counterpart of the ``pzz_check`` auto flow: buildings
     (physical_object_type_id / service_type_id + floors) are matched against the
     uploaded PZZ zones; the answer is grounded in the object-zone-fit report.
+
+    A CSV/XLSX ``pzz_descriptions_file`` is converted to the label JSON up front,
+    so the frontend can drop a spreadsheet without a separate ``/convert`` call.
     """
+    try:
+        descriptions_file, table_note = await _convert_descriptions_if_table(
+            descriptions_file, app_settings, model
+        )
+    except _DescriptionsTableError as exc:
+        return EventSourceResponse(detection_failed_generator("", exc.detail))
+
     max_bytes = app_settings.max_upload_bytes
     detect_dir = Path(app_settings.task_inputs_dir) / f"detect-{uuid4().hex}"
     try:
         buildings_fc = await run_in_threadpool(
             _upload_to_feature_collection,
-            buildings_file, detect_dir, "buildings_feature_collection_file", max_bytes,
+            buildings_file,
+            detect_dir,
+            "buildings_feature_collection_file",
+            max_bytes,
         )
         zones_fc = await run_in_threadpool(
             _upload_to_feature_collection,
-            zones_file, detect_dir, "pzz_zones_feature_collection_file", max_bytes,
+            zones_file,
+            detect_dir,
+            "pzz_zones_feature_collection_file",
+            max_bytes,
         )
     finally:
         shutil.rmtree(detect_dir, ignore_errors=True)
 
-    announce_targets = list(BUILDING_TARGETS) + [ZONE_CODE_TARGET]
+    # The zone name is detected too (optional) so the letter-index review can offer
+    # a name-based suggestion for zones missing from the built-in template.
+    announce_targets = list(BUILDING_TARGETS) + [ZONE_CODE_TARGET, ZONE_NAME_TARGET]
     async with build_ollama_chat_client(app_settings) as ollama_client:
         suggestions = await detect_columns_for_file(
             ollama_client, buildings_fc, BUILDING_TARGETS, model=model
         )
         suggestions.update(
             await detect_columns_for_file(
-                ollama_client, zones_fc, [ZONE_CODE_TARGET], model=model
+                ollama_client,
+                zones_fc,
+                [ZONE_CODE_TARGET, ZONE_NAME_TARGET],
+                model=model,
             )
         )
     narrative = render_detection_narrative(suggestions, announce_targets)
+    if table_note:
+        narrative = table_note + "\n\n" + narrative
 
     def _val(key: str) -> str | None:
         s = suggestions.get(key)
         return s.value if s is not None else None
 
     zone_code = _val("pzz_zone_code_col")
+    zone_name = _val("pzz_zone_name_col")
     building_type = _val("building_type_col")
     building_service = _val("building_service_col")
     # Floors is optional (residential falls back without it); a zone code plus at
@@ -914,16 +1101,111 @@ async def _run_building_pzz_auto(
             )
         )
 
+    # Real-ПЗЗ (letter-index) zone review: when the zones aren't numeric urban_api
+    # ids and the user gave no descriptions file, the check runs on the built-in
+    # template — approximate, and only covering a subset of indices. Decide whether
+    # to proceed (with a disclaimer), ask to upload proper descriptions, or offer
+    # per-zone LLM suggestions to confirm. Confirmed suggestions become an overlay
+    # descriptions file fed to the runner.
+    review = review_building_zones(
+        zones_fc=zones_fc,
+        code_col=zone_code,
+        name_col=zone_name,
+        user_uploaded_descriptions=descriptions_file is not None,
+        confirmed_map=confirmed_zone_map,
+        template_path=app_settings.default_pzz_zone_labels_path,
+        threshold=app_settings.building_pzz_zone_suggest_threshold,
+    )
+    if review.action == "suggest_upload":
+        detail = (
+            f"Обобщённый шаблон ПЗЗ не подходит: {len(review.uncovered)} зон не "
+            f"найдено ({', '.join(review.uncovered_codes)}). Загрузите описание "
+            "разрешённых ВРИ вашего ПЗЗ (поле pzz_descriptions_file) и повторите."
+        )
+        return EventSourceResponse(
+            zone_review_generator(
+                narrative, detail, action="suggest_upload", suggestions=None
+            )
+        )
+    if review.action == "confirm":
+        candidates = template_candidates(app_settings.default_pzz_zone_labels_path)
+        messages, schema = build_suggestion_messages(review.uncovered, candidates)
+        llm_available = True
+        try:
+            async with build_ollama_chat_client(app_settings) as ollama_client:
+                parsed = await ollama_client.complete_json(
+                    messages, schema=schema, model=model
+                )
+        except (OllamaChatError, httpx.HTTPError) as exc:
+            # No suggestions possible without the model — degrade to the upload
+            # ask rather than 500 the whole request.
+            logger.warning(
+                "zone-suggestion LLM call failed (%s); asking for upload", exc
+            )
+            parsed, llm_available = {}, False
+        if not llm_available:
+            detail = (
+                "Не удалось подобрать соответствия зон (модель недоступна). "
+                f"Не найдены в шаблоне ПЗЗ: {', '.join(review.uncovered_codes)}. "
+                "Загрузите описание разрешённых ВРИ вашего ПЗЗ (поле pzz_descriptions_file) "
+                "и повторите."
+            )
+            return EventSourceResponse(
+                zone_review_generator(
+                    narrative, detail, action="suggest_upload", suggestions=None
+                )
+            )
+        picks = parse_suggestions(review.uncovered, parsed, candidates)
+        by_code = {c["code"]: c["name"] for c in candidates}
+        payload = [
+            {
+                "user_code": z.code,
+                "user_name": z.name,
+                "suggested_code": picks.get(z.code),
+                "suggested_name": by_code.get(picks.get(z.code, ""), ""),
+            }
+            for z in review.uncovered
+        ]
+        detail = (
+            "Часть зон не найдена в шаблоне ПЗЗ. Подтвердите предложенные "
+            "соответствия (или загрузите своё описание) и повторите запрос, передав "
+            "confirmed_zone_map."
+        )
+        return EventSourceResponse(
+            zone_review_generator(
+                narrative, detail, action="confirm", suggestions=payload
+            )
+        )
+
+    # action == "proceed". Build the confirmed overlay (if any), and prepend the
+    # approximate-classification disclaimer when the template/overlay was used.
+    effective_descriptions = descriptions_file
+    if confirmed_zone_map and review.approximate:
+        overlay = build_confirmed_overlay(
+            app_settings.default_pzz_zone_labels_path, confirmed_zone_map
+        )
+        effective_descriptions = _json_upload(
+            overlay, "pzz_zone_confirmed_overlay.json"
+        )
+    if review.approximate:
+        narrative = (
+            narrative
+            + "\n\n"
+            + build_disclaimer(
+                remaining_uncovered(review.uncovered, confirmed_zone_map)
+            )
+        )
+
     task_out = await run_in_threadpool(
         _create_pipeline_task,
         cadastral_file=buildings_file,
         pzz_zones_file=zones_file,
-        labels_file=descriptions_file,
+        labels_file=effective_descriptions,
         classifier_file=None,
         include_pzz_check=True,
         cadastral_vri_col="",
         pzz_zone_code_col=zone_code,
-        pzz_zone_name_col="",
+        pzz_zone_name_col=zone_name or "",
         priority=priority,
         retry_failed=False,
         force_recompute=force_recompute,
@@ -957,6 +1239,7 @@ async def _run_building_pzz_auto(
         temperature=temperature,
         report_kind="object_zone_fit",
         emit_input_files=True,
+        system_prompt_path=app_settings.chat_system_prompt_building_path,
     )
     return EventSourceResponse(prepend_narrative_generator(narrative, inner))
 
@@ -977,6 +1260,7 @@ async def create_auto_chat_stream_endpoint(
     temperature: float | None = Form(default=None),
     priority: int = Form(1, ge=1, le=10),
     force_recompute: bool = Form(False),
+    confirmed_zone_map: str | None = Form(default=None),
     poll_interval: float = Query(2.0, ge=0.5, le=10.0),
     idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
     idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
@@ -997,7 +1281,8 @@ async def create_auto_chat_stream_endpoint(
 
     ``mode``:
       - ``pzz_check`` (default) — needs cadastral + PZZ zones; detects all three
-        columns; answer grounded in the object-zone-fit report;
+        columns; answer grounded in the object-zone-fit report. A CSV/XLSX
+        ``pzz_zone_vri_labels_file`` is converted to the label JSON inline;
       - ``classify_only`` — needs only cadastral; detects the VRI column; answer
         grounded in the classify summary.
       - ``building_pzz_check`` — needs a buildings layer (``cadastral_…_file``:
@@ -1020,7 +1305,9 @@ async def create_auto_chat_stream_endpoint(
             detail="mode must be 'pzz_check', 'classify_only' or 'building_pzz_check'",
         )
     if group_by not in ("zone", "object"):
-        raise HTTPException(status_code=422, detail="group_by must be 'zone' or 'object'")
+        raise HTTPException(
+            status_code=422, detail="group_by must be 'zone' or 'object'"
+        )
 
     if mode == "building_pzz_check":
         if pzz_zones_feature_collection_file is None:
@@ -1028,11 +1315,28 @@ async def create_auto_chat_stream_endpoint(
                 status_code=422,
                 detail="pzz_zones_feature_collection_file is required for mode=building_pzz_check",
             )
+        parsed_zone_map: dict[str, str] | None = None
+        if confirmed_zone_map:
+            try:
+                loaded = json.loads(confirmed_zone_map)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    status_code=422, detail="confirmed_zone_map must be a JSON object"
+                ) from exc
+            if not isinstance(loaded, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in loaded.items()
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="confirmed_zone_map must map zone codes to template codes (str→str)",
+                )
+            parsed_zone_map = loaded or None
         return await _run_building_pzz_auto(
             request=request,
             buildings_file=cadastral_feature_collection_file,
             zones_file=pzz_zones_feature_collection_file,
             descriptions_file=pzz_descriptions_file,
+            confirmed_zone_map=parsed_zone_map,
             user_query=user_query,
             chat_id=chat_id,
             group_by=group_by,
@@ -1056,6 +1360,20 @@ async def create_auto_chat_stream_endpoint(
             detail="pzz_zones_feature_collection_file is required for mode=pzz_check",
         )
 
+    # A CSV/XLSX zone-labels file is converted to the label JSON up front (same as
+    # the building descriptions flow), so the pipeline receives the list schema it
+    # expects. JSON labels pass through unchanged.
+    labels_note = ""
+    if include_pzz_check:
+        try:
+            pzz_zone_vri_labels_file, labels_note = (
+                await _convert_descriptions_if_table(
+                    pzz_zone_vri_labels_file, app_settings, model
+                )
+            )
+        except _DescriptionsTableError as exc:
+            return EventSourceResponse(detection_failed_generator("", exc.detail))
+
     max_bytes = app_settings.max_upload_bytes
     detect_dir = Path(app_settings.task_inputs_dir) / f"detect-{uuid4().hex}"
     try:
@@ -1078,7 +1396,9 @@ async def create_auto_chat_stream_endpoint(
     finally:
         shutil.rmtree(detect_dir, ignore_errors=True)
 
-    targets = list(CADASTRAL_TARGETS) + (list(PZZ_ZONE_TARGETS) if include_pzz_check else [])
+    targets = list(CADASTRAL_TARGETS) + (
+        list(PZZ_ZONE_TARGETS) if include_pzz_check else []
+    )
     async with build_ollama_chat_client(app_settings) as ollama_client:
         suggestions = await detect_columns_for_file(
             ollama_client, cadastral_fc, CADASTRAL_TARGETS, model=model
@@ -1090,11 +1410,14 @@ async def create_auto_chat_stream_endpoint(
                 )
             )
     narrative = render_detection_narrative(suggestions, targets)
+    if labels_note:
+        narrative = labels_note + "\n\n" + narrative
 
     if not required_columns_resolved(suggestions, targets):
         return EventSourceResponse(
             detection_failed_generator(
-                narrative, "не удалось определить обязательные колонки из загруженных данных"
+                narrative,
+                "не удалось определить обязательные колонки из загруженных данных",
             )
         )
 
@@ -1106,8 +1429,12 @@ async def create_auto_chat_stream_endpoint(
         classifier_file=vri_classifier_file,
         include_pzz_check=include_pzz_check,
         cadastral_vri_col=suggestions["cadastral_vri_col"].value,
-        pzz_zone_code_col=(suggestions.get("pzz_zone_code_col").value if include_pzz_check else ""),
-        pzz_zone_name_col=(suggestions.get("pzz_zone_name_col").value if include_pzz_check else ""),
+        pzz_zone_code_col=(
+            suggestions.get("pzz_zone_code_col").value if include_pzz_check else ""
+        ),
+        pzz_zone_name_col=(
+            suggestions.get("pzz_zone_name_col").value if include_pzz_check else ""
+        ),
         priority=priority,
         retry_failed=False,
         force_recompute=force_recompute,

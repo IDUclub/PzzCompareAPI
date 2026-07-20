@@ -25,7 +25,9 @@ def _write_json_file(path: Path, payload: dict | list[dict]) -> str:
     return str(path.resolve())
 
 
-def prepare_input_paths(payload: TaskCreate, external_id: str, settings: Settings) -> dict[str, str]:
+def prepare_input_paths(
+    payload: TaskCreate, external_id: str, settings: Settings
+) -> dict[str, str]:
     task_dir = Path(settings.task_inputs_dir) / external_id
     task_dir.mkdir(parents=True, exist_ok=True)
 
@@ -47,7 +49,9 @@ def prepare_input_paths(payload: TaskCreate, external_id: str, settings: Setting
             payload.pzz_zone_vri_labels,
         )
     elif payload.include_pzz_check:
-        pzz_zone_vri_labels_path = str(Path(settings.default_pzz_zone_labels_path).resolve())
+        pzz_zone_vri_labels_path = str(
+            Path(settings.default_pzz_zone_labels_path).resolve()
+        )
     else:
         pzz_zone_vri_labels_path = ""
 
@@ -95,18 +99,24 @@ def create_task(
         if existing is not None:
             _non_terminal = {TaskStatus.queued, TaskStatus.waiting_capacity}
             should_rerun = (
-                force_recompute and existing.status in {
-                    TaskStatus.failed, TaskStatus.finished,
-                    TaskStatus.queued, TaskStatus.waiting_capacity,
+                force_recompute
+                and existing.status
+                in {
+                    TaskStatus.failed,
+                    TaskStatus.finished,
+                    TaskStatus.queued,
+                    TaskStatus.waiting_capacity,
                 }
-            ) or (
-                retry_failed and existing.status == TaskStatus.failed
-            )
+            ) or (retry_failed and existing.status == TaskStatus.failed)
             if should_rerun:
                 # Revoke the old Celery message when the task is stuck in a
                 # non-terminal state so the stale message doesn't race with
                 # the newly enqueued one.
-                if revoke_task is not None and existing.celery_task_id and existing.status in _non_terminal:
+                if (
+                    revoke_task is not None
+                    and existing.celery_task_id
+                    and existing.status in _non_terminal
+                ):
                     try:
                         revoke_task(existing.celery_task_id)
                     except Exception:  # noqa: BLE001
@@ -118,7 +128,9 @@ def create_task(
                 if input_paths is not None:
                     existing.cadastral_data_path = input_paths["cadastral_data_path"]
                     existing.pzz_zones_data_path = input_paths["pzz_zones_data_path"]
-                    existing.pzz_zone_vri_labels_path = input_paths["pzz_zone_vri_labels_path"]
+                    existing.pzz_zone_vri_labels_path = input_paths[
+                        "pzz_zone_vri_labels_path"
+                    ]
                     existing.vri_classifier_path = input_paths["vri_classifier_path"]
                 task_repo.update_status(existing.id, TaskStatus.queued)
                 if session is not None:
@@ -127,7 +139,9 @@ def create_task(
                     celery_result = enqueue_task(existing.id)
                 except Exception as exc:  # noqa: BLE001
                     task_repo.update_status(existing.id, TaskStatus.failed)
-                    task_repo.set_error(existing.id, f"Failed to enqueue Celery task: {exc}")
+                    task_repo.set_error(
+                        existing.id, f"Failed to enqueue Celery task: {exc}"
+                    )
                     event_repo.append_event(
                         task_id=existing.id,
                         stage="queue",
@@ -137,7 +151,9 @@ def create_task(
                     raise
 
                 celery_task_id = getattr(celery_result, "id", None)
-                task_repo.update_status(existing.id, TaskStatus.queued, celery_task_id=celery_task_id)
+                task_repo.update_status(
+                    existing.id, TaskStatus.queued, celery_task_id=celery_task_id
+                )
                 trigger = "force_recompute" if force_recompute else "retry_failed"
                 event_repo.append_event(
                     task_id=existing.id,

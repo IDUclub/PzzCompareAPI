@@ -68,7 +68,9 @@ def start_task(
             status="wait",
             details=f"{current_sum}+{task_priority}>{max_sum}",
         )
-        return StartTaskResult(task_priority=task_priority, request=None, retry_in_seconds=5)
+        return StartTaskResult(
+            task_priority=task_priority, request=None, retry_in_seconds=5
+        )
 
     config_repo.set_int("priority_current_sum", updated_sum)
     ensure_transition(task.status.value, TaskStatus.running.value)
@@ -97,4 +99,6 @@ def start_task(
         building_floors_col=task.building_floors_col or "",
     )
 
-    return StartTaskResult(task_priority=task_priority, request=request, retry_in_seconds=0)
+    return StartTaskResult(
+        task_priority=task_priority, request=request, retry_in_seconds=0
+    )

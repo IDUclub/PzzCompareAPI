@@ -29,6 +29,7 @@ Designed as an async generator of plain ``dict`` events so the SSE endpoint
 The clients are injected (already opened) so the endpoint owns their
 lifetime via ``async with`` and tests can pass fakes.
 """
+
 from __future__ import annotations
 
 import json
@@ -106,9 +107,10 @@ def _extract_problem_objects(
     """Return the wrong/unclear objects (key fields only), capped in count.
 
     Works for both ``group_by`` shapes: a flat ``objects`` list or per-zone
-    ``zones[].objects``. Keeps the answer-relevant fields — including the ВРИ
-    the runner assigned (code + name) and the verdict reason — so the model can
-    explain each problem parcel specifically without ingesting the whole report.
+    ``zones[].objects``. Keyed by the RESULT FILE's own Russian attribute names
+    (``Код_подобранного_ВРИ``, ``Подобранный_ВРИ``, ``Вердикт_ПЗЗ``…) so the model
+    can cite the exact attribute where each value is recorded, and so nothing
+    English-labelled leaks into the answer.
     """
     objects = object_zone_fit.get("objects")
     if not objects:
@@ -125,13 +127,15 @@ def _extract_problem_objects(
             name = vri_names.get(code, "")
         trimmed.append(
             {
-                "vri_text": obj.get("vri_text"),
-                "zone_name": obj.get("zone_name"),
-                "verdict": obj.get("verdict"),
-                "assigned_vri_code": code or None,
-                "assigned_vri_name": name or None,
-                "основание_подбора_ВРИ": obj.get("resolution_basis") or None,
-                "reason": (reason[:reason_chars] if isinstance(reason, str) else reason),
+                "ВРИ_ЕГРН": obj.get("vri_text"),
+                "Название_зоны_ПЗЗ": obj.get("zone_name"),
+                "Вердикт_ПЗЗ": obj.get("verdict"),
+                "Код_подобранного_ВРИ": code or None,
+                "Подобранный_ВРИ": name or None,
+                "Основание_подбора_ВРИ": obj.get("resolution_basis") or None,
+                "Причина": (
+                    reason[:reason_chars] if isinstance(reason, str) else reason
+                ),
             }
         )
     return trimmed
@@ -163,7 +167,9 @@ def build_classification_context(
     if object_zone_fit:
         summary = object_zone_fit.get("summary")
         if summary:
-            parts.append("Сводка:\n" + json.dumps(summary, ensure_ascii=False, default=str))
+            parts.append(
+                "Сводка:\n" + json.dumps(summary, ensure_ascii=False, default=str)
+            )
         # Compact per-zone breakdown, always included (it's tiny — one row per
         # zone). Lets the answer give a detailed per-zone report even when the
         # full report JSON below is dropped for exceeding max_report_chars.
@@ -339,7 +345,11 @@ async def stream_chat_answer(
                 metadata=message_metadata,
             )
             chat_id = created.get("chat_id")
-            yield {"type": "chat_created", "chat_id": chat_id, "title": created.get("title")}
+            yield {
+                "type": "chat_created",
+                "chat_id": chat_id,
+                "title": created.get("title"),
+            }
         except ChatStorageError as exc:
             logger.warning("chat_storage create_chat failed: %s", exc)
             yield {
@@ -372,7 +382,9 @@ async def stream_chat_answer(
             }
 
     # 3. Stream the assistant answer from the dedicated chat LLM.
-    messages = build_messages(system_prompt, classification_context, user_query, history)
+    messages = build_messages(
+        system_prompt, classification_context, user_query, history
+    )
     collected: list[str] = []
     try:
         async for delta in ollama_client.stream_chat(
@@ -399,11 +411,19 @@ async def stream_chat_answer(
                     for payload in assistant_file_parts
                 )
                 stored = await chat_storage_client.add_message(
-                    user_id, chat_id, role="assistant", parts=parts, metadata=message_metadata
+                    user_id,
+                    chat_id,
+                    role="assistant",
+                    parts=parts,
+                    metadata=message_metadata,
                 )
             else:
                 stored = await chat_storage_client.add_message(
-                    user_id, chat_id, role="assistant", content=answer, metadata=message_metadata
+                    user_id,
+                    chat_id,
+                    role="assistant",
+                    content=answer,
+                    metadata=message_metadata,
                 )
             assistant_message_id = stored.get("message_id")
         except ChatStorageError as exc:

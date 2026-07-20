@@ -48,7 +48,9 @@ class Repo:
         external_id = self.keys.get(key)
         if not external_id:
             return None
-        return next((t for t in self.tasks.values() if t.external_id == external_id), None)
+        return next(
+            (t for t in self.tasks.values() if t.external_id == external_id), None
+        )
 
     def bind_idempotency_key(self, *, key: str, external_id: str):
         self.keys[key] = external_id
@@ -104,8 +106,22 @@ def test_repeated_request_with_same_idempotency_key_returns_existing_task(tmp_pa
         called.append(task_id)
         return Result()
 
-    first = create_task(payload=_payload(), settings=_settings(tmp_path), task_repo=repo, event_repo=events, enqueue_task=enqueue, idempotency_key="k-1")
-    second = create_task(payload=_payload(), settings=_settings(tmp_path), task_repo=repo, event_repo=events, enqueue_task=enqueue, idempotency_key="k-1")
+    first = create_task(
+        payload=_payload(),
+        settings=_settings(tmp_path),
+        task_repo=repo,
+        event_repo=events,
+        enqueue_task=enqueue,
+        idempotency_key="k-1",
+    )
+    second = create_task(
+        payload=_payload(),
+        settings=_settings(tmp_path),
+        task_repo=repo,
+        event_repo=events,
+        enqueue_task=enqueue,
+        idempotency_key="k-1",
+    )
 
     assert first.id == second.id
     assert called == [first.id]
@@ -121,8 +137,22 @@ def test_client_network_retry_does_not_enqueue_duplicate_celery_task(tmp_path):
         enqueue_count += 1
         return Result()
 
-    create_task(payload=_payload(), settings=_settings(tmp_path), task_repo=repo, event_repo=events, enqueue_task=enqueue, idempotency_key="retry-202")
-    create_task(payload=_payload(), settings=_settings(tmp_path), task_repo=repo, event_repo=events, enqueue_task=enqueue, idempotency_key="retry-202")
+    create_task(
+        payload=_payload(),
+        settings=_settings(tmp_path),
+        task_repo=repo,
+        event_repo=events,
+        enqueue_task=enqueue,
+        idempotency_key="retry-202",
+    )
+    create_task(
+        payload=_payload(),
+        settings=_settings(tmp_path),
+        task_repo=repo,
+        event_repo=events,
+        enqueue_task=enqueue,
+        idempotency_key="retry-202",
+    )
 
     assert enqueue_count == 1
 
@@ -137,11 +167,25 @@ def test_failed_task_with_same_idempotency_key_is_reenqueued(tmp_path):
         enqueue_count += 1
         return Result()
 
-    task = create_task(payload=_payload(), settings=_settings(tmp_path), task_repo=repo, event_repo=events, enqueue_task=enqueue, idempotency_key="failed-1")
+    task = create_task(
+        payload=_payload(),
+        settings=_settings(tmp_path),
+        task_repo=repo,
+        event_repo=events,
+        enqueue_task=enqueue,
+        idempotency_key="failed-1",
+    )
     repo.update_status(task.id, TaskStatus.failed)
     repo.set_error(task.id, "boom")
 
-    not_retried = create_task(payload=_payload(), settings=_settings(tmp_path), task_repo=repo, event_repo=events, enqueue_task=enqueue, idempotency_key="failed-1")
+    not_retried = create_task(
+        payload=_payload(),
+        settings=_settings(tmp_path),
+        task_repo=repo,
+        event_repo=events,
+        enqueue_task=enqueue,
+        idempotency_key="failed-1",
+    )
     assert not_retried.id == task.id
     assert enqueue_count == 1
     assert repo.tasks[task.id].status == TaskStatus.failed
@@ -176,8 +220,11 @@ def test_queued_task_is_reenqueued_on_force_recompute(tmp_path):
         return Result()
 
     task = create_task(
-        payload=_payload(), settings=_settings(tmp_path),
-        task_repo=repo, event_repo=events, enqueue_task=enqueue,
+        payload=_payload(),
+        settings=_settings(tmp_path),
+        task_repo=repo,
+        event_repo=events,
+        enqueue_task=enqueue,
         idempotency_key="stuck-queued",
     )
     # Simulate task stuck in queued (Celery message lost — count stays 1).
@@ -185,8 +232,11 @@ def test_queued_task_is_reenqueued_on_force_recompute(tmp_path):
 
     # Without force_recompute, still returns existing task and does NOT re-enqueue.
     not_rerun = create_task(
-        payload=_payload(), settings=_settings(tmp_path),
-        task_repo=repo, event_repo=events, enqueue_task=enqueue,
+        payload=_payload(),
+        settings=_settings(tmp_path),
+        task_repo=repo,
+        event_repo=events,
+        enqueue_task=enqueue,
         idempotency_key="stuck-queued",
     )
     assert not_rerun.id == task.id
@@ -194,8 +244,11 @@ def test_queued_task_is_reenqueued_on_force_recompute(tmp_path):
 
     # With force_recompute, it MUST re-enqueue.
     rerun = create_task(
-        payload=_payload(), settings=_settings(tmp_path),
-        task_repo=repo, event_repo=events, enqueue_task=enqueue,
+        payload=_payload(),
+        settings=_settings(tmp_path),
+        task_repo=repo,
+        event_repo=events,
+        enqueue_task=enqueue,
         idempotency_key="stuck-queued",
         force_recompute=True,
     )
@@ -216,15 +269,21 @@ def test_waiting_capacity_task_is_reenqueued_on_force_recompute(tmp_path):
         return Result()
 
     task = create_task(
-        payload=_payload(), settings=_settings(tmp_path),
-        task_repo=repo, event_repo=events, enqueue_task=enqueue,
+        payload=_payload(),
+        settings=_settings(tmp_path),
+        task_repo=repo,
+        event_repo=events,
+        enqueue_task=enqueue,
         idempotency_key="stuck-capacity",
     )
     repo.update_status(task.id, TaskStatus.waiting_capacity)
 
     rerun = create_task(
-        payload=_payload(), settings=_settings(tmp_path),
-        task_repo=repo, event_repo=events, enqueue_task=enqueue,
+        payload=_payload(),
+        settings=_settings(tmp_path),
+        task_repo=repo,
+        event_repo=events,
+        enqueue_task=enqueue,
         idempotency_key="stuck-capacity",
         force_recompute=True,
     )
@@ -240,8 +299,11 @@ def test_create_task_stamps_output_version(tmp_path):
     repo = Repo()
     events = EventRepo()
     task = create_task(
-        payload=_payload(), settings=_settings(tmp_path),
-        task_repo=repo, event_repo=events, enqueue_task=lambda _tid: Result(),
+        payload=_payload(),
+        settings=_settings(tmp_path),
+        task_repo=repo,
+        event_repo=events,
+        enqueue_task=lambda _tid: Result(),
     )
     assert repo.tasks[task.id].output_version == PIPELINE_OUTPUT_VERSION
 
@@ -259,16 +321,22 @@ def test_stuck_queued_task_old_celery_id_is_revoked_on_force_recompute(tmp_path)
         revoked.append(celery_id)
 
     task = create_task(
-        payload=_payload(), settings=_settings(tmp_path),
-        task_repo=repo, event_repo=events, enqueue_task=enqueue,
+        payload=_payload(),
+        settings=_settings(tmp_path),
+        task_repo=repo,
+        event_repo=events,
+        enqueue_task=enqueue,
         idempotency_key="revoke-test",
     )
     # Give it a fake stale Celery task ID.
     repo.tasks[task.id].celery_task_id = "old-celery-abc"
 
     create_task(
-        payload=_payload(), settings=_settings(tmp_path),
-        task_repo=repo, event_repo=events, enqueue_task=enqueue,
+        payload=_payload(),
+        settings=_settings(tmp_path),
+        task_repo=repo,
+        event_repo=events,
+        enqueue_task=enqueue,
         idempotency_key="revoke-test",
         force_recompute=True,
         revoke_task=revoke,

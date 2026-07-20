@@ -33,7 +33,9 @@ class _InterceptHandler(logging.Handler):
         )
 
 
-def setup_logging(*, force: bool = False) -> None:  # noqa: ARG001 — force kept for call-site compat
+def setup_logging(
+    *, force: bool = False
+) -> None:  # noqa: ARG001 — force kept for call-site compat
     level = os.getenv("LOG_LEVEL", "INFO").upper()
 
     # Remove all existing loguru handlers (idempotent — safe to call again).
@@ -42,10 +44,7 @@ def setup_logging(*, force: bool = False) -> None:  # noqa: ARG001 — force kep
         sys.stdout,
         level=level,
         format=(
-            "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
-            "{level: <8} | "
-            "{name} | "
-            "{message}"
+            "{time:YYYY-MM-DD HH:mm:ss.SSS} | " "{level: <8} | " "{name} | " "{message}"
         ),
         colorize=False,  # plain text so Docker / journald can parse it cleanly
     )

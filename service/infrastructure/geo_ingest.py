@@ -7,6 +7,7 @@ GeoParquet, …) but always persist GeoJSON, so the worker path is unchanged.
 ``geopandas`` is imported lazily so the API process doesn't pay its import
 cost unless a non-GeoJSON upload actually needs conversion.
 """
+
 from __future__ import annotations
 
 import json
@@ -57,7 +58,9 @@ def geo_file_to_geojson_dict(path: Path) -> dict[str, Any]:
         try:
             gdf = gdf.to_crs(_TARGET_CRS)
         except Exception as exc:  # noqa: BLE001
-            raise GeoIngestError(f"could not reproject to {_TARGET_CRS}: {exc}") from exc
+            raise GeoIngestError(
+                f"could not reproject to {_TARGET_CRS}: {exc}"
+            ) from exc
 
     feature_collection = json.loads(gdf.to_json())
     if not isinstance(feature_collection, dict) or "features" not in feature_collection:

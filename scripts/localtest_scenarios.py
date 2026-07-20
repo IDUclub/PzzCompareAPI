@@ -4,6 +4,7 @@ POST /scenarios/{id}/classify -> poll status -> GET object-zone-fit, for each
 of scenarios 843/844/845 (2025/User). Reads the urban_api token from
 .env.development. Run after `docker compose -f docker-compose.localtest.yml up`.
 """
+
 from __future__ import annotations
 
 import sys
@@ -38,7 +39,8 @@ def run_one(client: httpx.Client, hdr: dict, sid: int) -> None:
 
     status, waited = "queued", 0
     while status not in ("finished", "failed") and waited < 120:
-        time.sleep(2); waited += 2
+        time.sleep(2)
+        waited += 2
         t = client.get(f"{API}/scenarios/{sid}/tasks/{ext}", headers=hdr).json()
         status = t.get("status", status)
     print(f"  final status={status} after ~{waited}s")
@@ -48,19 +50,24 @@ def run_one(client: httpx.Client, hdr: dict, sid: int) -> None:
 
     rep = client.get(
         f"{API}/scenarios/{sid}/tasks/{ext}/object-zone-fit",
-        params={"group_by": "zone"}, headers=hdr,
+        params={"group_by": "zone"},
+        headers=hdr,
     )
     if rep.status_code != 200:
         print(f"  report FAILED {rep.status_code}: {rep.text[:300]}")
         return
     data = rep.json()
     s = data["summary"]
-    print(f"  SUMMARY total={s['total']} correct={s['in_correct_zone']} "
-          f"wrong={s['in_wrong_zone']} unclear={s['unclear']}")
+    print(
+        f"  SUMMARY total={s['total']} correct={s['in_correct_zone']} "
+        f"wrong={s['in_wrong_zone']} unclear={s['unclear']}"
+    )
     for z in data.get("zones", [])[:6]:
         zs = z["summary"]
-        print(f"    zone «{z.get('zone_name') or z.get('zone_type_id')}»: "
-              f"total={zs['total']} correct={zs['in_correct_zone']} wrong={zs['in_wrong_zone']} unclear={zs['unclear']}")
+        print(
+            f"    zone «{z.get('zone_name') or z.get('zone_type_id')}»: "
+            f"total={zs['total']} correct={zs['in_correct_zone']} wrong={zs['in_wrong_zone']} unclear={zs['unclear']}"
+        )
 
 
 def main() -> None:

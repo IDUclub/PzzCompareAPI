@@ -23,6 +23,7 @@ Contract (see IDUclub/ChatStorage docs/frontend-chat-history.md):
 Mirrors the style of ``urban_api_client.UrbanApiClient``: one instance per
 request, used as an async context manager.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
