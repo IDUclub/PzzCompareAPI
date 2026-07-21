@@ -161,6 +161,9 @@ class Settings(BaseSettings):
     chat_system_prompt_building_path: str = Field(
         default="data/chat_system_prompt_building.txt"
     )
+    chat_system_prompt_classify_path: str = Field(
+        default="data/chat_system_prompt_classify.txt"
+    )
 
     # ── Geo-layer download links ─────────────────────────────────────────────
     # Result GeoJSON layers are offered as links instead of inline payloads.
@@ -234,6 +237,11 @@ def _build_settings_cached() -> Settings:
             config,
             "CHAT_SYSTEM_PROMPT_BUILDING_PATH",
             "data/chat_system_prompt_building.txt",
+        ),
+        chat_system_prompt_classify_path=_get_optional_env(
+            config,
+            "CHAT_SYSTEM_PROMPT_CLASSIFY_PATH",
+            "data/chat_system_prompt_classify.txt",
         ),
         keycloak_url=_get_optional_env(config, "KEYCLOAK_URL").rstrip("/"),
         keycloak_realm=_get_optional_env(config, "KEYCLOAK_REALM"),

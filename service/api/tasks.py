@@ -827,6 +827,7 @@ async def task_stream_with_chat_generator(
                             vri_names=load_vri_names(
                                 app_settings.default_vri_classifier_path
                             ),
+                            report_kind=report_kind,
                         )
                     except HTTPException as exc:
                         yield ServerSentEvent(

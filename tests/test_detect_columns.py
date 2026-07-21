@@ -16,6 +16,7 @@ from service.application.use_cases.detect_columns import (
     profile_columns,
     render_detection_narrative,
     required_columns_resolved,
+    sparse_column_warnings,
 )
 from service.infrastructure.ollama_chat_client import OllamaChatClient, OllamaChatError
 
@@ -73,6 +74,17 @@ def test_profile_columns_excludes_geometry_and_dedups_samples() -> None:
     assert profiles["vri_name"].n_unique == 2
     # distinct samples, order preserved, no duplicate "Для ИЖС"
     assert profiles["vri_name"].samples == ["Для ИЖС", "Многоэтажная жилая застройка"]
+
+
+def test_profile_columns_tracks_fill_ratio_over_whole_file() -> None:
+    # Regression: a stale result file re-uploaded as input has a "matched VRI"
+    # column populated in only a handful of rows out of hundreds — the fill
+    # ratio must reflect the WHOLE file, not just the capped profiling sample.
+    feats = [{"vri_name": "Для ИЖС"}] * 3 + [{"vri_name": None}] * 206
+    profiles = {p.name: p for p in profile_columns(_fc(feats))}
+    assert profiles["vri_name"].total_rows == 209
+    assert profiles["vri_name"].non_null_count == 3
+    assert profiles["vri_name"].fill_ratio == pytest.approx(3 / 209)
 
 
 def test_profile_columns_truncates_long_values() -> None:
@@ -217,6 +229,24 @@ def test_narrative_lists_recognised_and_missing() -> None:
     assert required_columns_resolved(suggestions, CADASTRAL_TARGETS) is True
 
 
+def test_narrative_header_omits_pzz_for_classify_only() -> None:
+    # Regression: the classify_only auto-detect header must not announce a
+    # "PZZ check" (no zones are involved at all in that mode).
+    fc = _fc([{"permitted_use": "Для ИЖС"}])
+    fake = RecordingFakeOllama(
+        {"cadastral_vri_col": {"column": "permitted_use", "reason": "…"}}
+    )
+    suggestions = asyncio.run(detect_columns_for_file(fake, fc, CADASTRAL_TARGETS))
+    text = render_detection_narrative(
+        suggestions, CADASTRAL_TARGETS, include_pzz_check=False
+    )
+    assert "ПЗЗ" not in text
+    assert "классификации видов разрешённого использования" in text
+
+    text_pzz = render_detection_narrative(suggestions, CADASTRAL_TARGETS)
+    assert "ПЗЗ" in text_pzz
+
+
 def test_required_not_resolved_when_missing() -> None:
     fc = _fc([{"unrelated": "x"}])
     fake = RecordingFakeOllama({"cadastral_vri_col": {"column": None, "reason": "нет"}})
@@ -224,6 +254,46 @@ def test_required_not_resolved_when_missing() -> None:
     assert required_columns_resolved(suggestions, CADASTRAL_TARGETS) is False
     text = render_detection_narrative(suggestions, [VRI_TARGET])
     assert "Не удалось определить" in text
+
+
+# --- stale result file re-uploaded as input --------------------------------
+
+
+def test_completely_empty_resolved_column_is_downgraded_to_unresolved() -> None:
+    # Regression: a prior classify_only RESULT geojson (has "Вид_разрешенного_исп"-
+    # like columns from a previous run, all null) re-uploaded as fresh input.
+    # The heuristic matches the column by name, but every value is null across
+    # the whole file -> must be treated as "not found", not silently classified.
+    feats = [{"Вид_разрешенного_исп": None}] * 209
+    fake = RecordingFakeOllama()
+    suggestions = asyncio.run(detect_columns_for_file(fake, _fc(feats), CADASTRAL_TARGETS))
+    assert suggestions["cadastral_vri_col"].value is None
+    assert suggestions["cadastral_vri_col"].source == "none"
+    assert required_columns_resolved(suggestions, CADASTRAL_TARGETS) is False
+
+
+def test_sparse_column_triggers_warning_but_stays_resolved() -> None:
+    # 3 out of 209 filled: below the 30% default threshold -> warn, but the
+    # column is still usable (unlike the fully-empty case above).
+    feats = [{"Вид_разрешенного_исп": "Для ИЖС"}] * 3 + [
+        {"Вид_разрешенного_исп": None}
+    ] * 206
+    fake = RecordingFakeOllama()
+    fc = _fc(feats)
+    suggestions = asyncio.run(detect_columns_for_file(fake, fc, CADASTRAL_TARGETS))
+    assert suggestions["cadastral_vri_col"].value == "Вид_разрешенного_исп"
+    warnings = sparse_column_warnings(suggestions, CADASTRAL_TARGETS, profile_columns(fc))
+    assert len(warnings) == 1
+    assert "Вид_разрешенного_исп" in warnings[0]
+    assert "3 из 209" in warnings[0]
+
+
+def test_well_filled_column_has_no_sparse_warning() -> None:
+    feats = [{"Вид_разрешенного_исп": "Для ИЖС"}] * 209
+    fake = RecordingFakeOllama()
+    fc = _fc(feats)
+    suggestions = asyncio.run(detect_columns_for_file(fake, fc, CADASTRAL_TARGETS))
+    assert sparse_column_warnings(suggestions, CADASTRAL_TARGETS, profile_columns(fc)) == []
 
 
 # --- complete_json client (structured output) -----------------------------
