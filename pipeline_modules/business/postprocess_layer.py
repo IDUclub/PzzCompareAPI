@@ -201,10 +201,13 @@ def select_and_rename_result_columns(gdf: gpd.GeoDataFrame, cadastral_vri_col: s
     gpd.GeoDataFrame
         GeoDataFrame with selected and renamed columns.
     """
-    # ``Вердикт_ПЗЗ`` keeps its field name (so the frontend needs no change) but is
-    # now filled from the human-readable Russian ``Статус`` column, NOT the machine
-    # ``PZZ_VRI_VERDICT`` (allowed_main/…), which is intentionally not exposed.
-    column_mapping: Dict[str, str] = {cadastral_vri_col: 'ВРИ_ЕГРН', 'PZZ_ACTUAL_CODE_x': 'Код фактической зоны нахождения кадастра', 'PZZ_ACTUAL_NAME_x': 'Название фактической зоны нахождения кадастра', 'CHECK_SCOPE': 'Область_проверки', 'Статус': 'Вердикт_ПЗЗ', 'PZZ_REASON': 'Причина', 'MATCH_METHOD': 'Метод_сопоставления', 'MATCHED_VRI_NAME': 'Подобранный_ВРИ', 'MATCHED_VRI_CODE': 'Код_подобранного_ВРИ', 'ALLOWED_TOP_CANDIDATE_CODES': 'Код_возможного_подобранного_ВРИ', 'PZZ_NOT_ALLOWED_TOP1_CANDIDATE': 'Топ1_возможный_ВРИ', 'PZZ_NOT_ALLOWED_TOP5_CANDIDATES': 'Топ5_возможных_ВРИ'}
+    # ``Вердикт_ПЗЗ`` keeps its field name for PZZ-check runs (so the frontend
+    # needs no change there) and is filled from the human-readable Russian
+    # ``Статус`` column, NOT the machine ``PZZ_VRI_VERDICT`` (allowed_main/…),
+    # which is intentionally not exposed. Classifier-only runs never touch PZZ
+    # zones at all, so the same column is exposed as ``Статус_классификации``
+    # instead — a field literally named "ПЗЗ" with no PZZ involved is misleading.
+    column_mapping: Dict[str, str] = {cadastral_vri_col: 'ВРИ_ЕГРН', 'PZZ_ACTUAL_CODE_x': 'Код фактической зоны нахождения кадастра', 'PZZ_ACTUAL_NAME_x': 'Название фактической зоны нахождения кадастра', 'CHECK_SCOPE': 'Область_проверки', 'Статус': 'Вердикт_ПЗЗ' if include_pzz_check else 'Статус_классификации', 'PZZ_REASON': 'Причина', 'MATCH_METHOD': 'Метод_сопоставления', 'MATCHED_VRI_NAME': 'Подобранный_ВРИ', 'MATCHED_VRI_CODE': 'Код_подобранного_ВРИ', 'ALLOWED_TOP_CANDIDATE_CODES': 'Код_возможного_подобранного_ВРИ', 'PZZ_NOT_ALLOWED_TOP1_CANDIDATE': 'Топ1_возможный_ВРИ', 'PZZ_NOT_ALLOWED_TOP5_CANDIDATES': 'Топ5_возможных_ВРИ'}
     if not include_pzz_check:
         for pzz_only_column in _PZZ_ONLY_SOURCE_COLUMNS:
             column_mapping.pop(pzz_only_column, None)

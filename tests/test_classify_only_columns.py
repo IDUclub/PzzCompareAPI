@@ -45,11 +45,24 @@ def test_classify_only_drops_pzz_columns():
     cols = set(out.columns)
     assert _PZZ_ONLY_RENAMED.isdisjoint(cols), cols & _PZZ_ONLY_RENAMED
     # meaningful classify columns survive
-    assert {"ВРИ_ЕГРН", "Вердикт_ПЗЗ", "Область_проверки", "Топ5_возможных_ВРИ"} <= cols
+    assert {"ВРИ_ЕГРН", "Статус_классификации", "Область_проверки", "Топ5_возможных_ВРИ"} <= cols
+
+
+def test_classify_only_never_exposes_pzz_verdict_field():
+    # Regression: classify-only never touches PZZ zones, so a field literally
+    # named "Вердикт_ПЗЗ" must not appear in its result at all — the "Статус"
+    # source column is renamed to "Статус_классификации" instead.
+    out = select_and_rename_result_columns(
+        _sample_gdf(), cadastral_vri_col="vri_col", include_pzz_check=False
+    )
+    assert "Вердикт_ПЗЗ" not in set(out.columns)
 
 
 def test_pzz_check_keeps_pzz_columns():
     out = select_and_rename_result_columns(
         _sample_gdf(), cadastral_vri_col="vri_col", include_pzz_check=True
     )
-    assert _PZZ_ONLY_RENAMED <= set(out.columns)
+    cols = set(out.columns)
+    assert _PZZ_ONLY_RENAMED <= cols
+    assert "Вердикт_ПЗЗ" in cols
+    assert "Статус_классификации" not in cols
