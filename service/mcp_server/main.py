@@ -3,6 +3,7 @@
 Builds the root FastMCP server, mounts domain sub-servers, exposes a
 Starlette ASGI app that uvicorn (or another ASGI runner) can serve.
 """
+
 from __future__ import annotations
 
 import logging
@@ -59,7 +60,9 @@ async def mcp_lifespan(server: FastMCP):
         logger.info("mcp_server | shutdown | finished")
 
 
-main_mcp = FastMCP("PZZ Pipeline MCP", instructions=_INSTRUCTIONS, lifespan=mcp_lifespan)
+main_mcp = FastMCP(
+    "PZZ Pipeline MCP", instructions=_INSTRUCTIONS, lifespan=mcp_lifespan
+)
 main_mcp.mount(scenarios_mcp)
 main_mcp.mount(tasks_mcp)
 

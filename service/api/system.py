@@ -1,4 +1,5 @@
 """System / operational endpoints (health, readiness, metrics, logs, root)."""
+
 from __future__ import annotations
 
 import json
@@ -38,7 +39,9 @@ def readiness(app_settings: Settings = Depends(get_app_settings)) -> dict[str, s
         broker.ping()
         broker.close()
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"broker unavailable: {exc}") from exc
+        raise HTTPException(
+            status_code=503, detail=f"broker unavailable: {exc}"
+        ) from exc
     return {"status": "ready"}
 
 
@@ -50,8 +53,12 @@ def metrics() -> Response:
 @router.get("/logs", response_model=list[dict[str, Any]])
 def get_logs(
     limit: int = Query(200, ge=1, le=2000, description="Max entries to return"),
-    level: str | None = Query(None, description="Filter by level: DEBUG, INFO, WARNING, ERROR, CRITICAL"),
-    service: str | None = Query(None, description="Filter by service: api, worker, beat, mcp"),
+    level: str | None = Query(
+        None, description="Filter by level: DEBUG, INFO, WARNING, ERROR, CRITICAL"
+    ),
+    service: str | None = Query(
+        None, description="Filter by service: api, worker, beat, mcp"
+    ),
     app_settings: Settings = Depends(get_app_settings),
 ) -> list[dict[str, Any]]:
     """Return recent aggregated logs from all services, newest first.
@@ -60,13 +67,17 @@ def get_logs(
     *service* to narrow down what you see.  The list is capped at 10 000
     entries across all services combined.
     """
-    r = redis.Redis.from_url(app_settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
+    r = redis.Redis.from_url(
+        app_settings.redis_url, socket_connect_timeout=2, socket_timeout=2
+    )
     # When filtering, fetch more records so we can satisfy `limit` after filtering.
     fetch_n = min(limit * 10, 10_000) if (level or service) else limit
     try:
         raw_entries = r.lrange(LOG_STREAM_KEY, 0, fetch_n - 1)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"Redis unavailable: {exc}") from exc
+        raise HTTPException(
+            status_code=503, detail=f"Redis unavailable: {exc}"
+        ) from exc
 
     result: list[dict[str, Any]] = []
     level_upper = level.upper() if level else None

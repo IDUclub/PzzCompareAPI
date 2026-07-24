@@ -11,7 +11,11 @@ from dataclasses import replace
 from pathlib import Path
 
 from service.domain import PipelineRequest
-from service.infrastructure.storage import ObjectStorage, get_object_storage, is_remote_path
+from service.infrastructure.storage import (
+    ObjectStorage,
+    get_object_storage,
+    is_remote_path,
+)
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -36,7 +40,9 @@ class InProcessPipelineRunner(PipelineRunner):
         output_dir = Path(request.outputs_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        module_name, callable_name = self._settings.pipeline_callable.split(":", maxsplit=1)
+        module_name, callable_name = self._settings.pipeline_callable.split(
+            ":", maxsplit=1
+        )
         module = importlib.import_module(module_name)
         pipeline_callable = getattr(module, callable_name)
 
@@ -114,7 +120,9 @@ class SubprocessPipelineRunner(PipelineRunner):
             # Surfaced into the task's error_text / failed event so /logs shows
             # the real cause, not just "exit status 1".
             stderr_tail = (result.stderr or "").strip()[-8000:]
-            raise subprocess.CalledProcessError(result.returncode, result.args, stderr=stderr_tail)
+            raise subprocess.CalledProcessError(
+                result.returncode, result.args, stderr=stderr_tail
+            )
 
         return _build_output_glob(output_dir, request.task_external_id)
 
@@ -149,8 +157,11 @@ class StorageAwarePipelineRunner(PipelineRunner):
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
 
-    def _materialise_inputs(self, request: PipelineRequest, scratch: Path) -> PipelineRequest:
+    def _materialise_inputs(
+        self, request: PipelineRequest, scratch: Path
+    ) -> PipelineRequest:
         """Download MinIO inputs to scratch; leave local paths untouched."""
+
         def materialise(stored_path: str, filename: str) -> str:
             if not stored_path:
                 return stored_path
@@ -165,10 +176,18 @@ class StorageAwarePipelineRunner(PipelineRunner):
 
         return replace(
             request,
-            cadastral_data_path=materialise(request.cadastral_data_path, "cadastral_feature_collection.geojson"),
-            pzz_zones_data_path=materialise(request.pzz_zones_data_path, "pzz_zones_feature_collection.geojson"),
-            pzz_zone_vri_labels_path=materialise(request.pzz_zone_vri_labels_path, "pzz_zone_vri_labels.json"),
-            vri_classifier_path=materialise(request.vri_classifier_path, "vri_classifier.json"),
+            cadastral_data_path=materialise(
+                request.cadastral_data_path, "cadastral_feature_collection.geojson"
+            ),
+            pzz_zones_data_path=materialise(
+                request.pzz_zones_data_path, "pzz_zones_feature_collection.geojson"
+            ),
+            pzz_zone_vri_labels_path=materialise(
+                request.pzz_zone_vri_labels_path, "pzz_zone_vri_labels.json"
+            ),
+            vri_classifier_path=materialise(
+                request.vri_classifier_path, "vri_classifier.json"
+            ),
             outputs_dir=str(local_outputs_dir),
         )
 
@@ -182,11 +201,14 @@ class PipelineRunnerFactory:
     """Create pipeline runner by mode with optional fallback."""
 
     @staticmethod
-    def create(settings: "Settings", request: "PipelineRequest | None" = None) -> PipelineRunner:
+    def create(
+        settings: "Settings", request: "PipelineRequest | None" = None
+    ) -> PipelineRunner:
         if request is not None and getattr(request, "is_building_upload", False):
             from service.infrastructure.runners.uploaded_building_pzz_runner import (
                 UploadedBuildingPzzRunner,
             )
+
             inner: PipelineRunner = UploadedBuildingPzzRunner(settings)
         elif (
             request is not None
@@ -196,6 +218,7 @@ class PipelineRunnerFactory:
             from service.infrastructure.runners.deterministic_scenario_runner import (
                 DeterministicScenarioRunner,
             )
+
             inner = DeterministicScenarioRunner(settings)
         else:
             inner = PipelineRunnerFactory._create_inner(settings)
@@ -235,7 +258,13 @@ def _build_output_glob(output_dir: Path, task_external_id: str) -> str:
             f"No GeoJSON artifacts were produced for task_external_id={task_external_id} in {output_dir}"
         )
 
-    preferred_candidates = [path for path in geojson_candidates if path.stem.startswith("pzz_compare_spatial_first_")]
+    preferred_candidates = [
+        path
+        for path in geojson_candidates
+        if path.stem.startswith("pzz_compare_spatial_first_")
+    ]
     candidates = preferred_candidates or geojson_candidates
-    primary_result_path = max(candidates, key=lambda path: (path.stat().st_mtime, str(path)))
+    primary_result_path = max(
+        candidates, key=lambda path: (path.stat().st_mtime, str(path))
+    )
     return str(primary_result_path)

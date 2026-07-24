@@ -1,4 +1,5 @@
 """Auth-layer exceptions. Mapped to HTTP 401 at the API dependency."""
+
 from __future__ import annotations
 
 

@@ -1,4 +1,5 @@
 """Tests for the conversational answer use-case (phase 3)."""
+
 import asyncio
 
 from service.infrastructure.ollama_chat_client import OllamaChatError
@@ -29,11 +30,15 @@ class FakeChatStorage:
         self.parts_calls = []
         self._history_messages = history_messages or []
 
-    async def create_chat(self, user_id, *, title=None, scenario_id=None, project_id=None, metadata=None):
+    async def create_chat(
+        self, user_id, *, title=None, scenario_id=None, project_id=None, metadata=None
+    ):
         self.calls.append(("create", scenario_id, project_id))
         return {"chat_id": "new-chat", "title": title}
 
-    async def add_message(self, user_id, chat_id, *, role, content=None, parts=None, metadata=None):
+    async def add_message(
+        self, user_id, chat_id, *, role, content=None, parts=None, metadata=None
+    ):
         self.calls.append(("msg", chat_id, role, content))
         if parts is not None:
             self.parts_calls.append((chat_id, role, parts))
@@ -47,6 +52,7 @@ class FakeChatStorage:
 def _collect(gen):
     async def run():
         return [ev async for ev in gen]
+
     return asyncio.run(run())
 
 
@@ -157,7 +163,10 @@ def test_persistence_failure_emits_warning_not_error() -> None:
 
 def test_existing_chat_loads_history_into_messages() -> None:
     history_messages = [
-        {"role": "user", "parts": [{"kind": "text", "payload": {"text": "Прошлый вопрос"}}]},
+        {
+            "role": "user",
+            "parts": [{"kind": "text", "payload": {"text": "Прошлый вопрос"}}],
+        },
         {"role": "assistant", "content": "Прошлый ответ"},
         {"role": "system", "content": "служебное — должно быть отброшено"},
     ]
@@ -216,13 +225,21 @@ def test_large_report_falls_back_to_problem_objects() -> None:
         {
             "zone_name": f"Зона {i}",
             "objects": [
-                {"vri_text": f"объект {i}", "zone_name": f"Зона {i}", "verdict": "not_allowed",
-                 "fit": "wrong", "reason": "очень длинная причина " * 50},
+                {
+                    "vri_text": f"объект {i}",
+                    "zone_name": f"Зона {i}",
+                    "verdict": "not_allowed",
+                    "fit": "wrong",
+                    "reason": "очень длинная причина " * 50,
+                },
             ],
         }
         for i in range(200)
     ]
-    report = {"summary": {"total": 200, "in_wrong_zone": 200, "unclear": 0}, "zones": zones}
+    report = {
+        "summary": {"total": 200, "in_wrong_zone": 200, "unclear": 0},
+        "zones": zones,
+    }
     ctx = build_classification_context(
         object_zone_fit=report, max_report_chars=2000, max_problem_objects=60
     )
@@ -238,5 +255,9 @@ def test_build_messages_and_context() -> None:
     ctx = build_classification_context(chat_message="РЕЗЮМЕ", object_zone_fit={"a": 1})
     assert "РЕЗЮМЕ" in ctx and "JSON" in ctx
     msgs = build_messages("SYS", ctx, "вопрос")
-    assert msgs[0]["role"] == "system" and "SYS" in msgs[0]["content"] and "РЕЗЮМЕ" in msgs[0]["content"]
+    assert (
+        msgs[0]["role"] == "system"
+        and "SYS" in msgs[0]["content"]
+        and "РЕЗЮМЕ" in msgs[0]["content"]
+    )
     assert msgs[1] == {"role": "user", "content": "вопрос"}

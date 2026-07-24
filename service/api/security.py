@@ -15,6 +15,7 @@ Two dependencies are provided:
   named via the ``X-User-Id`` header. The ``user_id`` is captured here, at
   request start, while the user's token is still fresh.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

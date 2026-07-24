@@ -13,6 +13,7 @@ Safety:
 - any DB hiccup is swallowed — a failing override layer must never break the app
   or the pipeline; it simply falls back to the deployed env.
 """
+
 from __future__ import annotations
 
 import os
@@ -122,14 +123,17 @@ def apply_overrides(force: bool = False) -> bool:
 
 # ── admin-API helpers ────────────────────────────────────────────────────────
 
+
 def list_overrides() -> list[dict[str, Any]]:
     """All active overrides as plain dicts (for the admin view)."""
     from ..db import session_scope
 
     with session_scope() as session:
-        rows = session.execute(
-            select(ConfigOverride).order_by(ConfigOverride.key)
-        ).scalars().all()
+        rows = (
+            session.execute(select(ConfigOverride).order_by(ConfigOverride.key))
+            .scalars()
+            .all()
+        )
         return [
             {
                 "key": r.key,
@@ -149,9 +153,7 @@ def set_override(key: str, value: str, updated_by: str | None = None) -> None:
     with session_scope() as session:
         row = session.get(ConfigOverride, key)
         if row is None:
-            session.add(
-                ConfigOverride(key=key, value=value, updated_by=updated_by)
-            )
+            session.add(ConfigOverride(key=key, value=value, updated_by=updated_by))
         else:
             row.value = value
             row.updated_by = updated_by

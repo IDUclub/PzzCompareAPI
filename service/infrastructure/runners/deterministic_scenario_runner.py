@@ -15,6 +15,7 @@ unchanged. The building→VRI→verdict primitives are shared with the
 uploaded-building runner via ``_deterministic_pzz``. Heavy geo deps are imported
 lazily so the API process (which never runs this) does not pay for them.
 """
+
 from __future__ import annotations
 
 import json
@@ -31,7 +32,10 @@ from service.infrastructure.runners._deterministic_pzz import (
     resolve_po_type_vri,
     verdict as compute_verdict,
 )
-from service.infrastructure.runners.pipeline_runner import PipelineRunner, _build_output_glob
+from service.infrastructure.runners.pipeline_runner import (
+    PipelineRunner,
+    _build_output_glob,
+)
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -58,20 +62,32 @@ class DeterministicScenarioRunner(PipelineRunner):
         output_dir = Path(request.outputs_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        objects = json.loads(Path(request.cadastral_data_path).read_text(encoding="utf-8"))
-        zones = json.loads(Path(request.pzz_zones_data_path).read_text(encoding="utf-8"))
+        objects = json.loads(
+            Path(request.cadastral_data_path).read_text(encoding="utf-8")
+        )
+        zones = json.loads(
+            Path(request.pzz_zones_data_path).read_text(encoding="utf-8")
+        )
         code_col = request.pzz_zone_code_col or "zone_code"
         vri_col = request.cadastral_vri_col or "vri_text"
 
         zgdf = build_zone_gdf(zones, code_col)
-        feats = [f for f in (objects.get("features") or []) if f.get("geometry") is not None]
+        feats = [
+            f for f in (objects.get("features") or []) if f.get("geometry") is not None
+        ]
         fz_by_obj = join_objects_to_zones(feats, zgdf)
 
         # --- classify + annotate features ---
         for i, feature in enumerate(feats):
             old_props = feature.get("properties") or {}
-            po_type = (old_props.get("physical_object_type") or {}).get("physical_object_type_id")
-            nested = old_props.get("properties") if isinstance(old_props.get("properties"), dict) else {}
+            po_type = (old_props.get("physical_object_type") or {}).get(
+                "physical_object_type_id"
+            )
+            nested = (
+                old_props.get("properties")
+                if isinstance(old_props.get("properties"), dict)
+                else {}
+            )
             floors = nested.get(_FLOORS_FIELD, old_props.get(_FLOORS_FIELD))
             vri, vri_name = (None, None)
             if po_type is not None:
@@ -92,13 +108,20 @@ class DeterministicScenarioRunner(PipelineRunner):
             )
 
         result = {"type": "FeatureCollection", "features": feats}
-        out_path = output_dir / f"pzz_compare_spatial_first_{request.task_external_id}.geojson"
+        out_path = (
+            output_dir / f"pzz_compare_spatial_first_{request.task_external_id}.geojson"
+        )
         out_path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         logger.info(
-            json.dumps({
-                "stage": "deterministic_scenario", "status": "finished",
-                "external_id": request.task_external_id,
-                "objects": len(feats), "zones": len(zgdf), "matched_zone": len(fz_by_obj),
-            })
+            json.dumps(
+                {
+                    "stage": "deterministic_scenario",
+                    "status": "finished",
+                    "external_id": request.task_external_id,
+                    "objects": len(feats),
+                    "zones": len(zgdf),
+                    "matched_zone": len(fz_by_obj),
+                }
+            )
         )
         return _build_output_glob(output_dir, request.task_external_id)

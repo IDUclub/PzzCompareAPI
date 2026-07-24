@@ -53,9 +53,7 @@ class Settings(BaseSettings):
     default_vri_classifier_path: str = Field(
         default="data/rosreestr_vri_classifier_2024_12_24.json"
     )
-    default_services_hierarchy_path: str = Field(
-        default="data/services_hierarchy.json"
-    )
+    default_services_hierarchy_path: str = Field(default="data/services_hierarchy.json")
     default_physical_objects_hierarchy_path: str = Field(
         default="data/physical_objects_hierarchy.json"
     )
@@ -71,13 +69,16 @@ class Settings(BaseSettings):
     )
     # service_type_id -> Rosreestr VRI, for resolving service buildings in the
     # uploaded-building PZZ check (see scripts/build_service_type_to_vri.py).
-    service_type_to_vri_path: str = Field(
-        default="data/service_type_to_vri.json"
-    )
+    service_type_to_vri_path: str = Field(default="data/service_type_to_vri.json")
     # building_pzz_check: when a text type/service name matches neither an id nor
     # the catalogue aliases, fall back to one batched LLM call to map it to the
     # closest catalogue id. Disable to keep the flow strictly deterministic.
     building_llm_name_fallback: bool = Field(default=True)
+    # building_pzz_check (real ПЗЗ / letter-index zones): when the uploaded zone
+    # layer has this many or more zone codes absent from the label mapping, the
+    # flow stops asking to confirm each one and instead suggests uploading a proper
+    # ПЗЗ descriptions file. Below the threshold, per-zone LLM suggestions are offered.
+    building_pzz_zone_suggest_threshold: int = Field(default=5)
     priority_max_sum_default: int = 20
 
     run_migrations_on_startup: bool = Field(default=True)
@@ -133,6 +134,13 @@ class Settings(BaseSettings):
     generate_model: str = Field(...)
     top_k: int = Field(default=10)
     embed_batch_size: int = Field(default=32)
+    vectorizer_url: str = Field(default="")
+    # Building type/service semantic name matching (embedder). When a text
+    # type/service name resolves neither as an id nor via the alias map, its
+    # embedding is matched against the catalogue; a match must clear this cosine
+    # threshold, else the object goes to manual review (no invented VRI).
+    building_semantic_fallback: bool = Field(default=True)
+    building_semantic_threshold: float = Field(default=0.6)
 
     # ── ChatStorage integration (IDUclub ChatStorage service) ────────────────
     # Persists assistant chat history. Leave CHAT_STORAGE_BASE_URL empty to
@@ -150,6 +158,9 @@ class Settings(BaseSettings):
     chat_temperature: float = Field(default=0.3)
     chat_request_timeout_seconds: float = Field(default=900.0)
     chat_system_prompt_path: str = Field(default="data/chat_system_prompt.txt")
+    chat_system_prompt_building_path: str = Field(
+        default="data/chat_system_prompt_building.txt"
+    )
 
     # ── Geo-layer download links ─────────────────────────────────────────────
     # Result GeoJSON layers are offered as links instead of inline payloads.
@@ -195,26 +206,50 @@ def _build_settings_cached() -> Settings:
         vllm_api_key=_get_required_env(config, "VLLM_API_KEY"),
         embed_model=_get_required_env(config, "EMBED_MODEL"),
         generate_model=_get_required_env(config, "GENERATE_MODEL"),
+        vectorizer_url=_get_optional_env(config, "VECTORIZER_URL"),
+        building_semantic_fallback=_get_optional_env(
+            config, "BUILDING_SEMANTIC_FALLBACK", "true"
+        ).lower()
+        == "true",
+        building_semantic_threshold=float(
+            _get_optional_env(config, "BUILDING_SEMANTIC_THRESHOLD", "0.6")
+        ),
         urban_api_base_url=(config.get("URBAN_API_BASE_URL") or "").rstrip("/"),
         urban_api_timeout_seconds=float("600"),
-        chat_storage_base_url=_get_optional_env(config, "CHAT_STORAGE_BASE_URL").rstrip("/"),
-        chat_storage_timeout_seconds=float(_get_optional_env(config, "CHAT_STORAGE_TIMEOUT_SECONDS", "10")),
+        chat_storage_base_url=_get_optional_env(config, "CHAT_STORAGE_BASE_URL").rstrip(
+            "/"
+        ),
+        chat_storage_timeout_seconds=float(
+            _get_optional_env(config, "CHAT_STORAGE_TIMEOUT_SECONDS", "10")
+        ),
         chat_model=_get_optional_env(config, "CHAT_MODEL"),
         chat_temperature=float(_get_optional_env(config, "CHAT_TEMPERATURE", "0.3")),
-        chat_request_timeout_seconds=float(_get_optional_env(config, "CHAT_REQUEST_TIMEOUT_SECONDS", "900")),
-        chat_system_prompt_path=_get_optional_env(config, "CHAT_SYSTEM_PROMPT_PATH", "data/chat_system_prompt.txt"),
+        chat_request_timeout_seconds=float(
+            _get_optional_env(config, "CHAT_REQUEST_TIMEOUT_SECONDS", "900")
+        ),
+        chat_system_prompt_path=_get_optional_env(
+            config, "CHAT_SYSTEM_PROMPT_PATH", "data/chat_system_prompt.txt"
+        ),
+        chat_system_prompt_building_path=_get_optional_env(
+            config,
+            "CHAT_SYSTEM_PROMPT_BUILDING_PATH",
+            "data/chat_system_prompt_building.txt",
+        ),
         keycloak_url=_get_optional_env(config, "KEYCLOAK_URL").rstrip("/"),
         keycloak_realm=_get_optional_env(config, "KEYCLOAK_REALM"),
         keycloak_client_id=_get_optional_env(config, "KEYCLOAK_CLIENT_ID"),
         keycloak_client_secret=_get_optional_env(config, "KEYCLOAK_CLIENT_SECRET"),
         keycloak_scope=_get_optional_env(config, "KEYCLOAK_SCOPE"),
         public_base_url=_get_optional_env(config, "PUBLIC_BASE_URL").rstrip("/"),
-        geo_layer_url_ttl_seconds=int(_get_optional_env(config, "GEO_LAYER_URL_TTL_SECONDS", "3600")),
+        geo_layer_url_ttl_seconds=int(
+            _get_optional_env(config, "GEO_LAYER_URL_TTL_SECONDS", "3600")
+        ),
         fileserver_endpoint=config.get("FILESERVER_ENDPOINT") or "",
         fileserver_access_key=config.get("FILESERVER_ACCESS_KEY") or "",
         fileserver_secret_key=config.get("FILESERVER_SECRET_KEY") or "",
         fileserver_bucket_name=config.get("FILESERVER_BUCKET_NAME") or "",
-        fileserver_secure=(config.get("FILESERVER_SECURE") or "").lower() in {"1", "true", "yes", "on"},
+        fileserver_secure=(config.get("FILESERVER_SECURE") or "").lower()
+        in {"1", "true", "yes", "on"},
         admin_api_token=_get_optional_env(config, "ADMIN_API_TOKEN"),
     )
 

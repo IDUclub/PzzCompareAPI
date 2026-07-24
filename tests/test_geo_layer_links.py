@@ -1,4 +1,5 @@
 """Tests for geo-layer download links: descriptor + /files redirect (phase 8)."""
+
 from types import SimpleNamespace
 
 import service.api.tasks as tasks_mod
@@ -45,7 +46,9 @@ def test_layer_descriptor_local_result_relative_url() -> None:
 
 def test_result_layer_labels_classify_run() -> None:
     # Same ``result`` slot, but a classify-only run is labelled distinctly.
-    layer = build_result_geo_layer(_task(include_pzz_check=False), "abc123", get_settings())
+    layer = build_result_geo_layer(
+        _task(include_pzz_check=False), "abc123", get_settings()
+    )
     assert layer is not None
     assert layer["title"] == "Результат классификации ВРИ"
     assert layer["filename"] == "classification_result.geojson"
@@ -83,14 +86,30 @@ def test_files_result_split_filters_by_category(tmp_path) -> None:
     result = {
         "type": "FeatureCollection",
         "features": [
-            {"type": "Feature", "geometry": None, "properties": {"Категория_объекта": "Здание", "id": 1}},
-            {"type": "Feature", "geometry": None, "properties": {"Категория_объекта": "Сервис", "id": 2}},
-            {"type": "Feature", "geometry": None, "properties": {"Категория_объекта": "Здание", "id": 3}},
+            {
+                "type": "Feature",
+                "geometry": None,
+                "properties": {"Категория_объекта": "Здание", "id": 1},
+            },
+            {
+                "type": "Feature",
+                "geometry": None,
+                "properties": {"Категория_объекта": "Сервис", "id": 2},
+            },
+            {
+                "type": "Feature",
+                "geometry": None,
+                "properties": {"Категория_объекта": "Здание", "id": 3},
+            },
         ],
     }
     result_file = tmp_path / "result.geojson"
-    result_file.write_text(__import__("json").dumps(result, ensure_ascii=False), encoding="utf-8")
-    task = _task(result_path=str(result_file), building_type_col="po", building_service_col="svc")
+    result_file.write_text(
+        __import__("json").dumps(result, ensure_ascii=False), encoding="utf-8"
+    )
+    task = _task(
+        result_path=str(result_file), building_type_col="po", building_service_col="svc"
+    )
 
     class StubRepo:
         def get_by_external_id(self, external_id):

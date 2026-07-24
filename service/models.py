@@ -1,9 +1,19 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    DateTime,
+    Enum as SqlEnum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from .domain.task_state import TaskStatus  # noqa: F401 — re-exported for infrastructure consumers
+from .domain.task_state import (
+    TaskStatus,
+)  # noqa: F401 — re-exported for infrastructure consumers
 from .time_utils import utc_now
 
 __all__ = ["TaskStatus"]
@@ -30,14 +40,22 @@ class PipelineTask(Base):
     building_service_col: Mapped[str | None] = mapped_column(String(128), nullable=True)
     building_floors_col: Mapped[str | None] = mapped_column(String(128), nullable=True)
     priority: Mapped[int] = mapped_column(Integer, default=1, index=True)
-    status: Mapped[TaskStatus] = mapped_column(SqlEnum(TaskStatus), default=TaskStatus.queued)
+    status: Mapped[TaskStatus] = mapped_column(
+        SqlEnum(TaskStatus), default=TaskStatus.queued
+    )
     celery_task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     output_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
     result_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         Index("ix_pipeline_tasks_status_created_at", "status", "created_at"),
@@ -48,11 +66,15 @@ class TaskEvent(Base):
     __tablename__ = "pipeline_task_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    task_id: Mapped[int] = mapped_column(ForeignKey("pipeline_tasks.id", ondelete="CASCADE"), index=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("pipeline_tasks.id", ondelete="CASCADE"), index=True
+    )
     stage: Mapped[str] = mapped_column(String(128), index=True)
     status: Mapped[str] = mapped_column(String(64), index=True)
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
 
 
 class ConfigEntry(Base):

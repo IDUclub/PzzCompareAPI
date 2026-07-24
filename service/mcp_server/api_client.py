@@ -5,6 +5,7 @@ One responsibility: turn typed Python calls into HTTP requests against
 class instead of going to httpx directly so error-handling, timeouts and
 auth are centralised.
 """
+
 from __future__ import annotations
 
 import json
@@ -30,7 +31,6 @@ class ApiClient:
 
     async def close(self) -> None:
         await self._client.aclose()
-
 
     async def get_task(self, external_id: str) -> dict[str, Any]:
         resp = await self._client.get(f"/tasks/{external_id}")
@@ -64,7 +64,6 @@ class ApiClient:
     async def recompute_task(self, external_id: str) -> dict[str, Any]:
         resp = await self._client.post(f"/tasks/{external_id}/recompute")
         return self._json_or_raise(resp)
-
 
     async def submit_pzz_check(
         self,
@@ -133,7 +132,6 @@ class ApiClient:
             "/tasks/classify-only", files=files, data=data, headers=headers
         )
         return self._json_or_raise(resp)
-
 
     @staticmethod
     def _bearer(token: str | None) -> dict[str, str]:
@@ -206,7 +204,6 @@ class ApiClient:
             headers=self._bearer(token),
         )
         return self._json_or_raise(resp)
-
 
     def _json_or_raise(self, resp: httpx.Response) -> Any:
         if resp.status_code >= 400:

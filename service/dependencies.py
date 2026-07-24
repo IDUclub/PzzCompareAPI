@@ -19,9 +19,15 @@ from .domain.ports.event_repository import EventRepository
 from .domain.ports.task_repository import TaskRepository
 from .infrastructure.chat_storage_client import ChatStorageClient
 from .infrastructure.ollama_chat_client import OllamaChatClient
-from .infrastructure.repositories.sqlalchemy_config_repository import SqlAlchemyConfigRepository
-from .infrastructure.repositories.sqlalchemy_event_repository import SqlAlchemyEventRepository
-from .infrastructure.repositories.sqlalchemy_task_repository import SqlAlchemyTaskRepository
+from .infrastructure.repositories.sqlalchemy_config_repository import (
+    SqlAlchemyConfigRepository,
+)
+from .infrastructure.repositories.sqlalchemy_event_repository import (
+    SqlAlchemyEventRepository,
+)
+from .infrastructure.repositories.sqlalchemy_task_repository import (
+    SqlAlchemyTaskRepository,
+)
 from .settings import Settings, get_settings
 
 
@@ -56,7 +62,9 @@ def keycloak_service_configured(settings: Settings | None = None) -> bool:
     )
 
 
-def build_keycloak_token_config(settings: Settings | None = None) -> "KeycloakTokenConfig":
+def build_keycloak_token_config(
+    settings: Settings | None = None,
+) -> "KeycloakTokenConfig":
     """Build the ``idu-service-auth`` config from application settings."""
     from idu_service_auth import KeycloakTokenConfig
 
@@ -82,7 +90,9 @@ def get_service_token_client() -> "KeycloakTokenClient | None":
     return _service_token_client
 
 
-def build_chat_storage_client(settings: Settings | None = None) -> ChatStorageClient | None:
+def build_chat_storage_client(
+    settings: Settings | None = None,
+) -> ChatStorageClient | None:
     """Build a fresh ChatStorage client, or None when persistence is unavailable.
 
     Not a singleton: the client holds an ``httpx.AsyncClient`` bound to the

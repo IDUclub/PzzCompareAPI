@@ -1,4 +1,5 @@
 """Drive POST /tasks/chat/stream and print the SSE event sequence."""
+
 import json
 import time
 
@@ -29,8 +30,16 @@ def log(*a):
 
 with open(CAD, "rb") as cf, open(ZONES, "rb") as zf:
     files = {
-        "cadastral_feature_collection_file": ("cad.geojson", cf, "application/geo+json"),
-        "pzz_zones_feature_collection_file": ("zones.geojson", zf, "application/geo+json"),
+        "cadastral_feature_collection_file": (
+            "cad.geojson",
+            cf,
+            "application/geo+json",
+        ),
+        "pzz_zones_feature_collection_file": (
+            "zones.geojson",
+            zf,
+            "application/geo+json",
+        ),
     }
     with httpx.Client(timeout=httpx.Timeout(None)) as client:
         with client.stream(
@@ -47,9 +56,9 @@ with open(CAD, "rb") as cf, open(ZONES, "rb") as zf:
             event = None
             for line in resp.iter_lines():
                 if line.startswith("event:"):
-                    event = line[len("event:"):].strip()
+                    event = line[len("event:") :].strip()
                 elif line.startswith("data:"):
-                    raw = line[len("data:"):].strip()
+                    raw = line[len("data:") :].strip()
                     try:
                         d = json.loads(raw)
                     except json.JSONDecodeError:
@@ -60,9 +69,15 @@ with open(CAD, "rb") as cf, open(ZONES, "rb") as zf:
                             log("chunk DONE")
                     elif event == "file":
                         c = d.get("content", {})
-                        log("file", c.get("role"), c.get("name"),
-                            "url=", c.get("url"),
-                            "download=", (c.get("download_url") or "")[:60])
+                        log(
+                            "file",
+                            c.get("role"),
+                            c.get("name"),
+                            "url=",
+                            c.get("url"),
+                            "download=",
+                            (c.get("download_url") or "")[:60],
+                        )
                     elif event == "service_event":
                         ev = d.get("content", {}).get("event", {})
                         chat_id = ev.get("chat_id")
@@ -73,7 +88,10 @@ with open(CAD, "rb") as cf, open(ZONES, "rb") as zf:
                     elif event == "status":
                         log("status ->", d.get("status") if isinstance(d, dict) else d)
                     elif event == "task":
-                        log("task external_id=", d.get("external_id") if isinstance(d, dict) else d)
+                        log(
+                            "task external_id=",
+                            d.get("external_id") if isinstance(d, dict) else d,
+                        )
                     elif event == "done":
                         log("done", d)
                     elif event == "error":

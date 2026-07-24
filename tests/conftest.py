@@ -7,6 +7,7 @@ We set safe, hermetic defaults here — before any test module imports
 ``.env``. ``load_dotenv`` (used by iduconfig) does not override variables
 already present in the environment, so these win over any ``.env.*`` file.
 """
+
 import os
 from pathlib import Path
 import sys

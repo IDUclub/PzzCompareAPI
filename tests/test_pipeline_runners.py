@@ -78,12 +78,18 @@ def test_runners_return_same_result_contract(tmp_path, monkeypatch) -> None:
         @staticmethod
         def fake_callable(**kwargs):
             assert kwargs["task_external_id"] == request.task_external_id
-            (tmp_path / "pzz_compare_spatial_first_task-123_result.geojson").write_text("{}")
+            (tmp_path / "pzz_compare_spatial_first_task-123_result.geojson").write_text(
+                "{}"
+            )
 
-    monkeypatch.setattr(runner_mod, "importlib", SimpleNamespace(import_module=lambda _: FakeModule))
+    monkeypatch.setattr(
+        runner_mod, "importlib", SimpleNamespace(import_module=lambda _: FakeModule)
+    )
 
     def fake_subprocess_run(*args, **kwargs):
-        (tmp_path / "pzz_compare_spatial_first_task-123_result.geojson").write_text("{}")
+        (tmp_path / "pzz_compare_spatial_first_task-123_result.geojson").write_text(
+            "{}"
+        )
         return SimpleNamespace(returncode=0, stderr="")
 
     monkeypatch.setattr(runner_mod.subprocess, "run", fake_subprocess_run)
@@ -117,4 +123,6 @@ def test_build_output_glob_raises_if_no_geojson(tmp_path) -> None:
     except FileNotFoundError as exc:
         assert "task_external_id=task-123" in str(exc)
     else:
-        raise AssertionError("FileNotFoundError is expected when no geojson artifacts are produced")
+        raise AssertionError(
+            "FileNotFoundError is expected when no geojson artifacts are produced"
+        )

@@ -1,10 +1,12 @@
 """Drive POST /scenarios/{id}/chat/stream and print the SSE event sequence."""
+
 import json
 import time
 
 import httpx
 
 import os
+
 BASE = os.environ.get("PZZ_BASE", "http://localhost:8300")
 SCENARIO_ID = 604
 TOKEN = open("scripts/_test_token.txt", encoding="utf-8").read().strip()
@@ -39,9 +41,9 @@ with httpx.Client(timeout=httpx.Timeout(None)) as client:
         event = None
         for line in resp.iter_lines():
             if line.startswith("event:"):
-                event = line[len("event:"):].strip()
+                event = line[len("event:") :].strip()
             elif line.startswith("data:"):
-                raw = line[len("data:"):].strip()
+                raw = line[len("data:") :].strip()
                 try:
                     d = json.loads(raw)
                 except json.JSONDecodeError:
@@ -52,18 +54,31 @@ with httpx.Client(timeout=httpx.Timeout(None)) as client:
                         log("chunk DONE")
                 elif event == "file":
                     c = d.get("content", {})
-                    log("file", c.get("role"), c.get("name"), "url=", c.get("url"),
-                        "download=", (c.get("download_url") or "")[:55])
+                    log(
+                        "file",
+                        c.get("role"),
+                        c.get("name"),
+                        "url=",
+                        c.get("url"),
+                        "download=",
+                        (c.get("download_url") or "")[:55],
+                    )
                 elif event == "service_event":
                     ev = d.get("content", {}).get("event", {})
                     chat_id = ev.get("chat_id")
                     log("service_event chat_created chat_id=", chat_id)
                 elif event == "object_zone_fit":
-                    log("object_zone_fit summary=", d.get("summary") if isinstance(d, dict) else d)
+                    log(
+                        "object_zone_fit summary=",
+                        d.get("summary") if isinstance(d, dict) else d,
+                    )
                 elif event == "status":
                     log("status ->", d.get("status") if isinstance(d, dict) else d)
                 elif event == "task":
-                    log("task external_id=", d.get("external_id") if isinstance(d, dict) else d)
+                    log(
+                        "task external_id=",
+                        d.get("external_id") if isinstance(d, dict) else d,
+                    )
                 elif event == "done":
                     log("done", d)
                 elif event == "error":

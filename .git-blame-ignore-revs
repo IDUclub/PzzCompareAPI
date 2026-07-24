@@ -1,0 +1,4 @@
+# Reformat entire codebase with Black (no logic changes).
+# Configure locally so git blame skips it:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+27c1d5ab6e14ebfaa1c4686436846280693b5ef1

@@ -7,6 +7,7 @@ seconds (see ``infrastructure.config_runtime``).
 Guarded by the ``ADMIN_API_TOKEN`` shared secret, passed as the ``X-Admin-Token``
 header. Credentials and boot-only keys are never editable or shown unmasked.
 """
+
 from __future__ import annotations
 
 import hmac
@@ -54,12 +55,18 @@ def _validation_error(key: str, value: str) -> str | None:
                 os.environ[key] = old
             _build_settings_cached.cache_clear()
 
+
 router = APIRouter(prefix="/admin/config", tags=["admin"])
 
 # Settings attributes that hold secrets — masked in the resolved-settings view.
 _SECRET_SETTING_FIELDS = frozenset(
-    {"vllm_api_key", "fileserver_access_key", "fileserver_secret_key",
-     "admin_api_token", "database_url"}
+    {
+        "vllm_api_key",
+        "fileserver_access_key",
+        "fileserver_secret_key",
+        "admin_api_token",
+        "database_url",
+    }
 )
 
 
@@ -147,7 +154,9 @@ def put_config_key(key: str, body: ConfigValueIn) -> dict[str, Any]:
         )
     error = _validation_error(key, body.value)  # pre-check, never persists a bad value
     if error is not None:
-        raise HTTPException(status_code=400, detail=f"Value rejected for '{key}': {error}")
+        raise HTTPException(
+            status_code=400, detail=f"Value rejected for '{key}': {error}"
+        )
     set_override(key, body.value, updated_by=body.updated_by)
     api_log("admin_config", "set", key=key, updated_by=body.updated_by or "")
     return _key_view(key)
