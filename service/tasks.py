@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from .infrastructure.runners.pipeline_runner import PipelineRunnerFactory
 from .application.use_cases.finish_task import finish_task
 from .application.use_cases.start_task import StartTaskResult, start_task
+from .application.use_cases.uploads import purge_expired_uploads
 from .db import session_scope
 from .domain.ports.task_repository import TaskNotFoundError
 from .infrastructure.repositories.sqlalchemy_config_repository import (
@@ -52,6 +53,10 @@ celery_app.conf.beat_schedule = {
     "cleanup-stale-output-files": {
         "task": "service.tasks.cleanup_stale_output_files_task",
         "schedule": schedule(run_every=settings.outputs_cleanup_interval_seconds),
+    },
+    "cleanup-expired-uploads": {
+        "task": "service.tasks.cleanup_expired_uploads_task",
+        "schedule": schedule(run_every=settings.uploads_cleanup_interval_seconds),
     },
 }
 # Two queues so GPU-bound upload (LLM) tasks run at a lower concurrency than
@@ -427,3 +432,14 @@ def cleanup_stale_output_files_task() -> dict[str, int]:
     if removed:
         logger.info("Removed %s stale output files from %s", removed, outputs_dir)
     return {"removed": removed}
+
+
+@celery_app.task(name="service.tasks.cleanup_expired_uploads_task")
+def cleanup_expired_uploads_task() -> dict[str, int]:
+    """Drop pre-task uploads past their TTL.
+
+    The uploads directory is a volume so an ``upload_id`` survives a redeploy; that
+    also means nothing reclaims it, and without this every file ever attached would
+    stay on disk.
+    """
+    return {"removed": purge_expired_uploads(settings)}
