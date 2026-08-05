@@ -8,6 +8,7 @@ from service.application.use_cases.building_zone_review import (
     UncoveredZone,
     build_confirmed_overlay,
     build_disclaimer,
+    build_review_message,
     build_suggestion_messages,
     parse_suggestions,
     remaining_uncovered,
@@ -178,6 +179,50 @@ def test_suggestion_prompt_enums_candidates_and_parses_hits() -> None:
     assert parse_suggestions(uncovered, {"z0": "ZZ-9", "z1": "Ж-1"}, candidates) == {
         "Т-1": "Ж-1"
     }
+
+
+def test_review_message_states_the_matches_and_what_to_do() -> None:
+    """Clients show this text; they must not have to rebuild it from the fields."""
+    text = build_review_message(
+        "confirm",
+        [
+            {
+                "user_code": "СХ-3",
+                "user_name": "сельхоз",
+                "suggested_code": "АГ-1",
+                "suggested_name": "Сельхоз",
+            }
+        ],
+    )
+
+    assert "не запущена" in text
+    assert "«СХ-3» (сельхоз) → АГ-1 Сельхоз" in text
+    assert "confirmed_zone_map" in text
+    assert "подтверждение" in text
+
+
+def test_review_message_names_a_zone_without_a_match() -> None:
+    text = build_review_message(
+        "confirm",
+        [{"user_code": "СХ-3", "user_name": "", "suggested_code": None}],
+    )
+
+    assert "подходящей зоны не нашлось" in text
+
+
+def test_review_message_for_upload_lists_the_missing_zones() -> None:
+    text = build_review_message("suggest_upload", uncovered_codes=["СХ-3", "Т-1"])
+
+    assert "СХ-3, Т-1" in text
+    assert "pzz_descriptions_file" in text
+
+
+def test_review_message_for_detection_says_what_is_missing() -> None:
+    assert "код территориальной зоны" in build_review_message("detection_failed")
+
+
+def test_review_message_is_empty_when_the_check_started() -> None:
+    assert build_review_message("created") == ""
 
 
 def test_disclaimer_lists_remaining() -> None:
