@@ -14,26 +14,6 @@ from typing import Any
 import httpx
 
 
-def _geojson_files(
-    *slots: tuple[str, str, dict[str, Any] | None, str | None],
-) -> dict[str, tuple[str, bytes, str]]:
-    """Build the multipart part for every slot still passed inline.
-
-    A slot given as an upload id sends no body part: the API resolves it from storage,
-    which is the whole point of the id — the payload travels once, at upload time.
-    """
-    parts: dict[str, tuple[str, bytes, str]] = {}
-    for field_name, filename, payload, upload_id in slots:
-        if upload_id or payload is None:
-            continue
-        parts[field_name] = (
-            filename,
-            json.dumps(payload).encode("utf-8"),
-            "application/geo+json",
-        )
-    return parts
-
-
 class ApiError(RuntimeError):
     """Raised when the upstream API returns a non-2xx response."""
 
@@ -77,19 +57,6 @@ class ApiClient:
             raise ApiError(resp.status_code, self._safe_body(resp))
         return json.loads(resp.content.decode("utf-8"))
 
-    async def get_task_report(
-        self, external_id: str, group_by: str = "zone"
-    ) -> dict[str, Any]:
-        """Structured object-zone-fit view of a finished file task.
-
-        The counterpart of ``get_scenario_object_zone_fit``: the raw result GeoJSON is
-        the deliverable, this is what an answer can be grounded in.
-        """
-        resp = await self._client.get(
-            f"/tasks/{external_id}/object-zone-fit", params={"group_by": group_by}
-        )
-        return self._json_or_raise(resp)
-
     async def cancel_task(self, external_id: str) -> dict[str, Any]:
         resp = await self._client.delete(f"/tasks/{external_id}")
         return self._json_or_raise(resp)
@@ -101,31 +68,27 @@ class ApiClient:
     async def submit_pzz_check(
         self,
         *,
+        cadastral_geojson: dict[str, Any],
+        pzz_zones_geojson: dict[str, Any],
         cadastral_vri_col: str,
         pzz_zone_code_col: str,
         pzz_zone_name_col: str,
-        cadastral_geojson: dict[str, Any] | None = None,
-        pzz_zones_geojson: dict[str, Any] | None = None,
-        cadastral_upload_id: str | None = None,
-        pzz_zones_upload_id: str | None = None,
         priority: int = 1,
         force_recompute: bool = False,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        files = _geojson_files(
-            (
-                "cadastral_feature_collection_file",
+        files = {
+            "cadastral_feature_collection_file": (
                 "cadastral.geojson",
-                cadastral_geojson,
-                cadastral_upload_id,
+                json.dumps(cadastral_geojson).encode("utf-8"),
+                "application/geo+json",
             ),
-            (
-                "pzz_zones_feature_collection_file",
+            "pzz_zones_feature_collection_file": (
                 "pzz_zones.geojson",
-                pzz_zones_geojson,
-                pzz_zones_upload_id,
+                json.dumps(pzz_zones_geojson).encode("utf-8"),
+                "application/geo+json",
             ),
-        )
+        }
         data: dict[str, Any] = {
             "cadastral_vri_col": cadastral_vri_col,
             "pzz_zone_code_col": pzz_zone_code_col,
@@ -133,10 +96,6 @@ class ApiClient:
             "priority": str(priority),
             "force_recompute": "true" if force_recompute else "false",
         }
-        if cadastral_upload_id:
-            data["cadastral_feature_collection_upload_id"] = cadastral_upload_id
-        if pzz_zones_upload_id:
-            data["pzz_zones_feature_collection_upload_id"] = pzz_zones_upload_id
         headers: dict[str, str] = {}
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
@@ -148,72 +107,29 @@ class ApiClient:
     async def submit_classify_only(
         self,
         *,
+        cadastral_geojson: dict[str, Any],
         cadastral_vri_col: str,
-        cadastral_geojson: dict[str, Any] | None = None,
-        cadastral_upload_id: str | None = None,
         priority: int = 1,
         force_recompute: bool = False,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        files = _geojson_files(
-            (
-                "cadastral_feature_collection_file",
+        files = {
+            "cadastral_feature_collection_file": (
                 "cadastral.geojson",
-                cadastral_geojson,
-                cadastral_upload_id,
+                json.dumps(cadastral_geojson).encode("utf-8"),
+                "application/geo+json",
             ),
-        )
+        }
         data: dict[str, Any] = {
             "cadastral_vri_col": cadastral_vri_col,
             "priority": str(priority),
             "force_recompute": "true" if force_recompute else "false",
         }
-        if cadastral_upload_id:
-            data["cadastral_feature_collection_upload_id"] = cadastral_upload_id
         headers: dict[str, str] = {}
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
         resp = await self._client.post(
             "/tasks/classify-only", files=files, data=data, headers=headers
-        )
-        return self._json_or_raise(resp)
-
-    async def submit_building_pzz_check(
-        self,
-        *,
-        buildings_upload_id: str,
-        pzz_zones_upload_id: str,
-        descriptions_upload_id: str | None = None,
-        confirmed_zone_map: dict[str, str] | None = None,
-        model: str | None = None,
-        priority: int = 1,
-        force_recompute: bool = False,
-        idempotency_key: str | None = None,
-    ) -> dict[str, Any]:
-        """Submit the building PZZ check.
-
-        Layers are always upload ids here: the mode reads up to three files and
-        detects the column names itself, so there is no inline form to keep.
-        """
-        data: dict[str, Any] = {
-            "buildings_feature_collection_upload_id": buildings_upload_id,
-            "pzz_zones_feature_collection_upload_id": pzz_zones_upload_id,
-            "priority": str(priority),
-            "force_recompute": "true" if force_recompute else "false",
-        }
-        if descriptions_upload_id:
-            data["pzz_descriptions_upload_id"] = descriptions_upload_id
-        if confirmed_zone_map:
-            data["confirmed_zone_map"] = json.dumps(
-                confirmed_zone_map, ensure_ascii=False
-            )
-        if model:
-            data["model"] = model
-        headers: dict[str, str] = {}
-        if idempotency_key:
-            headers["Idempotency-Key"] = idempotency_key
-        resp = await self._client.post(
-            "/tasks/building-pzz-check", data=data, headers=headers
         )
         return self._json_or_raise(resp)
 

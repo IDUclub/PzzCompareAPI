@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -29,11 +28,9 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from ..application.use_cases.create_task import create_task
-from ..application.use_cases.uploads import UploadError, resolve_upload, uploads_root
 from ..application.use_cases.building_zone_review import (
     build_confirmed_overlay,
     build_disclaimer,
-    build_review_message,
     build_suggestion_messages,
     parse_suggestions,
     remaining_uncovered,
@@ -73,11 +70,11 @@ from ..infrastructure.geo_ingest import (
     supported_extensions,
 )
 from ..infrastructure.storage import get_object_storage
-from ..schemas import BuildingPzzCheckOut, TaskCreate, TaskOut
+from ..schemas import TaskCreate, TaskOut
 from ..output_version import PIPELINE_OUTPUT_VERSION
 from ..settings import Settings
 from ..tasks import celery_app, enqueue_pipeline_task, execute_pipeline_task
-from .security import AuthUser, get_current_user, get_optional_user
+from .security import AuthUser, get_current_user
 from ..infrastructure.ollama_chat_client import OllamaChatError
 from ..infrastructure.table_reader import TableReadError, read_table
 from .tasks import (
@@ -87,96 +84,44 @@ from .tasks import (
     task_stream_with_report_generator,
     zone_review_generator,
 )
-from .utils import api_log, stream_upload_to_file
+from .utils import api_log
 
 router = APIRouter(prefix="/tasks", tags=["classifier"])
 logger = logging.getLogger("service.api.classifier")
 
 
-def _resolve_file_slot(
-    upload: UploadFile | None,
-    upload_id: str | None,
+def _stream_upload_to_file(
+    upload: UploadFile,
+    dest: Path,
+    max_bytes: int,
     field_name: str,
-    *,
-    required: bool,
-    owner_id: str,
-    app_settings: Settings,
-    scratch: Path,
-) -> UploadFile | None:
-    """Return the upload for one slot, taking it from a body part or a stored id.
+) -> None:
+    """Stream ``upload`` chunk-by-chunk to ``dest``, enforcing ``max_bytes``.
 
-    Both forms converge here so the rest of the submission path stays unaware of how
-    the bytes arrived. An ``upload_id`` wins over an inline file: a caller sending
-    both is most likely migrating, and the id is the newer contract.
+    Avoids buffering the full payload in memory.
     """
-    if upload_id:
-        try:
-            stored_path = resolve_upload(
-                upload_id, owner_id=owner_id, settings=app_settings
-            )
-        except UploadError as exc:
-            raise HTTPException(
-                status_code=exc.status_code, detail=f"{field_name}: {exc.detail}"
-            ) from exc
-        # Copied into the request scratch dir so the ingest path may consume, rewind
-        # and delete it without touching the stored upload, which outlives this task.
-        scratch.mkdir(parents=True, exist_ok=True)
-        local_path = scratch / stored_path.name
-        shutil.copy2(stored_path, local_path)
-        return UploadFile(file=local_path.open("rb"), filename=local_path.name)
-
-    if upload is not None:
-        return upload
-
-    if required:
-        raise HTTPException(
-            status_code=422,
-            detail=f"{field_name}: provide either the file or {field_name}_upload_id",
-        )
-    return None
-
-
-def _resolve_building_slots(
-    *,
-    buildings: UploadFile | None,
-    buildings_upload_id: str | None,
-    zones: UploadFile | None,
-    zones_upload_id: str | None,
-    descriptions: UploadFile | None,
-    descriptions_upload_id: str | None,
-    owner_id: str,
-    app_settings: Settings,
-    scratch: Path,
-) -> tuple[UploadFile, UploadFile, UploadFile | None]:
-    """Resolve the three building-mode slots in one blocking step."""
-
-    def slot(
-        upload: UploadFile | None, upload_id: str | None, name: str, required: bool
-    ) -> UploadFile | None:
-        return _resolve_file_slot(
-            upload,
-            upload_id,
-            name,
-            required=required,
-            owner_id=owner_id,
-            app_settings=app_settings,
-            scratch=scratch,
-        )
-
-    buildings_file = slot(
-        buildings, buildings_upload_id, "buildings_feature_collection_file", True
-    )
-    zones_file = slot(zones, zones_upload_id, "pzz_zones_feature_collection_file", True)
-    descriptions_file = slot(
-        descriptions, descriptions_upload_id, "pzz_descriptions_file", False
-    )
-    return buildings_file, zones_file, descriptions_file
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with dest.open("wb") as fh:
+        while True:
+            chunk = upload.file.read(1024 * 1024)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > max_bytes:
+                fh.close()
+                dest.unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"{field_name} exceeds limit of {max_bytes} bytes",
+                )
+            fh.write(chunk)
 
 
 def _json_upload(obj: Any, filename: str) -> UploadFile:
     """Wrap an in-memory JSON object as an ``UploadFile`` so a server-generated
     labels file (the confirmed zone overlay) flows through the same ingest path as
-    a real upload. ``stream_upload_to_file`` reads ``.file`` synchronously, so a
+    a real upload. ``_stream_upload_to_file`` reads ``.file`` synchronously, so a
     ``BytesIO`` is sufficient."""
     data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
     return UploadFile(file=BytesIO(data), filename=filename)
@@ -223,7 +168,7 @@ def _ingest_upload(
 ) -> str:
     """Stream → validate → persist to storage. Returns the stored path."""
     local_path = task_dir / filename
-    stream_upload_to_file(upload, local_path, max_bytes, field_name)
+    _stream_upload_to_file(upload, local_path, max_bytes, field_name)
     _validate_json_file(local_path, expected_json_type, field_name)
     object_key = f"inputs/{external_id}/{filename}"
     stored = storage.upload_file(str(local_path.resolve()), object_key)
@@ -272,7 +217,7 @@ def _ingest_geo_upload(
         )
 
     raw_path = task_dir / f"{Path(filename).stem}{suffix}"
-    stream_upload_to_file(upload, raw_path, max_bytes, field_name)
+    _stream_upload_to_file(upload, raw_path, max_bytes, field_name)
     try:
         feature_collection = geo_file_to_geojson_dict(raw_path)
     except GeoIngestError as exc:
@@ -329,7 +274,7 @@ def _upload_to_feature_collection(
                 ),
             )
         raw_path = task_dir / f"detect{suffix}"
-        stream_upload_to_file(upload, raw_path, max_bytes, field_name)
+        _stream_upload_to_file(upload, raw_path, max_bytes, field_name)
         try:
             return geo_file_to_geojson_dict(raw_path)
         except GeoIngestError as exc:
@@ -556,14 +501,10 @@ _TASK_RERUN_DOCSTRING = """**Coordinate Reference System (CRS) requirement.** Al
 
 @router.post("/pzz-check", response_model=TaskOut)
 def create_pzz_check_task_endpoint(
-    cadastral_feature_collection_file: UploadFile | None = File(default=None),
-    pzz_zones_feature_collection_file: UploadFile | None = File(default=None),
+    cadastral_feature_collection_file: UploadFile = File(...),
+    pzz_zones_feature_collection_file: UploadFile = File(...),
     pzz_zone_vri_labels_file: UploadFile | None = File(default=None),
     vri_classifier_file: UploadFile | None = File(default=None),
-    cadastral_feature_collection_upload_id: str | None = Form(default=None),
-    pzz_zones_feature_collection_upload_id: str | None = Form(default=None),
-    pzz_zone_vri_labels_upload_id: str | None = Form(default=None),
-    vri_classifier_upload_id: str | None = Form(default=None),
     cadastral_vri_col: str = Form(..., min_length=1),
     pzz_zone_code_col: str = Form(..., min_length=1),
     pzz_zone_name_col: str = Form(..., min_length=1),
@@ -572,7 +513,6 @@ def create_pzz_check_task_endpoint(
     force_recompute: bool = Form(False),
     idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
     idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
-    user: AuthUser | None = Depends(get_optional_user),
     app_settings: Settings = Depends(get_app_settings),
     task_repo: TaskRepository = Depends(get_task_repo),
     event_repo: EventRepository = Depends(get_event_repo),
@@ -584,67 +524,25 @@ def create_pzz_check_task_endpoint(
     performs a spatial overlay to determine each parcel's factual zone and
     validates the cadastral VRI text against the PZZ zone definition.
 
-    Each layer arrives either as a body part or as the id of a prior ``POST /uploads``.
     """
-    scratch = uploads_root(app_settings) / f"resolve-{uuid4().hex}"
-    owner_id = user.user_id if user else ""
-    try:
-        cadastral_file = _resolve_file_slot(
-            cadastral_feature_collection_file,
-            cadastral_feature_collection_upload_id,
-            "cadastral_feature_collection_file",
-            required=True,
-            owner_id=owner_id,
-            app_settings=app_settings,
-            scratch=scratch,
-        )
-        pzz_zones_file = _resolve_file_slot(
-            pzz_zones_feature_collection_file,
-            pzz_zones_feature_collection_upload_id,
-            "pzz_zones_feature_collection_file",
-            required=True,
-            owner_id=owner_id,
-            app_settings=app_settings,
-            scratch=scratch,
-        )
-        labels_file = _resolve_file_slot(
-            pzz_zone_vri_labels_file,
-            pzz_zone_vri_labels_upload_id,
-            "pzz_zone_vri_labels_file",
-            required=False,
-            owner_id=owner_id,
-            app_settings=app_settings,
-            scratch=scratch,
-        )
-        classifier_file = _resolve_file_slot(
-            vri_classifier_file,
-            vri_classifier_upload_id,
-            "vri_classifier_file",
-            required=False,
-            owner_id=owner_id,
-            app_settings=app_settings,
-            scratch=scratch,
-        )
-        return _create_pipeline_task(
-            cadastral_file=cadastral_file,
-            pzz_zones_file=pzz_zones_file,
-            labels_file=labels_file,
-            classifier_file=classifier_file,
-            include_pzz_check=True,
-            cadastral_vri_col=cadastral_vri_col,
-            pzz_zone_code_col=pzz_zone_code_col,
-            pzz_zone_name_col=pzz_zone_name_col,
-            priority=priority,
-            retry_failed=retry_failed,
-            force_recompute=force_recompute,
-            idempotency_key=idempotency_key_header or idempotency_key_form,
-            app_settings=app_settings,
-            task_repo=task_repo,
-            event_repo=event_repo,
-            session=session,
-        )
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+    return _create_pipeline_task(
+        cadastral_file=cadastral_feature_collection_file,
+        pzz_zones_file=pzz_zones_feature_collection_file,
+        labels_file=pzz_zone_vri_labels_file,
+        classifier_file=vri_classifier_file,
+        include_pzz_check=True,
+        cadastral_vri_col=cadastral_vri_col,
+        pzz_zone_code_col=pzz_zone_code_col,
+        pzz_zone_name_col=pzz_zone_name_col,
+        priority=priority,
+        retry_failed=retry_failed,
+        force_recompute=force_recompute,
+        idempotency_key=idempotency_key_header or idempotency_key_form,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+    )
 
 
 create_pzz_check_task_endpoint.__doc__ = (
@@ -654,17 +552,14 @@ create_pzz_check_task_endpoint.__doc__ = (
 
 @router.post("/classify-only", response_model=TaskOut)
 def create_classify_only_task_endpoint(
-    cadastral_feature_collection_file: UploadFile | None = File(default=None),
+    cadastral_feature_collection_file: UploadFile = File(...),
     vri_classifier_file: UploadFile | None = File(default=None),
-    cadastral_feature_collection_upload_id: str | None = Form(default=None),
-    vri_classifier_upload_id: str | None = Form(default=None),
     cadastral_vri_col: str = Form(..., min_length=1),
     priority: int = Form(1, ge=1, le=10),
     retry_failed: bool = Form(False),
     force_recompute: bool = Form(False),
     idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
     idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
-    user: AuthUser | None = Depends(get_optional_user),
     app_settings: Settings = Depends(get_app_settings),
     task_repo: TaskRepository = Depends(get_task_repo),
     event_repo: EventRepository = Depends(get_event_repo),
@@ -676,49 +571,25 @@ def create_classify_only_task_endpoint(
     against the federal VRI classifier (string + embedding + optional LLM
     rerank). Useful when zone data is unavailable or out of scope.
 
-    Each layer arrives either as a body part or as the id of a prior ``POST /uploads``.
     """
-    scratch = uploads_root(app_settings) / f"resolve-{uuid4().hex}"
-    owner_id = user.user_id if user else ""
-    try:
-        cadastral_file = _resolve_file_slot(
-            cadastral_feature_collection_file,
-            cadastral_feature_collection_upload_id,
-            "cadastral_feature_collection_file",
-            required=True,
-            owner_id=owner_id,
-            app_settings=app_settings,
-            scratch=scratch,
-        )
-        classifier_file = _resolve_file_slot(
-            vri_classifier_file,
-            vri_classifier_upload_id,
-            "vri_classifier_file",
-            required=False,
-            owner_id=owner_id,
-            app_settings=app_settings,
-            scratch=scratch,
-        )
-        return _create_pipeline_task(
-            cadastral_file=cadastral_file,
-            pzz_zones_file=None,
-            labels_file=None,
-            classifier_file=classifier_file,
-            include_pzz_check=False,
-            cadastral_vri_col=cadastral_vri_col,
-            pzz_zone_code_col="",
-            pzz_zone_name_col="",
-            priority=priority,
-            retry_failed=retry_failed,
-            force_recompute=force_recompute,
-            idempotency_key=idempotency_key_header or idempotency_key_form,
-            app_settings=app_settings,
-            task_repo=task_repo,
-            event_repo=event_repo,
-            session=session,
-        )
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+    return _create_pipeline_task(
+        cadastral_file=cadastral_feature_collection_file,
+        pzz_zones_file=None,
+        labels_file=None,
+        classifier_file=vri_classifier_file,
+        include_pzz_check=False,
+        cadastral_vri_col=cadastral_vri_col,
+        pzz_zone_code_col="",
+        pzz_zone_name_col="",
+        priority=priority,
+        retry_failed=retry_failed,
+        force_recompute=force_recompute,
+        idempotency_key=idempotency_key_header or idempotency_key_form,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+    )
 
 
 create_classify_only_task_endpoint.__doc__ = (
@@ -726,116 +597,6 @@ create_classify_only_task_endpoint.__doc__ = (
     + "\n    "
     + _TASK_RERUN_DOCSTRING
 )
-
-
-_BUILDING_NEXT_STEP = {
-    "created": (
-        "poll the task status until it is finished, then read the object-zone-fit report"
-    ),
-    "confirm": (
-        "show the suggested zone matches to the user and resubmit with "
-        "confirmed_zone_map (their zone code → template zone code)"
-    ),
-    "suggest_upload": (
-        "ask the user for their PZZ permitted-use descriptions, upload that file and "
-        "resubmit with pzz_descriptions_upload_id"
-    ),
-    "detection_failed": (
-        "ask the user which properties hold the PZZ zone code and the building type "
-        "or service, then resubmit"
-    ),
-}
-
-
-def _building_run_response(run: BuildingPzzRun) -> BuildingPzzCheckOut:
-    """Present a prepared run to a non-streaming caller.
-
-    ``next_step`` is spelled out because the caller may be a model: a response
-    without a task is a request for something from the user, not a failure to retry.
-    ``chat_message`` carries the same thing as prose, so a chat client shows our
-    wording instead of assembling its own from the fields.
-    """
-    return BuildingPzzCheckOut(
-        action=run.action,
-        narrative=run.narrative,
-        detail=run.detail,
-        next_step=_BUILDING_NEXT_STEP[run.action],
-        suggestions=run.suggestions,
-        task=run.task,
-        chat_message=build_review_message(
-            run.action, run.suggestions, list(run.uncovered_codes)
-        ),
-    )
-
-
-@router.post("/building-pzz-check", response_model=BuildingPzzCheckOut)
-async def create_building_pzz_check_task_endpoint(
-    buildings_feature_collection_file: UploadFile | None = File(default=None),
-    pzz_zones_feature_collection_file: UploadFile | None = File(default=None),
-    pzz_descriptions_file: UploadFile | None = File(default=None),
-    buildings_feature_collection_upload_id: str | None = Form(default=None),
-    pzz_zones_feature_collection_upload_id: str | None = Form(default=None),
-    pzz_descriptions_upload_id: str | None = Form(default=None),
-    confirmed_zone_map: str | None = Form(default=None),
-    model: str | None = Form(default=None),
-    priority: int = Form(1, ge=1, le=10),
-    force_recompute: bool = Form(False),
-    idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
-    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
-    user: AuthUser | None = Depends(get_optional_user),
-    app_settings: Settings = Depends(get_app_settings),
-    task_repo: TaskRepository = Depends(get_task_repo),
-    event_repo: EventRepository = Depends(get_event_repo),
-    session: Session = Depends(get_db),
-) -> BuildingPzzCheckOut:
-    """Create a building PZZ check task — the non-streaming form of the building mode.
-
-    Buildings (Urban-API-shaped ``physical_object_type_id`` / ``service_type_id`` +
-    floors) are matched against the uploaded PZZ zones. Columns are detected from the
-    data, so no column names are passed in.
-
-    Unlike the other submissions this one does not always create a task. When the zone
-    codes are letter indices that the built-in template does not cover, the response
-    carries ``action`` = ``suggest_upload`` (upload your own descriptions) or
-    ``confirm`` (approve the proposed matches and resubmit with ``confirmed_zone_map``)
-    instead of a task — the check would otherwise silently run on zone definitions that
-    are not the user's. ``detection_failed`` means the required columns were not found.
-
-    Each layer arrives either as a body part or as the id of a prior ``POST /uploads``.
-    """
-    scratch = uploads_root(app_settings) / f"resolve-{uuid4().hex}"
-    owner_id = user.user_id if user else ""
-    try:
-        buildings_file, zones_file, descriptions_file = await run_in_threadpool(
-            _resolve_building_slots,
-            buildings=buildings_feature_collection_file,
-            buildings_upload_id=buildings_feature_collection_upload_id,
-            zones=pzz_zones_feature_collection_file,
-            zones_upload_id=pzz_zones_feature_collection_upload_id,
-            descriptions=pzz_descriptions_file,
-            descriptions_upload_id=pzz_descriptions_upload_id,
-            owner_id=owner_id,
-            app_settings=app_settings,
-            scratch=scratch,
-        )
-        run = await _prepare_building_pzz_run(
-            buildings_file=buildings_file,
-            zones_file=zones_file,
-            descriptions_file=descriptions_file,
-            confirmed_zone_map=_parse_confirmed_zone_map(confirmed_zone_map),
-            model=model,
-            priority=priority,
-            force_recompute=force_recompute,
-            idempotency_key=idempotency_key_header or idempotency_key_form,
-            app_settings=app_settings,
-            task_repo=task_repo,
-            event_repo=event_repo,
-            session=session,
-        )
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
-
-    return _building_run_response(run)
 
 
 @router.post("/pzz-check/stream")
@@ -1247,76 +1008,43 @@ async def _convert_descriptions_if_table(
     return _json_upload(zones, "pzz_descriptions_from_table.json"), note
 
 
-def _parse_confirmed_zone_map(raw: str | None) -> dict[str, str] | None:
-    """Parse the zone-confirmation form field: a JSON object of user code → template code."""
-    if not raw:
-        return None
-    try:
-        loaded = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=422, detail="confirmed_zone_map must be a JSON object"
-        ) from exc
-    if not isinstance(loaded, dict) or not all(
-        isinstance(k, str) and isinstance(v, str) for k, v in loaded.items()
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail="confirmed_zone_map must map zone codes to template codes (str→str)",
-        )
-    return loaded or None
-
-
-@dataclass(frozen=True)
-class BuildingPzzRun:
-    """What preparing a building PZZ check produced: a task, or the step blocking it.
-
-    The letter-index zone review can legitimately end without a task — asking for a
-    proper descriptions file, or for confirmation of per-zone suggestions — so both
-    the streaming and the plain endpoint have to carry that outcome as data.
-    """
-
-    action: str
-    narrative: str
-    detail: str = ""
-    suggestions: list[dict[str, Any]] | None = None
-    task: TaskOut | None = None
-    uncovered_codes: tuple[str, ...] = ()
-
-
-async def _prepare_building_pzz_run(
+async def _run_building_pzz_auto(
     *,
+    request: Request,
     buildings_file: UploadFile,
     zones_file: UploadFile,
     descriptions_file: UploadFile | None,
     confirmed_zone_map: dict[str, str] | None,
+    user_query: str | None,
+    chat_id: str | None,
+    group_by: str,
     model: str | None,
+    temperature: float | None,
     priority: int,
     force_recompute: bool,
+    poll_interval: float,
     idempotency_key: str | None,
+    user_id: str,
     app_settings: Settings,
     task_repo: TaskRepository,
     event_repo: EventRepository,
     session: Session,
-) -> BuildingPzzRun:
-    """Detect the building/zone columns, review zone coverage, create the task.
+) -> EventSourceResponse:
+    """Auto-detect building columns, run the deterministic building PZZ check, stream chat.
 
-    Everything the building PZZ check decides before any answer is produced:
-    buildings (physical_object_type_id / service_type_id + floors) are matched
-    against the uploaded PZZ zones, and the zone codes are checked against the
-    descriptions available for them.
+    The uploaded-building counterpart of the ``pzz_check`` auto flow: buildings
+    (physical_object_type_id / service_type_id + floors) are matched against the
+    uploaded PZZ zones; the answer is grounded in the object-zone-fit report.
 
     A CSV/XLSX ``pzz_descriptions_file`` is converted to the label JSON up front,
-    so a caller can drop a spreadsheet without a separate ``/convert`` call.
+    so the frontend can drop a spreadsheet without a separate ``/convert`` call.
     """
     try:
         descriptions_file, table_note = await _convert_descriptions_if_table(
             descriptions_file, app_settings, model
         )
     except _DescriptionsTableError as exc:
-        return BuildingPzzRun(
-            action="detection_failed", narrative="", detail=exc.detail
-        )
+        return EventSourceResponse(detection_failed_generator("", exc.detail))
 
     max_bytes = app_settings.max_upload_bytes
     detect_dir = Path(app_settings.task_inputs_dir) / f"detect-{uuid4().hex}"
@@ -1375,13 +1103,12 @@ async def _prepare_building_pzz_run(
     # Floors is optional (residential falls back without it); a zone code plus at
     # least one building identifier (type or service) is the minimum to classify.
     if not zone_code or not (building_type or building_service):
-        return BuildingPzzRun(
-            action="detection_failed",
-            narrative=narrative,
-            detail=(
+        return EventSourceResponse(
+            detection_failed_generator(
+                narrative,
                 "нужны колонка кода зоны ПЗЗ и хотя бы одна из колонок «тип» или "
-                "«сервис» здания"
-            ),
+                "«сервис» здания",
+            )
         )
 
     # Real-ПЗЗ (letter-index) zone review: when the zones aren't numeric urban_api
@@ -1405,11 +1132,10 @@ async def _prepare_building_pzz_run(
             f"найдено ({', '.join(review.uncovered_codes)}). Загрузите описание "
             "разрешённых ВРИ вашего ПЗЗ (поле pzz_descriptions_file) и повторите."
         )
-        return BuildingPzzRun(
-            action="suggest_upload",
-            narrative=narrative,
-            detail=detail,
-            uncovered_codes=tuple(review.uncovered_codes),
+        return EventSourceResponse(
+            zone_review_generator(
+                narrative, detail, action="suggest_upload", suggestions=None
+            )
         )
     if review.action == "confirm":
         candidates = template_candidates(app_settings.default_pzz_zone_labels_path)
@@ -1434,28 +1160,12 @@ async def _prepare_building_pzz_run(
                 "Загрузите описание разрешённых ВРИ вашего ПЗЗ (поле pzz_descriptions_file) "
                 "и повторите."
             )
-            return BuildingPzzRun(
-                action="suggest_upload",
-                narrative=narrative,
-                detail=detail,
-                uncovered_codes=tuple(review.uncovered_codes),
+            return EventSourceResponse(
+                zone_review_generator(
+                    narrative, detail, action="suggest_upload", suggestions=None
+                )
             )
         picks = parse_suggestions(review.uncovered, parsed, candidates)
-        if not picks:
-            # Nothing to confirm: asking the user to approve a list of «соответствия не
-            # нашлось» is a dead end, and the only way forward is their own descriptions.
-            detail = (
-                "Ни для одной из зон не нашлось подходящего соответствия в шаблоне ПЗЗ: "
-                f"{', '.join(review.uncovered_codes)}. Загрузите описание разрешённых "
-                "ВРИ вашего ПЗЗ (поле pzz_descriptions_file) и повторите."
-            )
-            return BuildingPzzRun(
-                action="suggest_upload",
-                narrative=narrative,
-                detail=detail,
-                uncovered_codes=tuple(review.uncovered_codes),
-            )
-
         by_code = {c["code"]: c["name"] for c in candidates}
         payload = [
             {
@@ -1471,11 +1181,10 @@ async def _prepare_building_pzz_run(
             "соответствия (или загрузите своё описание) и повторите запрос, передав "
             "confirmed_zone_map."
         )
-        return BuildingPzzRun(
-            action="confirm",
-            narrative=narrative,
-            detail=detail,
-            suggestions=payload,
+        return EventSourceResponse(
+            zone_review_generator(
+                narrative, detail, action="confirm", suggestions=payload
+            )
         )
 
     # action == "proceed". Build the confirmed overlay (if any), and prepend the
@@ -1520,68 +1229,7 @@ async def _prepare_building_pzz_run(
         building_service_col=building_service,
         building_floors_col=_val("building_floors_col"),
     )
-    # Committed here rather than left to the request scope: the task is already
-    # enqueued, and the worker must be able to read the row it was handed.
     session.commit()
-    return BuildingPzzRun(action="created", narrative=narrative, task=task_out)
-
-
-async def _run_building_pzz_auto(
-    *,
-    request: Request,
-    buildings_file: UploadFile,
-    zones_file: UploadFile,
-    descriptions_file: UploadFile | None,
-    confirmed_zone_map: dict[str, str] | None,
-    user_query: str | None,
-    chat_id: str | None,
-    group_by: str,
-    model: str | None,
-    temperature: float | None,
-    priority: int,
-    force_recompute: bool,
-    poll_interval: float,
-    idempotency_key: str | None,
-    user_id: str,
-    app_settings: Settings,
-    task_repo: TaskRepository,
-    event_repo: EventRepository,
-    session: Session,
-) -> EventSourceResponse:
-    """Run the building PZZ check and stream the grounded answer.
-
-    The uploaded-building counterpart of the ``pzz_check`` auto flow. Every decision
-    is made by :func:`_prepare_building_pzz_run`; this only chooses the generator
-    that carries the outcome to the client.
-    """
-    run = await _prepare_building_pzz_run(
-        buildings_file=buildings_file,
-        zones_file=zones_file,
-        descriptions_file=descriptions_file,
-        confirmed_zone_map=confirmed_zone_map,
-        model=model,
-        priority=priority,
-        force_recompute=force_recompute,
-        idempotency_key=idempotency_key,
-        app_settings=app_settings,
-        task_repo=task_repo,
-        event_repo=event_repo,
-        session=session,
-    )
-    if run.action == "detection_failed":
-        return EventSourceResponse(
-            detection_failed_generator(run.narrative, run.detail)
-        )
-    task_out = run.task
-    if task_out is None:
-        return EventSourceResponse(
-            zone_review_generator(
-                run.narrative,
-                run.detail,
-                action=run.action,
-                suggestions=run.suggestions,
-            )
-        )
 
     effective_query = user_query or _DEFAULT_BUILDING_AUTO_QUERY
     inner = task_stream_with_chat_generator(
@@ -1596,14 +1244,14 @@ async def _run_building_pzz_auto(
         chat_id=chat_id,
         scenario_id=None,
         project_id=None,
-        chat_title=(user_query or run.narrative)[:256],
+        chat_title=(user_query or narrative)[:256],
         model=model,
         temperature=temperature,
         report_kind="object_zone_fit",
         emit_input_files=True,
         system_prompt_path=app_settings.chat_system_prompt_building_path,
     )
-    return EventSourceResponse(prepend_narrative_generator(run.narrative, inner))
+    return EventSourceResponse(prepend_narrative_generator(narrative, inner))
 
 
 @router.post("/auto/chat/stream")
@@ -1677,12 +1325,28 @@ async def create_auto_chat_stream_endpoint(
                 status_code=422,
                 detail="pzz_zones_feature_collection_file is required for mode=building_pzz_check",
             )
+        parsed_zone_map: dict[str, str] | None = None
+        if confirmed_zone_map:
+            try:
+                loaded = json.loads(confirmed_zone_map)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    status_code=422, detail="confirmed_zone_map must be a JSON object"
+                ) from exc
+            if not isinstance(loaded, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in loaded.items()
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="confirmed_zone_map must map zone codes to template codes (str→str)",
+                )
+            parsed_zone_map = loaded or None
         return await _run_building_pzz_auto(
             request=request,
             buildings_file=cadastral_feature_collection_file,
             zones_file=pzz_zones_feature_collection_file,
             descriptions_file=pzz_descriptions_file,
-            confirmed_zone_map=_parse_confirmed_zone_map(confirmed_zone_map),
+            confirmed_zone_map=parsed_zone_map,
             user_query=user_query,
             chat_id=chat_id,
             group_by=group_by,

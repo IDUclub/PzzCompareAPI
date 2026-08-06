@@ -43,36 +43,6 @@ class TaskOut(BaseModel):
     finished_at: datetime | None
 
 
-class ZoneSuggestionOut(BaseModel):
-    """One PZZ zone missing from the built-in template, with the proposed match."""
-
-    user_code: str
-    user_name: str
-    suggested_code: str | None
-    suggested_name: str
-
-
-class BuildingPzzCheckOut(BaseModel):
-    """Result of submitting a building PZZ check: a task, or the step blocking it.
-
-    Unlike the other submissions this one may legitimately not create a task — the
-    zone review can need a descriptions file or a confirmation first — so ``task``
-    is filled only when ``action`` is ``created``.
-
-    ``chat_message`` is that outcome written out for a person, the counterpart of the
-    field the object-zone-fit report carries: a chat client shows it rather than
-    assembling its own text from ``action`` and ``suggestions``.
-    """
-
-    action: str
-    narrative: str
-    detail: str = ""
-    next_step: str
-    chat_message: str = ""
-    suggestions: list[ZoneSuggestionOut] | None = None
-    task: TaskOut | None = None
-
-
 class TaskEventOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
