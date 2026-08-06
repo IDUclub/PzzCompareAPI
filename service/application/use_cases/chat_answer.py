@@ -149,6 +149,7 @@ def build_classification_context(
     vri_names: dict[str, str] | None = None,
     max_report_chars: int = 12000,
     max_problem_objects: int = 60,
+    report_kind: str = "object_zone_fit",
 ) -> str:
     """Assemble a grounding context block from available classification outputs.
 
@@ -160,10 +161,18 @@ def build_classification_context(
     - the full report JSON is included only when under ``max_report_chars``;
     - otherwise a capped list of just the wrong/unclear objects is included, so
       the model still has the answer-relevant detail without overflowing.
+
+    ``report_kind`` selects the label prefixing ``chat_message``: classify-only
+    has no PZZ zones, so its summary must not be introduced as a "PZZ check".
     """
     parts: list[str] = []
     if chat_message:
-        parts.append("Готовое резюме проверки ПЗЗ:\n" + chat_message)
+        summary_label = (
+            "Готовое резюме классификации ВРИ:"
+            if report_kind == "classify"
+            else "Готовое резюме проверки ПЗЗ:"
+        )
+        parts.append(summary_label + "\n" + chat_message)
     if object_zone_fit:
         summary = object_zone_fit.get("summary")
         if summary:

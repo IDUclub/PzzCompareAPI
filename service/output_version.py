@@ -22,6 +22,12 @@ History:
         columns, classifier-only PZZ-column pruning.
   - v3  2026-07-09: building runner adds the ``Основание_подбора_ВРИ`` result
         column (how the ВРИ was resolved — floors / service / object type).
+  - v4  2026-07-21: classifier-only runs (``include_pzz_check=False``) no
+        longer expose ``Вердикт_ПЗЗ`` — PZZ zones never participate in that
+        mode, so the same source column is renamed ``Статус_классификации``
+        instead. The classify-only "reason" text for the classifier-candidate
+        rows also no longer says "ПЗЗ отключена". PZZ-check / building runs
+        are unaffected (``Вердикт_ПЗЗ`` unchanged).
 """
 
-PIPELINE_OUTPUT_VERSION = "v3"
+PIPELINE_OUTPUT_VERSION = "v4"

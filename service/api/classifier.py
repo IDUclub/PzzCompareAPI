@@ -49,8 +49,10 @@ from ..application.use_cases.detect_columns import (
     ZONE_NAME_TARGET,
     ZONE_TABLE_TARGETS,
     detect_columns_for_file,
+    profile_columns,
     render_detection_narrative,
     required_columns_resolved,
+    sparse_column_warnings,
 )
 from ..dependencies import (
     build_ollama_chat_client,
@@ -894,6 +896,7 @@ async def create_classify_only_chat_stream_endpoint(
             temperature=temperature,
             report_kind="classify",
             emit_input_files=True,
+            system_prompt_path=app_settings.chat_system_prompt_classify_path,
         )
     )
 
@@ -1079,6 +1082,13 @@ async def _run_building_pzz_auto(
             )
         )
     narrative = render_detection_narrative(suggestions, announce_targets)
+    sparse_warnings = sparse_column_warnings(
+        suggestions, BUILDING_TARGETS, profile_columns(buildings_fc)
+    ) + sparse_column_warnings(
+        suggestions, [ZONE_CODE_TARGET, ZONE_NAME_TARGET], profile_columns(zones_fc)
+    )
+    if sparse_warnings:
+        narrative = narrative + "\n\n" + "\n".join(sparse_warnings)
     if table_note:
         narrative = table_note + "\n\n" + narrative
 
@@ -1409,7 +1419,18 @@ async def create_auto_chat_stream_endpoint(
                     ollama_client, zones_fc, PZZ_ZONE_TARGETS, model=model
                 )
             )
-    narrative = render_detection_narrative(suggestions, targets)
+    narrative = render_detection_narrative(
+        suggestions, targets, include_pzz_check=include_pzz_check
+    )
+    sparse_warnings = sparse_column_warnings(
+        suggestions, CADASTRAL_TARGETS, profile_columns(cadastral_fc)
+    )
+    if include_pzz_check and zones_fc is not None:
+        sparse_warnings += sparse_column_warnings(
+            suggestions, PZZ_ZONE_TARGETS, profile_columns(zones_fc)
+        )
+    if sparse_warnings:
+        narrative = narrative + "\n\n" + "\n".join(sparse_warnings)
     if labels_note:
         narrative = labels_note + "\n\n" + narrative
 
@@ -1464,5 +1485,8 @@ async def create_auto_chat_stream_endpoint(
         temperature=temperature,
         report_kind="object_zone_fit" if include_pzz_check else "classify",
         emit_input_files=True,
+        system_prompt_path=(
+            None if include_pzz_check else app_settings.chat_system_prompt_classify_path
+        ),
     )
     return EventSourceResponse(prepend_narrative_generator(narrative, inner))
