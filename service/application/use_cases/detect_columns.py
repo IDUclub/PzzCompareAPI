@@ -54,6 +54,15 @@ class ColumnProfile:
     dtype: str  # "str" | "int" | "float" | "bool" | "mixed" | "null"
     n_unique: int
     samples: list[str]
+    # Fill rate over the WHOLE layer (not the capped sample used for dtype/
+    # n_unique/samples above) — lets callers flag a resolved column that's
+    # almost entirely empty, e.g. a stale result file re-uploaded as input.
+    non_null_count: int = 0
+    total_rows: int = 0
+
+    @property
+    def fill_ratio(self) -> float:
+        return self.non_null_count / self.total_rows if self.total_rows else 0.0
 
 
 @dataclass(frozen=True)
@@ -299,11 +308,13 @@ def profile_columns(
     (each truncated to ``max_value_chars``).
     """
     features = feature_collection.get("features") or []
+    total_rows = len(features)
     ordered_names: list[str] = []
     seen_names: set[str] = set()
     values_by_col: dict[str, list[Any]] = {}
     samples_by_col: dict[str, list[str]] = {}
     seen_samples: dict[str, set[str]] = {}
+    non_null_counts: dict[str, int] = {}
 
     for feature in features:
         props = (feature or {}).get("properties") or {}
@@ -314,10 +325,12 @@ def profile_columns(
                 values_by_col[name] = []
                 samples_by_col[name] = []
                 seen_samples[name] = set()
+                non_null_counts[name] = 0
             if len(values_by_col[name]) < scan_features:
                 values_by_col[name].append(value)
             if value is None or value == "":
                 continue
+            non_null_counts[name] += 1
             text = str(value)
             if len(text) > max_value_chars:
                 text = text[:max_value_chars] + "…"
@@ -337,6 +350,8 @@ def profile_columns(
                 dtype=_dtype_of(values_by_col[name]),
                 n_unique=len({str(v) for v in non_null}),
                 samples=samples_by_col[name],
+                non_null_count=non_null_counts[name],
+                total_rows=total_rows,
             )
         )
     return profiles
@@ -478,6 +493,7 @@ async def detect_columns_for_file(
                 reason="подходящая колонка не найдена",
                 candidates=names,
             )
+        _downgrade_empty_columns(suggestions, profiles, names)
         return suggestions
 
     messages = _build_detection_messages(unresolved, profiles)
@@ -519,14 +535,53 @@ async def detect_columns_for_file(
                 reason="модель не смогла определить подходящую колонку",
                 candidates=names,
             )
+    _downgrade_empty_columns(suggestions, profiles, names)
     return suggestions
+
+
+# A resolved column with NO non-null values anywhere in the file is useless —
+# most often a stale result export (e.g. "Подобранный_ВРИ") re-uploaded as
+# fresh input, where the real source field the target needs doesn't exist.
+# Treat it exactly like "not found" so the caller's missing-column handling
+# (detection_failed_generator) kicks in instead of silently running the
+# pipeline against an all-null column.
+def _downgrade_empty_columns(
+    suggestions: dict[str, ColumnSuggestion],
+    profiles: list[ColumnProfile],
+    names: list[str],
+) -> None:
+    profile_by_name = {p.name: p for p in profiles}
+    for key, suggestion in list(suggestions.items()):
+        if not suggestion.value:
+            continue
+        profile = profile_by_name.get(suggestion.value)
+        if profile is not None and profile.total_rows > 0 and profile.non_null_count == 0:
+            suggestions[key] = ColumnSuggestion(
+                value=None,
+                confidence=_NONE,
+                source="none",
+                reason=(
+                    f"колонка «{suggestion.value}» полностью пустая во всём "
+                    "файле — похоже, это не то поле (например, файл уже "
+                    "содержит результат предыдущего расчёта, а не исходные "
+                    "данные)"
+                ),
+                candidates=names,
+            )
 
 
 def render_detection_narrative(
     suggestions: dict[str, ColumnSuggestion],
     targets: list[DetectionTarget],
+    *,
+    include_pzz_check: bool = True,
 ) -> str:
-    """Build the RU chat message announcing the detected columns."""
+    """Build the RU chat message announcing the detected columns.
+
+    ``include_pzz_check`` selects the header: classify-only has no PZZ zones
+    involved at all, so it must not be announced as a "PZZ check" — same
+    reasoning as the classify-only system prompt (no PZZ, no zones, ever).
+    """
     title_by_key = {t.key: t.title_ru for t in targets}
     resolved: list[str] = []
     missing: list[str] = []
@@ -539,10 +594,14 @@ def render_detection_narrative(
 
     lines: list[str] = []
     if resolved:
-        lines.append(
+        header = (
             "Результат анализа содержания полей в загруженном файле "
             "для проверки по правилам землепользования и застройки (ПЗЗ):"
+            if include_pzz_check
+            else "Результат анализа содержания полей в загруженном файле "
+            "для классификации видов разрешённого использования (ВРИ):"
         )
+        lines.append(header)
         lines.extend(resolved)
     if missing:
         if resolved:
@@ -564,3 +623,41 @@ def required_columns_resolved(
         (suggestions.get(t.key) is not None and bool(suggestions[t.key].value))
         for t in targets
     )
+
+
+def sparse_column_warnings(
+    suggestions: dict[str, ColumnSuggestion],
+    targets: list[DetectionTarget],
+    profiles: list[ColumnProfile],
+    *,
+    min_ratio: float = 0.3,
+) -> list[str]:
+    """Flag resolved columns filled in suspiciously few rows (< ``min_ratio``).
+
+    A completely empty column is already downgraded to "not found" inside
+    ``detect_columns_for_file``. This catches the milder case — data IS there,
+    but so sparse the run is likely pointless or the wrong column was picked
+    (e.g. a merged layer where the field only applies to a handful of rows,
+    or a partially-filled export). Non-fatal: the caller decides whether to
+    still run and just warn, as done here.
+    """
+    profile_by_name = {p.name: p for p in profiles}
+    title_by_key = {t.key: t.title_ru for t in targets}
+    warnings: list[str] = []
+    for key, title in title_by_key.items():
+        suggestion = suggestions.get(key)
+        if suggestion is None or not suggestion.value:
+            continue
+        profile = profile_by_name.get(suggestion.value)
+        if profile is None or profile.total_rows == 0:
+            continue
+        ratio = profile.fill_ratio
+        if 0 < ratio < min_ratio:
+            percent = round(ratio * 100)
+            warnings.append(
+                f"⚠ поле «{suggestion.value}» ({title}) заполнено лишь в "
+                f"{percent}% строк ({profile.non_null_count} из "
+                f"{profile.total_rows}) — проверьте, то ли это поле и не "
+                "загружен ли уже готовый результат вместо исходных данных."
+            )
+    return warnings

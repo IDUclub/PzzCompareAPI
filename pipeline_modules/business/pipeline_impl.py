@@ -333,7 +333,7 @@ def run_pipeline(
             payload["MATCH_METHOD"] = "classifier_top5_llm_or_fast"
             payload["PZZ_VRI_VERDICT"] = "classifier_only"
             payload["Статус"] = "Только кандидаты классификатора"
-            payload["PZZ_REASON"] = "Проверка по ПЗЗ отключена: кандидаты из классификатора отобраны string-match + embed, при необходимости LLM-rerank."
+            payload["PZZ_REASON"] = "Только классификация ВРИ (без сопоставления с территориальными зонами): кандидаты из классификатора отобраны string-match + embed, при необходимости LLM-rerank."
             payload["PZZ_NOT_ALLOWED_TOP1_CANDIDATE"] = serialize_not_allowed_same_zone_candidates(final_candidates[:1])
             payload["PZZ_NOT_ALLOWED_TOP5_CANDIDATES"] = serialize_not_allowed_same_zone_candidates(final_candidates)
             return payload
