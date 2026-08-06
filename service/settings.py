@@ -47,9 +47,6 @@ class Settings(BaseSettings):
     task_time_limit_seconds: int = Field(default=7200)
     max_upload_bytes: int = Field(default=200 * 1024 * 1024)
     task_inputs_dir: str = Field(default="task_inputs")
-    uploads_dir: str = Field(default="uploads")
-    uploads_max_age_hours: int = Field(default=24)
-    uploads_cleanup_interval_seconds: int = Field(default=3600)
     default_pzz_zone_labels_path: str = Field(
         default="data/pzz_zone_llm_labels_template.json"
     )
