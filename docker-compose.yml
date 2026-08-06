@@ -44,10 +44,6 @@ services:
 #      - /PzzCompareData:/app
       - /PzzCompareData/outputs:/app/outputs
       - /PzzCompareData/task_inputs:/app/task_inputs
-      # Pre-task uploads. Only the API resolves them, but they must survive a redeploy
-      # and be shared across replicas: an upload_id handed out by one instance gets
-      # submitted to another, and a deploy mid-dialogue must not invalidate it.
-      - /PzzCompareData/uploads:/app/uploads
 #      - ./data:/app/data
 
   worker:

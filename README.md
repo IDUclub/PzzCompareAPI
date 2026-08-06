@@ -99,20 +99,8 @@ docker compose -f docker-compose.yml up -d --build
 ## Эндпоинты (основное)
 
 **Файловый флоу**
-- `POST /uploads` — загрузить файл один раз и дальше ссылаться на него по `upload_id` (требует Bearer, живёт 24 ч); в ответе `url` — долговечная ссылка для истории чата
-- `GET /uploads/{upload_id}` — скачать свою загрузку (требует Bearer; чужая — 403)
-
-Каталог загрузок вынесен в том (`/app/uploads`), чтобы `upload_id` переживал передеплой: иначе
-выкатка посреди диалога обесценила бы файлы, которые пользователь только что приложил. Просроченные
-загрузки удаляет celery beat (`cleanup-expired-uploads`, интервал `UPLOADS_CLEANUP_INTERVAL_SECONDS`,
-срок жизни `UPLOADS_MAX_AGE_HOURS`).
 - `POST /tasks/pzz-check` — полная проверка ПЗЗ (кадастр + зоны)
 - `POST /tasks/classify-only` — только классификация ВРИ по классификатору
-- `POST /tasks/building-pzz-check` — проверка зданий по ПЗЗ; колонки определяются
-  автоматически. Задача создаётся не всегда: если коды зон не покрыты встроенным
-  шаблоном, в ответе приходит `action` = `confirm` (подтвердить подобранные
-  соответствия и повторить с `confirmed_zone_map`) или `suggest_upload` (загрузить
-  своё описание разрешённых ВРИ)
 - `POST /tasks/pzz-check/chat/stream` — проверка ПЗЗ + стрим разговорного ответа LLM (SSE, требует Bearer)
 - `POST /tasks/classify-only/chat/stream` — классификация ВРИ + стрим разговорного ответа LLM (SSE, требует Bearer)
 - `GET /tasks/{id}` · `GET /tasks_list` · `GET /tasks/{id}/result`
@@ -122,9 +110,6 @@ docker compose -f docker-compose.yml up -d --build
 
 Загрузки кадастра/зон принимают GeoJSON, а также GeoPackage `.gpkg`, GML, KML и
 GeoParquet — не-GeoJSON форматы конвертируются в GeoJSON (EPSG:4326) на входе.
-Каждый слой передаётся либо файлом в теле запроса, либо полем `<слой>_upload_id`
-с идентификатором из `POST /uploads` — второй вариант нужен MCP-клиентам, где
-слой не помещается в аргумент инструмента.
 
 **Сценарный флоу** (требует `Authorization: Bearer <jwt>`)
 - `POST /scenarios/{id}/classify` — запуск по данным urban_api
