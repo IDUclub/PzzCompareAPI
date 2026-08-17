@@ -1,0 +1,131 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          31.005,
+          59.945
+        ]
+      },
+      "properties": {
+        "physical_object_type_id": 4,
+        "floors_count": 5
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          31.01,
+          59.95
+        ]
+      },
+      "properties": {
+        "service_type_name": "Детский сад"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          31.015,
+          59.955
+        ]
+      },
+      "properties": {
+        "physical_object_type_name": "Склад"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          31.025,
+          59.945
+        ]
+      },
+      "properties": {
+        "physical_object_type_id": 22,
+        "floors_count": 1
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          31.03,
+          59.95
+        ]
+      },
+      "properties": {
+        "physical_object_type": {
+          "physical_object_type_id": 4,
+          "name": "Жилой дом"
+        },
+        "properties": {
+          "Количество этажей": 9
+        }
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          31.035,
+          59.955
+        ]
+      },
+      "properties": {
+        "service_type_name": "автомойка самообслуживания"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          31.045,
+          59.945
+        ]
+      },
+      "properties": {
+        "physical_object_type_id": 4,
+        "floors_count": 2
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          31.05,
+          59.95
+        ]
+      },
+      "properties": {
+        "service_type_name": "кафе"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          31.055,
+          59.955
+        ]
+      },
+      "properties": {
+        "physical_object_type_name": "антикафе"
+      }
+    }
+  ]
+}
