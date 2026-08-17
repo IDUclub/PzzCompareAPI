@@ -28,6 +28,7 @@ from ..auth.exceptions import AuthError
 from ..dependencies import get_auth_client
 
 http_bearer = HTTPBearer()
+optional_http_bearer = HTTPBearer(auto_error=False)
 
 
 @dataclass(frozen=True)
@@ -102,3 +103,17 @@ async def get_current_user(
         user_id=str(claims.get("sub") or ""),
         claims=claims,
     )
+
+
+async def get_optional_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_http_bearer),
+) -> AuthUser | None:
+    """Identify the caller when a token is present, without demanding one.
+
+    The task-submission endpoints have always accepted anonymous calls; requiring a
+    token there now would break existing clients. They still need an identity when one
+    is offered, to check that an ``upload_id`` belongs to the caller.
+    """
+    if credentials is None:
+        return None
+    return await get_current_user(credentials)
