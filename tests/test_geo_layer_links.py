@@ -12,6 +12,13 @@ from service.api.tasks import (
 from service.settings import get_settings
 
 
+class _StubStorage:
+    """Presign stub: layer-descriptor tests must not reach a real object storage."""
+
+    def presigned_url(self, stored_path, expires_seconds=3600):
+        return f"https://minio.example/{stored_path}?sig=1"
+
+
 def _task(
     status="finished",
     result_path="outputs/abc/result.geojson",
@@ -149,7 +156,8 @@ def test_file_part_keeps_only_durable_url() -> None:
     assert part["mime_type"] == "application/geo+json"
 
 
-def test_input_layers_for_uploaded_files() -> None:
+def test_input_layers_for_uploaded_files(monkeypatch) -> None:
+    monkeypatch.setattr(tasks_mod, "get_object_storage", lambda: _StubStorage())
     settings = get_settings()
     layers = build_input_geo_layers(_task(), "abc123", settings)
     by_name = {layer["name"]: layer for layer in layers}
@@ -161,10 +169,13 @@ def test_input_layers_for_uploaded_files() -> None:
     assert by_name["input_zones"]["title"] == "Зоны ПЗЗ"
     assert by_name["input_zones"]["filename"] == "pzz_zones.geojson"
     assert all(layer["role"] == "input" for layer in layers)
+    # Remote (minio://) inputs also carry a presigned download link.
+    assert all(layer["download_url"] is not None for layer in layers)
 
 
-def test_input_layers_skip_missing_zones() -> None:
+def test_input_layers_skip_missing_zones(monkeypatch) -> None:
     # classify-only uploads have no zones layer.
+    monkeypatch.setattr(tasks_mod, "get_object_storage", lambda: _StubStorage())
     layers = build_input_geo_layers(
         _task(pzz_zones_data_path=""), "abc123", get_settings()
     )

@@ -22,7 +22,8 @@ from ..application.use_cases.detect_columns import (
     ZONE_TABLE_TARGETS,
     detect_columns_for_file,
 )
-from ..dependencies import build_ollama_chat_client, get_app_settings
+from ..dependencies import get_app_settings
+from ..infrastructure.chat_llm_client import build_chat_llm_client
 from ..infrastructure.table_reader import TableReadError, read_table
 from ..settings import Settings
 
@@ -69,9 +70,9 @@ async def convert_zone_descriptions(
 
     overrides = _parse_column_map(column_map)
     feature_collection = {"features": [{"properties": r} for r in rows]}
-    async with build_ollama_chat_client(app_settings) as ollama_client:
+    async with build_chat_llm_client(app_settings) as chat_client:
         suggestions = await detect_columns_for_file(
-            ollama_client, feature_collection, ZONE_TABLE_TARGETS, heuristic_first=False
+            chat_client, feature_collection, ZONE_TABLE_TARGETS, heuristic_first=False
         )
 
     resolved: dict[str, str | None] = {}

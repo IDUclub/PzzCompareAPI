@@ -99,8 +99,20 @@ docker compose -f docker-compose.yml up -d --build
 ## Эндпоинты (основное)
 
 **Файловый флоу**
+- `POST /uploads` — загрузить файл один раз и дальше ссылаться на него по `upload_id` (требует Bearer, живёт 24 ч); в ответе `url` — долговечная ссылка для истории чата
+- `GET /uploads/{upload_id}` — скачать свою загрузку (требует Bearer; чужая — 403)
+
+Каталог загрузок вынесен в том (`/app/uploads`), чтобы `upload_id` переживал передеплой: иначе
+выкатка посреди диалога обесценила бы файлы, которые пользователь только что приложил. Просроченные
+загрузки удаляет celery beat (`cleanup-expired-uploads`, интервал `UPLOADS_CLEANUP_INTERVAL_SECONDS`,
+срок жизни `UPLOADS_MAX_AGE_HOURS`).
 - `POST /tasks/pzz-check` — полная проверка ПЗЗ (кадастр + зоны)
 - `POST /tasks/classify-only` — только классификация ВРИ по классификатору
+- `POST /tasks/building-pzz-check` — проверка зданий по ПЗЗ; колонки определяются
+  автоматически. Задача создаётся не всегда: если коды зон не покрыты встроенным
+  шаблоном, в ответе приходит `action` = `confirm` (подтвердить подобранные
+  соответствия и повторить с `confirmed_zone_map`) или `suggest_upload` (загрузить
+  своё описание разрешённых ВРИ)
 - `POST /tasks/pzz-check/chat/stream` — проверка ПЗЗ + стрим разговорного ответа LLM (SSE, требует Bearer)
 - `POST /tasks/classify-only/chat/stream` — классификация ВРИ + стрим разговорного ответа LLM (SSE, требует Bearer)
 - `GET /tasks/{id}` · `GET /tasks_list` · `GET /tasks/{id}/result`
@@ -110,6 +122,9 @@ docker compose -f docker-compose.yml up -d --build
 
 Загрузки кадастра/зон принимают GeoJSON, а также GeoPackage `.gpkg`, GML, KML и
 GeoParquet — не-GeoJSON форматы конвертируются в GeoJSON (EPSG:4326) на входе.
+Каждый слой передаётся либо файлом в теле запроса, либо полем `<слой>_upload_id`
+с идентификатором из `POST /uploads` — второй вариант нужен MCP-клиентам, где
+слой не помещается в аргумент инструмента.
 
 **Сценарный флоу** (требует `Authorization: Bearer <jwt>`)
 - `POST /scenarios/{id}/classify` — запуск по данным urban_api
@@ -135,8 +150,9 @@ GeoParquet — не-GeoJSON форматы конвертируются в GeoJS
 конверт `{type, content}`) отчёт (`object_zone_fit` для pzz-check, `classify_summary` для
 classify-only) → `service_event/chat_created` (если не передан `chat_id`) → `chunk`* → `done`,
 и сохраняют диалог (user + assistant) в **ChatStorage**.
-Разговорный ответ генерирует Ollama `/api/chat` (`OLLAMA_BASE_URL`); модель — параметр запроса
-`model` (дефолт `CHAT_MODEL`/`GENERATE_MODEL`).
+Разговорный ответ генерирует тот же LLM-бэкенд, что и пайплайн (`LLM_BACKEND`): при `vllm` —
+OpenAI-совместимый `/v1/chat/completions` на `VLLM_BASE_URL`, иначе Ollama `/api/chat` на
+`OLLAMA_BASE_URL`. Модель — параметр запроса `model` (дефолт `CHAT_MODEL`/`GENERATE_MODEL`).
 
 Большой GeoJSON-результат в чат-стриме отдаётся **ссылкой** (событие `file`), а не инлайном:
 долговечный `url = /files/result/{id}` (307 → свежий presigned MinIO, не протухает) сохраняется в
@@ -283,6 +299,6 @@ CI-пайплайн [`.github/workflows/deploy.yml`](.github/workflows/deploy.ym
 (см. `service/settings.py` и `.env.example`). Ключевое: `DATABASE_URL`,
 `REDIS_URL`, `LLM_BACKEND` + модели, `FILESERVER_*` (MinIO), `URBAN_API_BASE_URL`.
 Для чат-ручек: `CHAT_STORAGE_BASE_URL` (история диалогов; пусто — персист выключен),
-`CHAT_MODEL` (дефолтная модель чата на `OLLAMA_BASE_URL`), `CHAT_SYSTEM_PROMPT_PATH`,
+`CHAT_MODEL` (дефолтная модель чата на хосте выбранного `LLM_BACKEND`), `CHAT_SYSTEM_PROMPT_PATH`,
 `KEYCLOAK_*` (сервисный токен для записи истории, см. «Аутентификация»).
 Секреты в репозиторий не коммитятся.

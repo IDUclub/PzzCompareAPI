@@ -18,7 +18,6 @@ from .domain.ports.config_repository import ConfigRepository
 from .domain.ports.event_repository import EventRepository
 from .domain.ports.task_repository import TaskRepository
 from .infrastructure.chat_storage_client import ChatStorageClient
-from .infrastructure.ollama_chat_client import OllamaChatClient
 from .infrastructure.repositories.sqlalchemy_config_repository import (
     SqlAlchemyConfigRepository,
 )
@@ -116,21 +115,6 @@ def build_chat_storage_client(
         base_url=settings.chat_storage_base_url,
         token_client=token_client,
         timeout_seconds=settings.chat_storage_timeout_seconds,
-    )
-
-
-def build_ollama_chat_client(settings: Settings | None = None) -> OllamaChatClient:
-    """Build a fresh streaming Ollama chat client. Caller owns it via ``async with``.
-
-    Mirrors gMART: one Ollama host (``ollama_base_url``); the model is chosen
-    per request, with ``chat_model`` (or ``generate_model``) as the default.
-    """
-    settings = settings or get_settings()
-    return OllamaChatClient(
-        base_url=settings.ollama_base_url,
-        default_model=settings.chat_model or settings.generate_model,
-        timeout_seconds=settings.chat_request_timeout_seconds,
-        temperature=settings.chat_temperature,
     )
 
 

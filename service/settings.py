@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     task_time_limit_seconds: int = Field(default=7200)
     max_upload_bytes: int = Field(default=200 * 1024 * 1024)
     task_inputs_dir: str = Field(default="task_inputs")
+    uploads_dir: str = Field(default="uploads")
+    uploads_max_age_hours: int = Field(default=24)
+    uploads_cleanup_interval_seconds: int = Field(default=3600)
     default_pzz_zone_labels_path: str = Field(
         default="data/pzz_zone_llm_labels_template.json"
     )
@@ -148,12 +151,12 @@ class Settings(BaseSettings):
     chat_storage_base_url: str = Field(default="")
     chat_storage_timeout_seconds: float = Field(default=10.0)
 
-    # ── Conversational answer (Ollama /api/chat streaming) ───────────────────
+    # ── Conversational answer (streaming chat completion) ────────────────────
     # A natural-language answer generated over the classification results and
-    # streamed back to the user. Mirrors gMART: one Ollama host (reuses
-    # ``ollama_base_url``), the model is chosen per request. ``chat_model`` is
-    # the default model when the request doesn't specify one (falls back to
-    # ``generate_model``).
+    # streamed back to the user. The backend follows ``llm_backend``, so the
+    # host is either ``vllm_base_url`` or ``ollama_base_url``; the model is
+    # chosen per request. ``chat_model`` is the default model when the request
+    # doesn't specify one (falls back to ``generate_model``).
     chat_model: str = Field(default="")
     chat_temperature: float = Field(default=0.3)
     chat_request_timeout_seconds: float = Field(default=900.0)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -22,7 +23,6 @@ from ..application.use_cases.chat_answer import (
 from ..db import session_scope
 from ..dependencies import (
     build_chat_storage_client,
-    build_ollama_chat_client,
     get_app_settings,
     get_db,
     get_event_repo,
@@ -31,6 +31,7 @@ from ..dependencies import (
 from ..domain.ports.event_repository import EventRepository
 from ..domain.ports.task_repository import TaskRepository
 from ..domain.task_state import ensure_transition
+from ..infrastructure.chat_llm_client import build_chat_llm_client
 from ..infrastructure.pzz_mapping import lookup_zone_summary
 from ..infrastructure.storage import get_object_storage, is_remote_path
 from ..models import PipelineTask, TaskEvent, TaskStatus
@@ -40,9 +41,10 @@ from ..schemas import TaskEventOut, TaskListOut, TaskOut
 from ..settings import Settings
 from ..tasks import celery_app, enqueue_pipeline_task, execute_pipeline_task
 from ..time_utils import utc_now
-from .utils import api_log
+from .utils import api_log, durable_url
 
 router = APIRouter(tags=["tasks"])
+logger = logging.getLogger("service.api.tasks")
 _SCENARIO_IDEMPOTENCY_PREFIX = "sc:"
 _BUILDING_IDEMPOTENCY_PREFIX = "bld:"
 
@@ -492,35 +494,48 @@ async def _stream_chat_answer_managed(
 
     ``system_prompt_path`` overrides which system prompt grounds the answer
     (e.g. the building-mode prompt); defaults to the parcel ``chat_system_prompt_path``.
-    """
-    system_prompt = load_system_prompt(
-        system_prompt_path or app_settings.chat_system_prompt_path
-    )
 
-    async with build_ollama_chat_client(app_settings) as ollama_client:
-        chat_storage_client = (
-            build_chat_storage_client(app_settings) if user_id else None
+    Any failure is surfaced as an ``error`` event rather than propagated: the
+    caller appends a terminal ``done`` after draining this generator, so an
+    escaping exception would abort the SSE stream before ``done`` and leave the
+    frontend waiting forever.
+    """
+    try:
+        system_prompt = load_system_prompt(
+            system_prompt_path or app_settings.chat_system_prompt_path
         )
-        try:
-            async for event in stream_chat_answer(
-                ollama_client=ollama_client,
-                chat_storage_client=chat_storage_client,
-                user_id=user_id,
-                system_prompt=system_prompt,
-                user_query=user_query,
-                classification_context=classification_context,
-                chat_id=chat_id,
-                scenario_id=scenario_id,
-                project_id=project_id,
-                chat_title=chat_title,
-                model=model,
-                temperature=temperature,
-                assistant_file_parts=assistant_file_parts,
-            ):
-                yield event
-        finally:
-            if chat_storage_client is not None:
-                await chat_storage_client.__aexit__(None, None, None)
+
+        async with build_chat_llm_client(app_settings) as chat_client:
+            chat_storage_client = (
+                build_chat_storage_client(app_settings) if user_id else None
+            )
+            try:
+                async for event in stream_chat_answer(
+                    chat_client=chat_client,
+                    chat_storage_client=chat_storage_client,
+                    user_id=user_id,
+                    system_prompt=system_prompt,
+                    user_query=user_query,
+                    classification_context=classification_context,
+                    chat_id=chat_id,
+                    scenario_id=scenario_id,
+                    project_id=project_id,
+                    chat_title=chat_title,
+                    model=model,
+                    temperature=temperature,
+                    assistant_file_parts=assistant_file_parts,
+                ):
+                    yield event
+            finally:
+                if chat_storage_client is not None:
+                    await chat_storage_client.__aexit__(None, None, None)
+    except Exception:
+        logger.exception("chat answer streaming failed")
+        yield {
+            "type": "error",
+            "stage": "chat_answer",
+            "detail": "Не удалось сформировать ответ по результатам классификации.",
+        }
 
 
 def _chat_event_to_sse(event: dict[str, Any]) -> ServerSentEvent | None:
@@ -735,144 +750,166 @@ async def task_stream_with_chat_generator(
         should show a soft notice, not treat it as a failure;
       - ``error`` — ``{message, stage}`` FATAL: the answer couldn't be generated;
       - ``done`` — ``{status, chat_id}`` terminal marker; the stream closes.
+
+    ``done`` is emitted unconditionally, including when the stream fails partway
+    through: an exception escaping an SSE generator closes the connection with no
+    terminal event, so the frontend reports the whole check as failed even though
+    results were already delivered.
     """
-    yield ServerSentEvent(data=json.dumps(initial), event="task")
-
-    last_event_id = 0
     last_status: TaskStatus | None = None
-    classification_context = ""
-    geo_layers: list[dict[str, Any]] = []
-    inputs_emitted = False
-    while True:
-        if await request.is_disconnected():
-            break
+    chat_id_final = chat_id
+    try:
+        yield ServerSentEvent(data=json.dumps(initial), event="task")
 
-        with session_scope() as session:
-            task = session.execute(
-                select(PipelineTask).where(PipelineTask.external_id == external_id)
-            ).scalar_one_or_none()
-            if task is None:
-                yield ServerSentEvent(
-                    data=json.dumps({"error": "Task not found"}), event="error"
-                )
+        last_event_id = 0
+        classification_context = ""
+        geo_layers: list[dict[str, Any]] = []
+        inputs_emitted = False
+        while True:
+            if await request.is_disconnected():
                 break
 
-            if emit_input_files and not inputs_emitted:
-                inputs_emitted = True
-                for layer in build_input_geo_layers(
-                    task, external_id, app_settings, request
-                ):
+            with session_scope() as session:
+                task = session.execute(
+                    select(PipelineTask).where(PipelineTask.external_id == external_id)
+                ).scalar_one_or_none()
+                if task is None:
                     yield ServerSentEvent(
-                        data=json.dumps({"type": "file", "content": layer}),
-                        event="file",
+                        data=json.dumps({"error": "Task not found"}), event="error"
+                    )
+                    break
+
+                if emit_input_files and not inputs_emitted:
+                    inputs_emitted = True
+                    for layer in build_input_geo_layers(
+                        task, external_id, app_settings, request
+                    ):
+                        yield ServerSentEvent(
+                            data=json.dumps({"type": "file", "content": layer}),
+                            event="file",
+                        )
+
+                new_events = (
+                    session.execute(
+                        select(TaskEvent)
+                        .where(
+                            TaskEvent.task_id == task.id, TaskEvent.id > last_event_id
+                        )
+                        .order_by(TaskEvent.id.asc())
+                    )
+                    .scalars()
+                    .all()
+                )
+                for ev in new_events:
+                    last_event_id = ev.id
+                    yield ServerSentEvent(
+                        data=json.dumps(
+                            TaskEventOut.model_validate(ev).model_dump(mode="json")
+                        ),
+                        event="task_event",
                     )
 
-            new_events = (
-                session.execute(
-                    select(TaskEvent)
-                    .where(TaskEvent.task_id == task.id, TaskEvent.id > last_event_id)
-                    .order_by(TaskEvent.id.asc())
-                )
-                .scalars()
-                .all()
-            )
-            for ev in new_events:
-                last_event_id = ev.id
-                yield ServerSentEvent(
-                    data=json.dumps(
-                        TaskEventOut.model_validate(ev).model_dump(mode="json")
-                    ),
-                    event="task_event",
-                )
-
-            current_status = task.status
-            if current_status != last_status:
-                last_status = current_status
-                yield ServerSentEvent(
-                    data=json.dumps(
-                        TaskOut.model_validate(task).model_dump(mode="json")
-                    ),
-                    event="status",
-                )
-
-            if current_status not in _TERMINAL_STATUSES:
-                await asyncio.sleep(poll_interval)
-                continue
-
-            # Terminal: build the grounding context + the result layer link
-            # inside the session scope (need the task row), then stream the
-            # answer outside any I/O on it.
-            if current_status == TaskStatus.finished:
-                geo_layers = build_result_geo_layers(
-                    task, external_id, app_settings, request
-                )
-                if include_report:
-                    try:
-                        if report_kind == "classify":
-                            report = build_classify_summary_response(
-                                task, external_id, app_settings
-                            )
-                            report_event = "classify_summary"
-                        else:
-                            report = build_object_zone_fit_response(
-                                task, external_id, group_by, app_settings
-                            )
-                            report_event = "object_zone_fit"
-                        yield ServerSentEvent(
-                            data=json.dumps(report), event=report_event
-                        )
-                        classification_context = build_classification_context(
-                            chat_message=report.get("chat_message"),
-                            object_zone_fit=report,
-                            vri_names=load_vri_names(
-                                app_settings.default_vri_classifier_path
-                            ),
-                            report_kind=report_kind,
-                        )
-                    except HTTPException as exc:
-                        yield ServerSentEvent(
-                            data=json.dumps({"error": exc.detail}), event="error"
-                        )
-                for geo_layer in geo_layers:
+                current_status = task.status
+                if current_status != last_status:
+                    last_status = current_status
                     yield ServerSentEvent(
-                        data=json.dumps({"type": "file", "content": geo_layer}),
-                        event="file",
+                        data=json.dumps(
+                            TaskOut.model_validate(task).model_dump(mode="json")
+                        ),
+                        event="status",
                     )
-            break
 
-    # Outside the poll loop / session scope: generate + stream the answer.
-    # Conversational events use gMART's {"type", "content"} envelope.
-    chat_id_final = chat_id
-    streamed_answer = False
-    assistant_file_parts = [
-        geo_layer_to_file_part(layer) for layer in geo_layers
-    ] or None
-    if last_status == TaskStatus.finished:
-        async for event in _stream_chat_answer_managed(
-            app_settings,
-            user_id=user_id,
-            assistant_file_parts=assistant_file_parts,
-            user_query=user_query,
-            classification_context=classification_context,
-            chat_id=chat_id,
-            scenario_id=scenario_id,
-            project_id=project_id,
-            chat_title=chat_title,
-            model=model,
-            temperature=temperature,
-            system_prompt_path=system_prompt_path,
-        ):
-            kind = event["type"]
-            if kind == "token":
-                streamed_answer = True
-            elif kind in ("chat_created", "done"):
-                chat_id_final = event.get("chat_id") or chat_id_final
-            sse = _chat_event_to_sse(event)
-            if sse is not None:
-                yield sse
+                if current_status not in _TERMINAL_STATUSES:
+                    await asyncio.sleep(poll_interval)
+                    continue
 
-        if streamed_answer:
-            yield _final_answer_chunk_sse()
+                # Terminal: build the grounding context + the result layer link
+                # inside the session scope (need the task row), then stream the
+                # answer outside any I/O on it.
+                if current_status == TaskStatus.finished:
+                    geo_layers = build_result_geo_layers(
+                        task, external_id, app_settings, request
+                    )
+                    if include_report:
+                        try:
+                            if report_kind == "classify":
+                                report = build_classify_summary_response(
+                                    task, external_id, app_settings
+                                )
+                                report_event = "classify_summary"
+                            else:
+                                report = build_object_zone_fit_response(
+                                    task, external_id, group_by, app_settings
+                                )
+                                report_event = "object_zone_fit"
+                            yield ServerSentEvent(
+                                data=json.dumps(report), event=report_event
+                            )
+                            classification_context = build_classification_context(
+                                chat_message=report.get("chat_message"),
+                                object_zone_fit=report,
+                                vri_names=load_vri_names(
+                                    app_settings.default_vri_classifier_path
+                                ),
+                                report_kind=report_kind,
+                            )
+                        except HTTPException as exc:
+                            yield ServerSentEvent(
+                                data=json.dumps({"error": exc.detail}), event="error"
+                            )
+                    for geo_layer in geo_layers:
+                        yield ServerSentEvent(
+                            data=json.dumps({"type": "file", "content": geo_layer}),
+                            event="file",
+                        )
+                break
+
+        # Outside the poll loop / session scope: generate + stream the answer.
+        # Conversational events use gMART's {"type", "content"} envelope.
+        streamed_answer = False
+        assistant_file_parts = [
+            geo_layer_to_file_part(layer) for layer in geo_layers
+        ] or None
+        if last_status == TaskStatus.finished:
+            async for event in _stream_chat_answer_managed(
+                app_settings,
+                user_id=user_id,
+                assistant_file_parts=assistant_file_parts,
+                user_query=user_query,
+                classification_context=classification_context,
+                chat_id=chat_id,
+                scenario_id=scenario_id,
+                project_id=project_id,
+                chat_title=chat_title,
+                model=model,
+                temperature=temperature,
+                system_prompt_path=system_prompt_path,
+            ):
+                kind = event["type"]
+                if kind == "token":
+                    streamed_answer = True
+                elif kind in ("chat_created", "done"):
+                    chat_id_final = event.get("chat_id") or chat_id_final
+                sse = _chat_event_to_sse(event)
+                if sse is not None:
+                    yield sse
+
+            if streamed_answer:
+                yield _final_answer_chunk_sse()
+    except Exception:
+        logger.exception("task chat stream failed, external_id=%s", external_id)
+        yield ServerSentEvent(
+            data=json.dumps(
+                {
+                    "type": "error",
+                    "content": {
+                        "message": "Проверка прервана из-за внутренней ошибки сервиса.",
+                        "stage": "stream",
+                    },
+                }
+            ),
+            event="error",
+        )
 
     terminal = last_status.value if last_status is not None else "unknown"
     yield ServerSentEvent(
@@ -1040,17 +1077,10 @@ def _file_durable_url(
     app_settings: Settings,
     request: Request | None = None,
 ) -> str:
-    """Stable, never-expiring URL for a task's file slot.
-
-    Absolute when ``PUBLIC_BASE_URL`` is set (best for storing in chat history),
-    otherwise derived from the request, else a relative path.
-    """
-    path = f"/files/{slot}/{external_id}"
-    if app_settings.public_base_url:
-        return f"{app_settings.public_base_url}{path}"
-    if request is not None:
-        return str(request.base_url).rstrip("/") + path
-    return path
+    """Stable, never-expiring URL for a task's file slot."""
+    return durable_url(
+        f"/files/{slot}/{external_id}", app_settings.public_base_url, request
+    )
 
 
 def _build_geo_layer(

@@ -24,6 +24,17 @@ from ..exceptions import map_errors
 tasks_mcp = FastMCP("PZZ Pipeline Tasks")
 
 
+def _require_layer(
+    upload_id: str | None, inline: dict[str, Any] | None, slot: str
+) -> None:
+    """Fail fast when a layer slot is filled by neither an upload id nor inline data."""
+    if not upload_id and inline is None:
+        raise ValueError(
+            f"{slot}: pass {slot}_upload_id (from POST /uploads) or the inline "
+            f"{slot}_geojson"
+        )
+
+
 def _result_not_ready_response(
     *,
     external_id: str,
@@ -54,7 +65,8 @@ def _result_not_ready_response(
 USE WHEN: user has cadastral parcels and wants their permitted-use texts classified, but does NOT have PZZ zone polygons.
 
 PARAMETERS
-- cadastral_geojson (object, required): GeoJSON FeatureCollection in EPSG:4326. Each Feature must have the property named by `cadastral_vri_col`.
+- cadastral_upload_id (string, preferred): id returned by POST /uploads for the cadastral layer. Upload the file first, then pass the id — a real layer does not fit in a tool argument.
+- cadastral_geojson (object, DEPRECATED): inline GeoJSON FeatureCollection in EPSG:4326. Kept for existing callers only.
 - cadastral_vri_col (string, required): name of the property in each Feature that holds the cadastral VRI text. Examples: "Вид разреш", "Вид_разрешенного_исп".
 - priority (int, 1–10, default 1): scheduling priority. Higher = more capacity reserved.
 - force_recompute (bool, default false): when true and an Idempotency-Key matches an existing terminal task, the task is re-enqueued instead of returning the cached result.
@@ -64,7 +76,7 @@ RETURNS
 
 EXAMPLE CALL
   submit_classify_only_task(
-    cadastral_geojson={"type":"FeatureCollection","features":[...]},
+    cadastral_upload_id="8f3c…",
     cadastral_vri_col="Вид разреш",
     priority=1
   )
@@ -81,22 +93,29 @@ NEXT STEP: poll get_task_status(external_id) until status is "finished" or "fail
 )
 @map_errors
 async def submit_classify_only_task(
-    cadastral_geojson: Annotated[
-        dict[str, Any],
-        "GeoJSON FeatureCollection of cadastral parcels in EPSG:4326.",
-    ],
     cadastral_vri_col: Annotated[
         str,
         "Property name holding the cadastral VRI text (e.g. 'Вид разреш').",
     ],
+    cadastral_upload_id: Annotated[
+        str | None,
+        "Id returned by POST /uploads for the cadastral layer. Preferred.",
+    ] = None,
+    cadastral_geojson: Annotated[
+        dict[str, Any] | None,
+        "DEPRECATED: inline GeoJSON FeatureCollection in EPSG:4326. Prefer "
+        "cadastral_upload_id — a real layer does not fit in a tool argument.",
+    ] = None,
     priority: Annotated[int, "Scheduling priority 1-10."] = 1,
     force_recompute: Annotated[
         bool, "Force re-run when Idempotency-Key matches."
     ] = False,
     api: ApiClient = Depends(get_api_client),
 ) -> dict[str, Any]:
+    _require_layer(cadastral_upload_id, cadastral_geojson, "cadastral")
     return await api.submit_classify_only(
         cadastral_geojson=cadastral_geojson,
+        cadastral_upload_id=cadastral_upload_id,
         cadastral_vri_col=cadastral_vri_col,
         priority=priority,
         force_recompute=force_recompute,
@@ -111,8 +130,9 @@ async def submit_classify_only_task(
 USE WHEN: user has BOTH cadastral parcels AND the PZZ zone polygons for the same territory. The pipeline overlays parcels onto PZZ zones to determine each parcel's factual zone, then validates its VRI text against that zone's permitted-use list.
 
 PARAMETERS
-- cadastral_geojson (object, required): GeoJSON FeatureCollection in EPSG:4326.
-- pzz_zones_geojson (object, required): GeoJSON FeatureCollection in EPSG:4326 with zone polygons.
+- cadastral_upload_id (string, preferred): id from POST /uploads for the cadastral layer.
+- pzz_zones_upload_id (string, preferred): id from POST /uploads for the zones layer.
+- cadastral_geojson / pzz_zones_geojson (object, DEPRECATED): inline GeoJSON in EPSG:4326, kept for existing callers.
 - cadastral_vri_col (string, required): name of the property holding the cadastral VRI text in cadastral features.
 - pzz_zone_code_col (string, required): name of the property in PZZ features holding the zone code (e.g. "Индекс_зоны").
 - pzz_zone_name_col (string, required): name of the property in PZZ features holding the human-readable zone name (e.g. "Код_объекта").
@@ -124,8 +144,8 @@ RETURNS
 
 EXAMPLE CALL
   submit_pzz_check_task(
-    cadastral_geojson={...},
-    pzz_zones_geojson={...},
+    cadastral_upload_id="8f3c…",
+    pzz_zones_upload_id="1a90…",
     cadastral_vri_col="Вид разреш",
     pzz_zone_code_col="Индекс_зоны",
     pzz_zone_name_col="Код_объекта"
@@ -140,25 +160,112 @@ NEXT STEP: poll get_task_status(external_id) until terminal status, then call ge
 )
 @map_errors
 async def submit_pzz_check_task(
-    cadastral_geojson: Annotated[
-        dict[str, Any], "Cadastral parcels GeoJSON in EPSG:4326."
-    ],
-    pzz_zones_geojson: Annotated[dict[str, Any], "PZZ zones GeoJSON in EPSG:4326."],
     cadastral_vri_col: Annotated[str, "Property name with cadastral VRI text."],
     pzz_zone_code_col: Annotated[str, "Property name with PZZ zone code."],
     pzz_zone_name_col: Annotated[
         str, "Property name with PZZ zone human-readable name."
     ],
+    cadastral_upload_id: Annotated[
+        str | None, "Id from POST /uploads for the cadastral layer. Preferred."
+    ] = None,
+    pzz_zones_upload_id: Annotated[
+        str | None, "Id from POST /uploads for the PZZ zones layer. Preferred."
+    ] = None,
+    cadastral_geojson: Annotated[
+        dict[str, Any] | None,
+        "DEPRECATED: inline cadastral GeoJSON. Prefer cadastral_upload_id.",
+    ] = None,
+    pzz_zones_geojson: Annotated[
+        dict[str, Any] | None,
+        "DEPRECATED: inline PZZ zones GeoJSON. Prefer pzz_zones_upload_id.",
+    ] = None,
     priority: Annotated[int, "Scheduling priority 1-10."] = 1,
     force_recompute: Annotated[bool, "Force re-run."] = False,
     api: ApiClient = Depends(get_api_client),
 ) -> dict[str, Any]:
+    _require_layer(cadastral_upload_id, cadastral_geojson, "cadastral")
+    _require_layer(pzz_zones_upload_id, pzz_zones_geojson, "pzz_zones")
     return await api.submit_pzz_check(
         cadastral_geojson=cadastral_geojson,
         pzz_zones_geojson=pzz_zones_geojson,
+        cadastral_upload_id=cadastral_upload_id,
+        pzz_zones_upload_id=pzz_zones_upload_id,
         cadastral_vri_col=cadastral_vri_col,
         pzz_zone_code_col=pzz_zone_code_col,
         pzz_zone_name_col=pzz_zone_name_col,
+        priority=priority,
+        force_recompute=force_recompute,
+    )
+
+
+@tasks_mcp.tool(
+    name="submit_building_pzz_check_task",
+    title="Submit building PZZ check",
+    description="""Submit BUILDINGS (not parcels) for the PZZ check: are the existing buildings allowed by the zone they stand in?
+
+USE WHEN: the layer describes buildings or services (physical_object_type_id / service_type_id, storeys) rather than cadastral parcels with permitted-use texts. Choose submit_pzz_check_task instead when the layer is parcels with a VRI text column.
+
+Column names are NOT passed: they are detected from the data. The response says what was recognised in `narrative` — relay it to the user.
+
+PARAMETERS
+- buildings_upload_id (string, required): id from POST /uploads for the buildings layer.
+- pzz_zones_upload_id (string, required): id from POST /uploads for the PZZ zones layer.
+- descriptions_upload_id (string, optional): id of the user's own zone → permitted-use description file (JSON, CSV or XLSX). Without it the built-in approximate template is used.
+- confirmed_zone_map (object, optional): {"user zone code": "template zone code"}. Only sent on a resubmit, after the user approved the matches returned by a previous `action="confirm"` response.
+- priority (int, 1–10, default 1), force_recompute (bool, default false).
+
+RETURNS — check `action` first, it is not always a task:
+- "created": `task` holds the TaskOut (external_id, status). Proceed as with any task.
+- "confirm": some zone codes are missing from the template. `suggestions` lists {user_code, user_name, suggested_code, suggested_name}. Show them, get the user's approval, resubmit with confirmed_zone_map. Do NOT invent the mapping yourself.
+- "suggest_upload": too many zones are unknown. Ask the user for their PZZ descriptions file, upload it, resubmit with descriptions_upload_id.
+- "detection_failed": required columns not found. `narrative` says what was and was not recognised.
+`next_step` restates this in every response.
+
+EXAMPLE CALL
+  submit_building_pzz_check_task(
+    buildings_upload_id="8f3c…",
+    pzz_zones_upload_id="1a90…"
+  )
+
+ERRORS
+- -32602 Invalid params: unknown, expired or foreign upload id; malformed layer.
+- -32603 Internal error: upstream API or storage unreachable.
+
+NEXT STEP: when action="created", poll get_task_status(external_id), then get_task_result. Otherwise follow next_step — resubmitting without resolving it repeats the same answer.""",
+    tags={"pipeline", "submit"},
+)
+@map_errors
+async def submit_building_pzz_check_task(
+    buildings_upload_id: Annotated[
+        str, "Id from POST /uploads for the buildings layer."
+    ],
+    pzz_zones_upload_id: Annotated[
+        str, "Id from POST /uploads for the PZZ zones layer."
+    ],
+    descriptions_upload_id: Annotated[
+        str | None,
+        "Id from POST /uploads for the user's zone → permitted-use descriptions "
+        "(JSON/CSV/XLSX). Omit to use the built-in approximate template.",
+    ] = None,
+    confirmed_zone_map: Annotated[
+        dict[str, str] | None,
+        "User-approved {their zone code: template zone code}. Send only after the "
+        "user confirmed the suggestions from a previous action='confirm' response.",
+    ] = None,
+    priority: Annotated[int, "Scheduling priority 1-10."] = 1,
+    force_recompute: Annotated[bool, "Force re-run."] = False,
+    api: ApiClient = Depends(get_api_client),
+) -> dict[str, Any]:
+    if not buildings_upload_id or not pzz_zones_upload_id:
+        raise ValueError(
+            "buildings_upload_id and pzz_zones_upload_id are both required; upload "
+            "each layer with POST /uploads first"
+        )
+    return await api.submit_building_pzz_check(
+        buildings_upload_id=buildings_upload_id,
+        pzz_zones_upload_id=pzz_zones_upload_id,
+        descriptions_upload_id=descriptions_upload_id,
+        confirmed_zone_map=confirmed_zone_map,
         priority=priority,
         force_recompute=force_recompute,
     )
@@ -286,6 +393,46 @@ async def get_task_result(
         )
 
     return await api.get_task_result(external_id)
+
+
+@tasks_mcp.tool(
+    name="get_task_report",
+    title="Get task object-zone-fit report",
+    description="""Return the structured object-zone-fit report of a finished task — the form an answer is written from.
+
+USE WHEN: the task is finished and you need to explain the outcome. Prefer this over get_task_result, which returns the raw result GeoJSON (megabytes, not summarisable).
+
+PARAMETERS
+- external_id (string, required).
+- group_by (string, default "zone"): "zone" groups objects by their actual PZZ zone and attaches that zone's permitted-use reference; "object" returns a flat per-object list.
+
+RETURNS
+- { summary: {...}, zones | objects: [...] } with per-object verdict, zone and reason.
+
+ERRORS
+- -32602 Invalid params: task not found.
+
+If the task is still queued/running, or if it failed, this tool returns
+{ ready:false, status, error_text, next_step } instead of raising a tool error.""",
+    tags={"pipeline", "read"},
+    annotations={"readOnlyHint": True},
+)
+@map_errors
+async def get_task_report(
+    external_id: Annotated[str, "Task identifier."],
+    group_by: Annotated[str, "Group by 'zone' (default) or 'object'."] = "zone",
+    api: ApiClient = Depends(get_api_client),
+) -> dict[str, Any]:
+    task = await api.get_task(external_id)
+    status = task.get("status")
+    if status != "finished":
+        return _result_not_ready_response(
+            external_id=external_id,
+            status=status,
+            error_text=task.get("error_text"),
+        )
+
+    return await api.get_task_report(external_id, group_by)
 
 
 @tasks_mcp.tool(

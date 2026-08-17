@@ -37,7 +37,7 @@ from typing import Any
 
 import httpx
 
-from ...infrastructure.ollama_chat_client import OllamaChatClient, OllamaChatError
+from ...infrastructure.chat_llm_client import ChatLlmClient, ChatLlmError
 
 logger = logging.getLogger("service.detect_columns")
 
@@ -447,7 +447,7 @@ def _detection_schema(
 
 
 async def detect_columns_for_file(
-    ollama_client: OllamaChatClient,
+    chat_client: ChatLlmClient,
     feature_collection: dict[str, Any],
     targets: list[DetectionTarget],
     *,
@@ -499,8 +499,8 @@ async def detect_columns_for_file(
     messages = _build_detection_messages(unresolved, profiles)
     schema = _detection_schema(unresolved, names)
     try:
-        result = await ollama_client.complete_json(messages, schema=schema, model=model)
-    except (OllamaChatError, httpx.HTTPError) as exc:
+        result = await chat_client.complete_json(messages, schema=schema, model=model)
+    except (ChatLlmError, httpx.HTTPError) as exc:
         # LLM down/unreachable must not 500 the auto endpoint — the unresolved
         # targets simply fall back to "not found" (heuristic-only detection).
         logger.warning("column-detection LLM call failed: %s", exc)
@@ -555,7 +555,11 @@ def _downgrade_empty_columns(
         if not suggestion.value:
             continue
         profile = profile_by_name.get(suggestion.value)
-        if profile is not None and profile.total_rows > 0 and profile.non_null_count == 0:
+        if (
+            profile is not None
+            and profile.total_rows > 0
+            and profile.non_null_count == 0
+        ):
             suggestions[key] = ColumnSuggestion(
                 value=None,
                 confidence=_NONE,

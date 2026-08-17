@@ -142,6 +142,56 @@ def build_disclaimer(remaining: list[str]) -> str:
     return "\n".join(lines)
 
 
+def build_review_message(
+    action: str,
+    suggestions: list[dict[str, Any]] | None = None,
+    uncovered_codes: list[str] | None = None,
+) -> str:
+    """The ready-to-show explanation of a check that stopped short of running.
+
+    Written here rather than by each client: the wording of what «зона не найдена в
+    шаблоне» means, and what the user can do about it, is this service's knowledge.
+    A client that rebuilds it drifts from us the first time we reword a verdict.
+    """
+    codes = ", ".join(uncovered_codes or []) or "—"
+    if action == "confirm":
+        lines = [
+            "Проверка зданий по ПЗЗ не запущена: часть территориальных зон отсутствует "
+            "во встроенном шаблоне ПЗЗ, поэтому разрешённые ВРИ для них неизвестны.",
+            "Ниже — подобранные соответствия зонам шаблона. Их нужно показать "
+            "пользователю и получить явное подтверждение: подставлять чужой шаблон "
+            "вместо его ПЗЗ нельзя, вердикты выйдут неверными.",
+        ]
+        for item in suggestions or []:
+            suggested = item.get("suggested_code") or "подходящей зоны не нашлось"
+            name = item.get("suggested_name") or ""
+            lines.append(
+                f"- «{item.get('user_code')}» ({item.get('user_name') or 'без названия'})"
+                f" → {suggested} {name}".rstrip()
+            )
+        lines.append(
+            "После подтверждения повторите запрос с confirmed_zone_map — файлы уже "
+            "загружены и повторно не нужны."
+        )
+        return "\n".join(lines)
+
+    if action == "suggest_upload":
+        return (
+            "Проверка зданий по ПЗЗ не запущена: обобщённый шаблон не подходит — "
+            f"не найдены зоны {codes}. Нужен файл с описанием разрешённых ВРИ вашего "
+            "ПЗЗ (поле pzz_descriptions_file); подобрать их за пользователя нельзя."
+        )
+
+    if action == "detection_failed":
+        return (
+            "Проверка зданий по ПЗЗ не запущена: в загруженных файлах не удалось "
+            "определить обязательные колонки. Уточните у пользователя, в каких полях "
+            "лежат код территориальной зоны и тип или сервис здания."
+        )
+
+    return ""
+
+
 def _template_entries(template_path: str) -> list[dict[str, Any]]:
     raw = json.loads(Path(template_path).read_text(encoding="utf-8"))
     entries = (
