@@ -234,3 +234,20 @@ scripts/test_mcp_scenario.py
 # Internal dev docs kept locally only (frontend guide stays tracked)
 service/README.md
 pipeline_modules/README.md
+
+# Sample input files are documentation assets: they must survive the
+# *.geojson/*.csv/*.xlsx rules above, so re-include them explicitly.
+!examples/
+!examples/**
+
+# Agent instruction files, kept local
+AGENTS.md
+CLAUDE.md
+
+# Local-only compose override
+docker-compose.localtest.override.yml
+
+# Scratch output of manual/stress runs (tracked helper scripts are .py)
+scripts/_*.json
+scripts/_*.txt
+_host_upload*.txt
