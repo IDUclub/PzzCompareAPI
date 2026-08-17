@@ -151,12 +151,12 @@ class Settings(BaseSettings):
     chat_storage_base_url: str = Field(default="")
     chat_storage_timeout_seconds: float = Field(default=10.0)
 
-    # ── Conversational answer (Ollama /api/chat streaming) ───────────────────
+    # ── Conversational answer (streaming chat completion) ────────────────────
     # A natural-language answer generated over the classification results and
-    # streamed back to the user. Mirrors gMART: one Ollama host (reuses
-    # ``ollama_base_url``), the model is chosen per request. ``chat_model`` is
-    # the default model when the request doesn't specify one (falls back to
-    # ``generate_model``).
+    # streamed back to the user. The backend follows ``llm_backend``, so the
+    # host is either ``vllm_base_url`` or ``ollama_base_url``; the model is
+    # chosen per request. ``chat_model`` is the default model when the request
+    # doesn't specify one (falls back to ``generate_model``).
     chat_model: str = Field(default="")
     chat_temperature: float = Field(default=0.3)
     chat_request_timeout_seconds: float = Field(default=900.0)

@@ -6,7 +6,7 @@ results + a configured system prompt, stream the assistant tokens to the
 frontend, and persist the user+assistant turn to ChatStorage.
 
 The chat LLM is a SEPARATE backend from the pipeline's classification LLM
-(see ``build_ollama_chat_client``). Persistence is best-effort: a
+(see ``build_chat_llm_client``). Persistence is best-effort: a
 ChatStorage failure is surfaced as an ``error`` event but never aborts the
 token stream.
 
@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from ...infrastructure.chat_storage_client import ChatStorageClient, ChatStorageError
-from ...infrastructure.ollama_chat_client import OllamaChatClient, OllamaChatError
+from ...infrastructure.chat_llm_client import ChatLlmClient, ChatLlmError
 
 logger = logging.getLogger("service.chat")
 
@@ -298,7 +298,7 @@ def build_messages(
 
 async def stream_chat_answer(
     *,
-    ollama_client: OllamaChatClient,
+    chat_client: ChatLlmClient,
     chat_storage_client: ChatStorageClient | None,
     user_id: str | None,
     system_prompt: str,
@@ -396,12 +396,12 @@ async def stream_chat_answer(
     )
     collected: list[str] = []
     try:
-        async for delta in ollama_client.stream_chat(
+        async for delta in chat_client.stream_chat(
             messages, model=model, temperature=temperature
         ):
             collected.append(delta)
             yield {"type": "token", "content": delta}
-    except OllamaChatError as exc:
+    except ChatLlmError as exc:
         logger.warning("chat LLM stream failed: %s", exc)
         yield {"type": "error", "stage": "llm", "detail": str(exc)}
 

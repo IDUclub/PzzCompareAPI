@@ -2,7 +2,7 @@
 
 import asyncio
 
-from service.infrastructure.ollama_chat_client import OllamaChatError
+from service.infrastructure.chat_llm_client import ChatLlmError
 from service.application.use_cases.chat_answer import (
     build_classification_context,
     build_messages,
@@ -19,7 +19,7 @@ class FakeOllama:
     async def stream_chat(self, messages, *, model=None, temperature=None):
         self.seen_messages = messages
         if self._error:
-            raise OllamaChatError(500, "boom")
+            raise ChatLlmError(500, "boom")
         for d in self._deltas:
             yield d
 
@@ -60,7 +60,7 @@ def test_creates_chat_and_persists_turn_when_no_chat_id() -> None:
     cs = FakeChatStorage()
     events = _collect(
         stream_chat_answer(
-            ollama_client=FakeOllama(("Привет", " мир")),
+            chat_client=FakeOllama(("Привет", " мир")),
             chat_storage_client=cs,
             user_id="tok",
             system_prompt="SYS",
@@ -86,7 +86,7 @@ def test_uses_supplied_chat_id_without_creating() -> None:
     cs = FakeChatStorage()
     events = _collect(
         stream_chat_answer(
-            ollama_client=FakeOllama(),
+            chat_client=FakeOllama(),
             chat_storage_client=cs,
             user_id="tok",
             system_prompt="SYS",
@@ -102,7 +102,7 @@ def test_uses_supplied_chat_id_without_creating() -> None:
 def test_no_persist_without_storage_still_streams() -> None:
     events = _collect(
         stream_chat_answer(
-            ollama_client=FakeOllama(("x", "y")),
+            chat_client=FakeOllama(("x", "y")),
             chat_storage_client=None,
             user_id=None,
             system_prompt="SYS",
@@ -119,7 +119,7 @@ def test_llm_error_emits_error_then_done() -> None:
     cs = FakeChatStorage()
     events = _collect(
         stream_chat_answer(
-            ollama_client=FakeOllama(error=True),
+            chat_client=FakeOllama(error=True),
             chat_storage_client=cs,
             user_id="tok",
             system_prompt="SYS",
@@ -143,7 +143,7 @@ def test_persistence_failure_emits_warning_not_error() -> None:
     cs = FailingChatStorage()
     events = _collect(
         stream_chat_answer(
-            ollama_client=FakeOllama(("x", "y")),
+            chat_client=FakeOllama(("x", "y")),
             chat_storage_client=cs,
             user_id="tok",
             system_prompt="SYS",
@@ -174,7 +174,7 @@ def test_existing_chat_loads_history_into_messages() -> None:
     cs = FakeChatStorage(history_messages=history_messages)
     _collect(
         stream_chat_answer(
-            ollama_client=fake_llm,
+            chat_client=fake_llm,
             chat_storage_client=cs,
             user_id="tok",
             system_prompt="SYS",
@@ -201,7 +201,7 @@ def test_assistant_message_carries_geo_file_part() -> None:
     }
     _collect(
         stream_chat_answer(
-            ollama_client=FakeOllama(("ответ",)),
+            chat_client=FakeOllama(("ответ",)),
             chat_storage_client=cs,
             user_id="tok",
             system_prompt="SYS",

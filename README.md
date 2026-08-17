@@ -150,8 +150,9 @@ GeoParquet — не-GeoJSON форматы конвертируются в GeoJS
 конверт `{type, content}`) отчёт (`object_zone_fit` для pzz-check, `classify_summary` для
 classify-only) → `service_event/chat_created` (если не передан `chat_id`) → `chunk`* → `done`,
 и сохраняют диалог (user + assistant) в **ChatStorage**.
-Разговорный ответ генерирует Ollama `/api/chat` (`OLLAMA_BASE_URL`); модель — параметр запроса
-`model` (дефолт `CHAT_MODEL`/`GENERATE_MODEL`).
+Разговорный ответ генерирует тот же LLM-бэкенд, что и пайплайн (`LLM_BACKEND`): при `vllm` —
+OpenAI-совместимый `/v1/chat/completions` на `VLLM_BASE_URL`, иначе Ollama `/api/chat` на
+`OLLAMA_BASE_URL`. Модель — параметр запроса `model` (дефолт `CHAT_MODEL`/`GENERATE_MODEL`).
 
 Большой GeoJSON-результат в чат-стриме отдаётся **ссылкой** (событие `file`), а не инлайном:
 долговечный `url = /files/result/{id}` (307 → свежий presigned MinIO, не протухает) сохраняется в
@@ -298,6 +299,6 @@ CI-пайплайн [`.github/workflows/deploy.yml`](.github/workflows/deploy.ym
 (см. `service/settings.py` и `.env.example`). Ключевое: `DATABASE_URL`,
 `REDIS_URL`, `LLM_BACKEND` + модели, `FILESERVER_*` (MinIO), `URBAN_API_BASE_URL`.
 Для чат-ручек: `CHAT_STORAGE_BASE_URL` (история диалогов; пусто — персист выключен),
-`CHAT_MODEL` (дефолтная модель чата на `OLLAMA_BASE_URL`), `CHAT_SYSTEM_PROMPT_PATH`,
+`CHAT_MODEL` (дефолтная модель чата на хосте выбранного `LLM_BACKEND`), `CHAT_SYSTEM_PROMPT_PATH`,
 `KEYCLOAK_*` (сервисный токен для записи истории, см. «Аутентификация»).
 Секреты в репозиторий не коммитятся.

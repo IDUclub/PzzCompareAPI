@@ -1,0 +1,76 @@
+{
+  "functional_zone_mappings": [
+    {
+      "functional_zone_type_id": 8,
+      "db_zone_nickname": "Зона застройки среднеэтажными жилыми домами",
+      "averaged_pzz_profile": {
+        "main_vri": [
+          {
+            "vri_code": "2.5"
+          },
+          {
+            "vri_code": "2.1"
+          }
+        ],
+        "conditional_vri": [
+          {
+            "vri_code": "3.5.1"
+          }
+        ],
+        "auxiliary_vri": [
+          {
+            "vri_code": "12.0"
+          }
+        ]
+      }
+    },
+    {
+      "functional_zone_type_id": 6,
+      "db_zone_nickname": "Зона производственных объектов",
+      "averaged_pzz_profile": {
+        "main_vri": [
+          {
+            "vri_code": "6.9"
+          },
+          {
+            "vri_code": "6.0"
+          }
+        ],
+        "conditional_vri": [
+          {
+            "vri_code": "4.9.1"
+          }
+        ],
+        "auxiliary_vri": [
+          {
+            "vri_code": "12.0"
+          }
+        ]
+      }
+    },
+    {
+      "functional_zone_type_id": 5,
+      "db_zone_nickname": "Зона рекреационного назначения",
+      "averaged_pzz_profile": {
+        "main_vri": [
+          {
+            "vri_code": "5.0"
+          },
+          {
+            "vri_code": "5.1"
+          }
+        ],
+        "conditional_vri": [
+          {
+            "vri_code": "4.6"
+          }
+        ],
+        "auxiliary_vri": [
+          {
+            "vri_code": "12.0"
+          }
+        ]
+      }
+    }
+  ]
+}

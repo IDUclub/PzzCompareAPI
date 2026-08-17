@@ -58,7 +58,6 @@ from ..application.use_cases.detect_columns import (
     sparse_column_warnings,
 )
 from ..dependencies import (
-    build_ollama_chat_client,
     get_app_settings,
     get_db,
     get_event_repo,
@@ -78,7 +77,7 @@ from ..output_version import PIPELINE_OUTPUT_VERSION
 from ..settings import Settings
 from ..tasks import celery_app, enqueue_pipeline_task, execute_pipeline_task
 from .security import AuthUser, get_current_user, get_optional_user
-from ..infrastructure.ollama_chat_client import OllamaChatError
+from ..infrastructure.chat_llm_client import ChatLlmError, build_chat_llm_client
 from ..infrastructure.table_reader import TableReadError, read_table
 from .tasks import (
     detection_failed_generator,
@@ -1202,9 +1201,9 @@ async def _convert_descriptions_if_table(
             f"прочитать: {exc}."
         ) from exc
     feature_collection = {"features": [{"properties": r} for r in rows]}
-    async with build_ollama_chat_client(app_settings) as ollama_client:
+    async with build_chat_llm_client(app_settings) as chat_client:
         suggestions = await detect_columns_for_file(
-            ollama_client,
+            chat_client,
             feature_collection,
             ZONE_TABLE_TARGETS,
             model=model,
@@ -1341,13 +1340,13 @@ async def _prepare_building_pzz_run(
     # The zone name is detected too (optional) so the letter-index review can offer
     # a name-based suggestion for zones missing from the built-in template.
     announce_targets = list(BUILDING_TARGETS) + [ZONE_CODE_TARGET, ZONE_NAME_TARGET]
-    async with build_ollama_chat_client(app_settings) as ollama_client:
+    async with build_chat_llm_client(app_settings) as chat_client:
         suggestions = await detect_columns_for_file(
-            ollama_client, buildings_fc, BUILDING_TARGETS, model=model
+            chat_client, buildings_fc, BUILDING_TARGETS, model=model
         )
         suggestions.update(
             await detect_columns_for_file(
-                ollama_client,
+                chat_client,
                 zones_fc,
                 [ZONE_CODE_TARGET, ZONE_NAME_TARGET],
                 model=model,
@@ -1416,11 +1415,11 @@ async def _prepare_building_pzz_run(
         messages, schema = build_suggestion_messages(review.uncovered, candidates)
         llm_available = True
         try:
-            async with build_ollama_chat_client(app_settings) as ollama_client:
-                parsed = await ollama_client.complete_json(
+            async with build_chat_llm_client(app_settings) as chat_client:
+                parsed = await chat_client.complete_json(
                     messages, schema=schema, model=model
                 )
-        except (OllamaChatError, httpx.HTTPError) as exc:
+        except (ChatLlmError, httpx.HTTPError) as exc:
             # No suggestions possible without the model — degrade to the upload
             # ask rather than 500 the whole request.
             logger.warning(
@@ -1745,14 +1744,14 @@ async def create_auto_chat_stream_endpoint(
     targets = list(CADASTRAL_TARGETS) + (
         list(PZZ_ZONE_TARGETS) if include_pzz_check else []
     )
-    async with build_ollama_chat_client(app_settings) as ollama_client:
+    async with build_chat_llm_client(app_settings) as chat_client:
         suggestions = await detect_columns_for_file(
-            ollama_client, cadastral_fc, CADASTRAL_TARGETS, model=model
+            chat_client, cadastral_fc, CADASTRAL_TARGETS, model=model
         )
         if include_pzz_check and zones_fc is not None:
             suggestions.update(
                 await detect_columns_for_file(
-                    ollama_client, zones_fc, PZZ_ZONE_TARGETS, model=model
+                    chat_client, zones_fc, PZZ_ZONE_TARGETS, model=model
                 )
             )
     narrative = render_detection_narrative(

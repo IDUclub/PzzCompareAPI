@@ -187,7 +187,7 @@ class _FakeOllama:
 
 def test_convert_endpoint_xlsx(monkeypatch):
     monkeypatch.setattr(
-        zd, "build_ollama_chat_client", lambda settings=None: _FakeOllama()
+        zd, "build_chat_llm_client", lambda settings=None: _FakeOllama()
     )
     data = _xlsx_bytes(
         ["Zone", "Code", "VRI_Code", "VRI"],
@@ -247,7 +247,7 @@ def test_convert_endpoint_llm_maps_nonstandard_headers(monkeypatch):
             "vri_name": {"column": "Наименование ВРИ", "reason": "длинный текст"},
         }
     )
-    monkeypatch.setattr(zd, "build_ollama_chat_client", lambda settings=None: scripted)
+    monkeypatch.setattr(zd, "build_chat_llm_client", lambda settings=None: scripted)
     data = _xlsx_bytes(
         ["Территориальная зона", "Разрешение", "Индекс ВРИ", "Наименование ВРИ"],
         [
@@ -273,7 +273,7 @@ def test_convert_endpoint_llm_maps_nonstandard_headers(monkeypatch):
 def test_convert_endpoint_offline_backstop(monkeypatch):
     """LLM unreachable (returns nothing) → heuristic backstop still resolves standard headers."""
     monkeypatch.setattr(
-        zd, "build_ollama_chat_client", lambda settings=None: _FakeOllama()
+        zd, "build_chat_llm_client", lambda settings=None: _FakeOllama()
     )
     data = _xlsx_bytes(
         ["Zone", "Code", "VRI_Code", "VRI"],
@@ -292,7 +292,7 @@ def test_convert_endpoint_offline_backstop(monkeypatch):
 
 def test_convert_endpoint_bad_format(monkeypatch):
     monkeypatch.setattr(
-        zd, "build_ollama_chat_client", lambda settings=None: _FakeOllama()
+        zd, "build_chat_llm_client", lambda settings=None: _FakeOllama()
     )
     client = TestClient(app_module.app)
     resp = client.post(
@@ -324,7 +324,7 @@ def _run_convert_helper(monkeypatch, upload):
     import service.api.classifier as clf
 
     monkeypatch.setattr(
-        clf, "build_ollama_chat_client", lambda settings=None: _NoLLMOllama()
+        clf, "build_chat_llm_client", lambda settings=None: _NoLLMOllama()
     )
     return asyncio.run(
         clf._convert_descriptions_if_table(upload, SimpleNamespace(), None)

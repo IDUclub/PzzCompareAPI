@@ -1,7 +1,9 @@
 """Tests for the gMART-format SSE mapping and chat endpoint auth (phase 4)."""
 
+import asyncio
 import json
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
@@ -72,6 +74,105 @@ def test_done_event_is_not_emitted_as_sse() -> None:
 def test_final_answer_chunk_marks_done() -> None:
     _, data = _payload(_final_answer_chunk_sse())
     assert data == {"type": "chunk", "content": {"text": "", "done": True}}
+
+
+def test_stream_chat_answer_managed_surfaces_error_instead_of_raising(
+    monkeypatch,
+) -> None:
+    """A failure mid-stream must yield an ``error`` event, not propagate.
+
+    The caller appends a terminal ``done`` after draining this generator; an
+    escaping exception would abort the SSE stream before ``done`` and hang the
+    frontend.
+    """
+    from types import SimpleNamespace
+
+    from service.api import tasks as tasks_module
+
+    class _DummyClientCM:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        tasks_module, "build_chat_llm_client", lambda settings: _DummyClientCM()
+    )
+    monkeypatch.setattr(tasks_module, "load_system_prompt", lambda path: "sys")
+
+    async def _boom(**kwargs):
+        """Async generator matching stream_chat_answer that raises on iteration.
+
+        The trailing ``yield`` is what makes this an async generator; the raise
+        fires on the first iteration.
+        """
+        raise httpx.ConnectError("[Errno -2] Name or service not known")
+        yield
+
+    monkeypatch.setattr(tasks_module, "stream_chat_answer", _boom)
+
+    app_settings = SimpleNamespace(chat_system_prompt_path="x")
+
+    async def run():
+        events = []
+        async for ev in tasks_module._stream_chat_answer_managed(
+            app_settings,
+            user_id=None,
+            user_query="q",
+            classification_context="ctx",
+            chat_id=None,
+        ):
+            events.append(ev)
+        return events
+
+    events = asyncio.run(run())
+    assert events == [
+        {
+            "type": "error",
+            "stage": "chat_answer",
+            "detail": "Не удалось сформировать ответ по результатам классификации.",
+        }
+    ]
+
+
+def test_task_chat_stream_always_emits_terminal_done(monkeypatch) -> None:
+    """A crash inside the poll loop must still end with ``error`` + ``done``.
+
+    An exception escaping the SSE generator closes the connection with no
+    terminal event, and the frontend then reports the whole check as failed even
+    when the result layer was already delivered.
+    """
+    from types import SimpleNamespace
+
+    from service.api import tasks as tasks_module
+
+    def _boom_session_scope():
+        raise RuntimeError("database is down")
+
+    monkeypatch.setattr(tasks_module, "session_scope", _boom_session_scope)
+
+    request = SimpleNamespace(is_disconnected=lambda: asyncio.sleep(0, result=False))
+
+    async def run():
+        events = []
+        async for sse in tasks_module.task_stream_with_chat_generator(
+            "ext-1",
+            group_by="zone",
+            poll_interval=0.01,
+            request=request,
+            app_settings=SimpleNamespace(),
+            initial={"external_id": "ext-1"},
+            user_id=None,
+            user_query="q",
+        ):
+            events.append(_payload(sse))
+        return events
+
+    events = asyncio.run(run())
+    assert [event for event, _ in events] == ["task", "error", "done"]
+    assert events[1][1]["content"]["stage"] == "stream"
+    assert events[2][1] == {"status": "unknown", "chat_id": None}
 
 
 def test_missing_bearer_token_rejected() -> None:
