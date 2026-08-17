@@ -99,7 +99,8 @@ class OllamaChatClient:
         """Stream assistant content deltas for ``messages``.
 
         Yields the incremental ``message.content`` chunks as they arrive.
-        Raises ``OllamaChatError`` on a non-2xx status or unparseable stream.
+        Raises ``OllamaChatError`` on a non-2xx status, an unparseable stream, or
+        a transport failure (connection refused, DNS/host resolution error, …).
         """
         payload: dict[str, Any] = {
             "model": model or self._default_model,
@@ -112,22 +113,27 @@ class OllamaChatClient:
         if think is not None:
             payload["think"] = think
 
-        async with self._client.stream("POST", "/api/chat", json=payload) as resp:
-            if resp.status_code >= 400:
-                body = await resp.aread()
-                raise OllamaChatError(resp.status_code, body.decode("utf-8", "replace"))
-            async for line in resp.aiter_lines():
-                if not line.strip():
-                    continue
-                try:
-                    chunk = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise OllamaChatError(resp.status_code, line) from exc
-                delta = (chunk.get("message") or {}).get("content") or ""
-                if delta:
-                    yield delta
-                if chunk.get("done"):
-                    break
+        try:
+            async with self._client.stream("POST", "/api/chat", json=payload) as resp:
+                if resp.status_code >= 400:
+                    body = await resp.aread()
+                    raise OllamaChatError(
+                        resp.status_code, body.decode("utf-8", "replace")
+                    )
+                async for line in resp.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise OllamaChatError(resp.status_code, line) from exc
+                    delta = (chunk.get("message") or {}).get("content") or ""
+                    if delta:
+                        yield delta
+                    if chunk.get("done"):
+                        break
+        except httpx.HTTPError as exc:
+            raise OllamaChatError(0, f"request failed: {exc!s}") from exc
 
     async def complete_json(
         self,

@@ -63,3 +63,18 @@ def test_non_2xx_raises_ollama_chat_error() -> None:
     with pytest.raises(OllamaChatError) as exc:
         asyncio.run(run())
     assert exc.value.status == 500
+
+
+def test_transport_error_wrapped_as_ollama_chat_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("[Errno -2] Name or service not known")
+
+    async def run() -> None:
+        async with _client(handler) as oc:
+            async for _ in oc.stream_chat([{"role": "user", "content": "hi"}]):
+                pass
+
+    with pytest.raises(OllamaChatError) as exc:
+        asyncio.run(run())
+    assert exc.value.status == 0
+    assert "request failed" in str(exc.value)
