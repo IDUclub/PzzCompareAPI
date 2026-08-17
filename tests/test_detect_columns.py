@@ -18,7 +18,7 @@ from service.application.use_cases.detect_columns import (
     required_columns_resolved,
     sparse_column_warnings,
 )
-from service.infrastructure.ollama_chat_client import OllamaChatClient, OllamaChatError
+from service.infrastructure.chat_llm_client import OllamaChatClient, ChatLlmError
 
 
 def _fc(rows: list[dict]) -> dict:
@@ -47,7 +47,7 @@ class RecordingFakeOllama:
     async def complete_json(self, messages, *, schema, model=None, temperature=0.0):
         self.calls.append({"messages": messages, "schema": schema, "model": model})
         if self._error:
-            raise OllamaChatError(500, "boom")
+            raise ChatLlmError(500, "boom")
         return self._result
 
     async def __aenter__(self):
@@ -266,7 +266,9 @@ def test_completely_empty_resolved_column_is_downgraded_to_unresolved() -> None:
     # the whole file -> must be treated as "not found", not silently classified.
     feats = [{"Вид_разрешенного_исп": None}] * 209
     fake = RecordingFakeOllama()
-    suggestions = asyncio.run(detect_columns_for_file(fake, _fc(feats), CADASTRAL_TARGETS))
+    suggestions = asyncio.run(
+        detect_columns_for_file(fake, _fc(feats), CADASTRAL_TARGETS)
+    )
     assert suggestions["cadastral_vri_col"].value is None
     assert suggestions["cadastral_vri_col"].source == "none"
     assert required_columns_resolved(suggestions, CADASTRAL_TARGETS) is False
@@ -282,7 +284,9 @@ def test_sparse_column_triggers_warning_but_stays_resolved() -> None:
     fc = _fc(feats)
     suggestions = asyncio.run(detect_columns_for_file(fake, fc, CADASTRAL_TARGETS))
     assert suggestions["cadastral_vri_col"].value == "Вид_разрешенного_исп"
-    warnings = sparse_column_warnings(suggestions, CADASTRAL_TARGETS, profile_columns(fc))
+    warnings = sparse_column_warnings(
+        suggestions, CADASTRAL_TARGETS, profile_columns(fc)
+    )
     assert len(warnings) == 1
     assert "Вид_разрешенного_исп" in warnings[0]
     assert "3 из 209" in warnings[0]
@@ -293,7 +297,10 @@ def test_well_filled_column_has_no_sparse_warning() -> None:
     fake = RecordingFakeOllama()
     fc = _fc(feats)
     suggestions = asyncio.run(detect_columns_for_file(fake, fc, CADASTRAL_TARGETS))
-    assert sparse_column_warnings(suggestions, CADASTRAL_TARGETS, profile_columns(fc)) == []
+    assert (
+        sparse_column_warnings(suggestions, CADASTRAL_TARGETS, profile_columns(fc))
+        == []
+    )
 
 
 # --- complete_json client (structured output) -----------------------------
@@ -343,7 +350,7 @@ def test_complete_json_raises_on_bad_content() -> None:
         async with _real_client(handler) as oc:
             await oc.complete_json([{"role": "user", "content": "x"}], schema={})
 
-    with pytest.raises(OllamaChatError):
+    with pytest.raises(ChatLlmError):
         asyncio.run(run())
 
 

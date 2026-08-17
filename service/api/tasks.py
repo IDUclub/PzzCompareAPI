@@ -23,7 +23,6 @@ from ..application.use_cases.chat_answer import (
 from ..db import session_scope
 from ..dependencies import (
     build_chat_storage_client,
-    build_ollama_chat_client,
     get_app_settings,
     get_db,
     get_event_repo,
@@ -32,6 +31,7 @@ from ..dependencies import (
 from ..domain.ports.event_repository import EventRepository
 from ..domain.ports.task_repository import TaskRepository
 from ..domain.task_state import ensure_transition
+from ..infrastructure.chat_llm_client import build_chat_llm_client
 from ..infrastructure.pzz_mapping import lookup_zone_summary
 from ..infrastructure.storage import get_object_storage, is_remote_path
 from ..models import PipelineTask, TaskEvent, TaskStatus
@@ -505,13 +505,13 @@ async def _stream_chat_answer_managed(
             system_prompt_path or app_settings.chat_system_prompt_path
         )
 
-        async with build_ollama_chat_client(app_settings) as ollama_client:
+        async with build_chat_llm_client(app_settings) as chat_client:
             chat_storage_client = (
                 build_chat_storage_client(app_settings) if user_id else None
             )
             try:
                 async for event in stream_chat_answer(
-                    ollama_client=ollama_client,
+                    chat_client=chat_client,
                     chat_storage_client=chat_storage_client,
                     user_id=user_id,
                     system_prompt=system_prompt,

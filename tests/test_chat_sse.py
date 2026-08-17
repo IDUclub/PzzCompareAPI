@@ -97,7 +97,7 @@ def test_stream_chat_answer_managed_surfaces_error_instead_of_raising(
             return False
 
     monkeypatch.setattr(
-        tasks_module, "build_ollama_chat_client", lambda settings: _DummyClientCM()
+        tasks_module, "build_chat_llm_client", lambda settings: _DummyClientCM()
     )
     monkeypatch.setattr(tasks_module, "load_system_prompt", lambda path: "sys")
 

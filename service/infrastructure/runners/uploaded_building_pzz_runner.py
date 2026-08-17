@@ -27,7 +27,7 @@ from typing import Any
 
 from service.domain import PipelineRequest
 from service.infrastructure.embeddings_client import EmbeddingsClient, EmbeddingsError
-from service.infrastructure.ollama_chat_client import OllamaChatClient, OllamaChatError
+from service.infrastructure.chat_llm_client import ChatLlmError, build_chat_llm_client
 from service.infrastructure.runners._deterministic_pzz import (
     CATEGORY_BUILDING,
     CATEGORY_SERVICE,
@@ -256,16 +256,12 @@ class UploadedBuildingPzzRunner(PipelineRunner):
     def _llm_complete(
         self, messages: list[dict[str, str]], schema: dict[str, Any]
     ) -> dict[str, Any]:
-        """Blocking structured LLM call (seam for tests). Runs the async Ollama
+        """Blocking structured LLM call (seam for tests). Runs the async chat
         client in a private event loop — the runner executes in a worker thread
         with no running loop."""
 
         async def _run() -> dict[str, Any]:
-            async with OllamaChatClient(
-                base_url=self._settings.ollama_base_url,
-                default_model=self._settings.chat_model
-                or self._settings.generate_model,
-            ) as client:
+            async with build_chat_llm_client(self._settings) as client:
                 return await client.complete_json(messages, schema=schema)
 
         return asyncio.run(_run())
@@ -318,7 +314,7 @@ class UploadedBuildingPzzRunner(PipelineRunner):
         ]
         try:
             parsed = self._llm_complete(messages, schema)
-        except OllamaChatError as exc:
+        except ChatLlmError as exc:
             logger.warning(
                 "building LLM name fallback failed (%s); names -> manual review", exc
             )
