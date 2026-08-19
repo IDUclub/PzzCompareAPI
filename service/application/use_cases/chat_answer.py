@@ -1,14 +1,14 @@
 """Conversational answer over PZZ classification results (streamed).
 
 This is the gMART-style layer: take the user's free-text ``user_query``,
-ground a dedicated chat LLM (Ollama ``/api/chat``) with the classification
-results + a configured system prompt, stream the assistant tokens to the
-frontend, and persist the user+assistant turn to ChatStorage.
+ground a dedicated chat LLM with the classification results + a configured
+system prompt, stream the assistant tokens to the frontend, and persist the
+user+assistant turn to ChatStorage.
 
-The chat LLM is a SEPARATE backend from the pipeline's classification LLM
-(see ``build_chat_llm_client``). Persistence is best-effort: a
-ChatStorage failure is surfaced as an ``error`` event but never aborts the
-token stream.
+The chat LLM is a SEPARATE backend from the pipeline's classification LLM;
+``LLM_BACKEND`` picks the protocol (see ``build_chat_llm_client``).
+Persistence is best-effort: a ChatStorage failure is surfaced as a
+``warning`` event but never aborts the token stream.
 
 Designed as an async generator of plain ``dict`` events so the SSE endpoint
 (phase 4) can map them to ``ServerSentEvent``s:
@@ -24,6 +24,9 @@ Designed as an async generator of plain ``dict`` events so the SSE endpoint
   from a real service failure.
 - ``{"type": "error", "stage": "llm", "detail"}`` — a FATAL error: the answer
   itself could not be generated.
+
+``detail`` on both carries only a status summary of the upstream failure, never
+its response body — see ``_upstream_detail``.
 - ``{"type": "done", "chat_id", "assistant_message_id"}`` — terminal marker.
 
 The clients are injected (already opened) so the endpoint owns their
@@ -279,6 +282,26 @@ def build_llm_history(
     return result[-max_messages:]
 
 
+def _upstream_detail(kind: str, status: int) -> str:
+    """Client-safe summary of an upstream failure: the status, never the body.
+
+    Upstream error payloads are not safe to forward. ChatStorage echoes the
+    request headers back in its 5xx body, service bearer token included, so a
+    caller could harvest a live credential by provoking a rejection. Callers log
+    the full exception; only this summary leaves the process.
+    """
+    return f"{kind} unreachable" if status == 0 else f"{kind} returned {status}"
+
+
+def _not_persisted_message(status: int) -> str:
+    """Wording for a failed history write. Unreachable and rejected are
+    different faults and must not read the same in an incident."""
+    reason = (
+        "сервис истории недоступен" if status == 0 else "сервис истории отклонил запрос"
+    )
+    return f"Ответ сформирован, но не сохранён в историю чата ({reason})."
+
+
 def build_messages(
     system_prompt: str,
     classification_context: str,
@@ -338,7 +361,7 @@ async def stream_chat_answer(
             yield {
                 "type": "warning",
                 "stage": "load_history",
-                "detail": str(exc),
+                "detail": _upstream_detail("chat_storage", exc.status),
                 "message": "Не удалось загрузить историю чата — отвечаю без учёта "
                 "предыдущих сообщений.",
             }
@@ -364,9 +387,8 @@ async def stream_chat_answer(
             yield {
                 "type": "warning",
                 "stage": "create_chat",
-                "detail": str(exc),
-                "message": "Ответ сформирован, но не сохранён в историю чата "
-                "(сервис истории недоступен).",
+                "detail": _upstream_detail("chat_storage", exc.status),
+                "message": _not_persisted_message(exc.status),
             }
             persist = False
 
@@ -385,9 +407,8 @@ async def stream_chat_answer(
             yield {
                 "type": "warning",
                 "stage": "add_user_message",
-                "detail": str(exc),
-                "message": "Ответ сформирован, но не сохранён в историю чата "
-                "(сервис истории недоступен).",
+                "detail": _upstream_detail("chat_storage", exc.status),
+                "message": _not_persisted_message(exc.status),
             }
 
     # 3. Stream the assistant answer from the dedicated chat LLM.
@@ -403,7 +424,11 @@ async def stream_chat_answer(
             yield {"type": "token", "content": delta}
     except ChatLlmError as exc:
         logger.warning("chat LLM stream failed: %s", exc)
-        yield {"type": "error", "stage": "llm", "detail": str(exc)}
+        yield {
+            "type": "error",
+            "stage": "llm",
+            "detail": _upstream_detail("chat backend", exc.status),
+        }
 
     answer = "".join(collected).strip()
 
@@ -440,9 +465,8 @@ async def stream_chat_answer(
             yield {
                 "type": "warning",
                 "stage": "add_assistant_message",
-                "detail": str(exc),
-                "message": "Ответ сформирован, но не сохранён в историю чата "
-                "(сервис истории недоступен).",
+                "detail": _upstream_detail("chat_storage", exc.status),
+                "message": _not_persisted_message(exc.status),
             }
 
     yield {
