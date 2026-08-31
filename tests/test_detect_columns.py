@@ -372,3 +372,57 @@ def test_complete_json_recovers_json_from_reasoning_wrapper() -> None:
     result = asyncio.run(run())
     assert result == {"n0": 26, "n1": None}
     assert seen["body"]["think"] is False  # reasoning suppressed at the source
+
+
+# --- an empty column must not shadow a populated one -------------------------
+
+
+def test_empty_column_named_like_the_target_does_not_shadow_the_real_one() -> None:
+    # Regression (ЕГРН/MapInfo parcel export): the layer carries an always-blank
+    # «Вид_разрешенного_использования» — a known name for the VRI role — next to
+    # the populated «Вид_использования_по_документу». The exact-name heuristic
+    # used to take the blank one, which ALSO meant the role never reached the
+    # model, and the empty-column downgrade then dropped the pick without
+    # reconsidering anyone else: a file with a perfectly good column failed
+    # detection outright.
+    feats = [
+        {
+            "Вид_разрешенного_использования": "",
+            "Вид_использования_по_документу": "Многоквартирный жилой дом",
+        }
+    ] * 20
+    fake = RecordingFakeOllama(
+        {
+            "cadastral_vri_col": {
+                "column": "Вид_использования_по_документу",
+                "reason": "значения — формулировки использования участка",
+            }
+        }
+    )
+    suggestions = asyncio.run(
+        detect_columns_for_file(fake, _fc(feats), CADASTRAL_TARGETS)
+    )
+
+    assert suggestions["cadastral_vri_col"].value == "Вид_использования_по_документу"
+    assert required_columns_resolved(suggestions, CADASTRAL_TARGETS) is True
+    # The role must actually have been offered to the model...
+    assert len(fake.calls) == 1
+    # ...and the blank column must not be offered as a candidate at all.
+    schema = fake.calls[0]["schema"]
+    enum = schema["properties"]["cadastral_vri_col"]["properties"]["column"]["enum"]
+    assert "Вид_разрешенного_использования" not in enum
+    assert "Вид_использования_по_документу" in enum
+
+
+def test_populated_standard_column_still_resolves_without_the_llm() -> None:
+    # The heuristic shortcut must survive the filtering: a normal layer costs no
+    # LLM call.
+    fake = RecordingFakeOllama()
+    suggestions = asyncio.run(
+        detect_columns_for_file(
+            fake, _fc([{"Вид_разрешенного_исп": "Для ИЖС"}] * 5), CADASTRAL_TARGETS
+        )
+    )
+    assert suggestions["cadastral_vri_col"].value == "Вид_разрешенного_исп"
+    assert suggestions["cadastral_vri_col"].source == "heuristic"
+    assert fake.calls == []
