@@ -357,6 +357,25 @@ def profile_columns(
     return profiles
 
 
+def _populated_profiles(profiles: list[ColumnProfile]) -> list[ColumnProfile]:
+    """Columns holding at least one value — the only ones worth offering.
+
+    A layer can carry an ALWAYS-EMPTY column named exactly like the one a target
+    expects: ЕГРН/MapInfo parcel exports ship a blank
+    «Вид_разрешенного_использования» right next to the populated
+    «Вид_использования_по_документу». The exact-name heuristic takes the blank
+    one, which also means the target never reaches the LLM (only unresolved
+    targets do), and ``_downgrade_empty_columns`` then drops that pick without
+    reconsidering anybody else — so a file carrying a perfectly good column ends
+    in detection_failed. Filtering empty columns out up front lets the heuristic
+    miss and the model choose among columns that actually have data.
+    """
+    populated = [p for p in profiles if p.total_rows == 0 or p.non_null_count > 0]
+    # Nothing populated (or nothing measurable): keep the original list, so the
+    # downgrade path can still name WHICH column it found empty.
+    return populated or profiles
+
+
 def _heuristic_match(
     target: DetectionTarget, profiles: list[ColumnProfile]
 ) -> ColumnSuggestion | None:
@@ -469,7 +488,10 @@ async def detect_columns_for_file(
     empty — including every role when the model is unreachable — falls back to an
     exact name match, so a standard export still converts without the LLM.
     """
-    profiles = profile_columns(feature_collection, max_sample_values=max_sample_values)
+    all_profiles = profile_columns(
+        feature_collection, max_sample_values=max_sample_values
+    )
+    profiles = _populated_profiles(all_profiles)
     names = [p.name for p in profiles]
     suggestions: dict[str, ColumnSuggestion] = {}
 
@@ -493,7 +515,7 @@ async def detect_columns_for_file(
                 reason="подходящая колонка не найдена",
                 candidates=names,
             )
-        _downgrade_empty_columns(suggestions, profiles, names)
+        _downgrade_empty_columns(suggestions, all_profiles, names)
         return suggestions
 
     messages = _build_detection_messages(unresolved, profiles)
@@ -535,7 +557,7 @@ async def detect_columns_for_file(
                 reason="модель не смогла определить подходящую колонку",
                 candidates=names,
             )
-    _downgrade_empty_columns(suggestions, profiles, names)
+    _downgrade_empty_columns(suggestions, all_profiles, names)
     return suggestions
 
 
