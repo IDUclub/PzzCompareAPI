@@ -66,7 +66,9 @@ from ..dependencies import (
 from ..domain.ports.event_repository import EventRepository
 from ..domain.ports.task_repository import TaskRepository
 from ..infrastructure.geo_ingest import (
+    GeoCrsError,
     GeoIngestError,
+    ensure_wgs84,
     geo_file_to_geojson_dict,
     is_geojson_filename,
     supported_extensions,
@@ -181,16 +183,95 @@ def _json_upload(obj: Any, filename: str) -> UploadFile:
     return UploadFile(file=BytesIO(data), filename=filename)
 
 
+def _crs_http_error(field_name: str, exc: GeoCrsError) -> HTTPException:
+    """422 for a layer that is not in WGS84 — the file is readable, just unusable.
+
+    Raised before anything is persisted or queued: without it the layer passes
+    ingestion silently and the pipeline dies minutes later on
+    ``estimate_utm_crs``, which tells the user nothing about what to fix.
+    """
+    title = _FIELD_TITLES.get(field_name, field_name)
+    return HTTPException(status_code=422, detail=f"{title}: {exc}")
+
+
+# Field names are the multipart keys; the message goes to an end user, so name the
+# layer the way the UI does.
+_FIELD_TITLES = {
+    "cadastral_feature_collection_file": "слой земельных участков",
+    "buildings_feature_collection_file": "слой зданий",
+    "pzz_zones_feature_collection_file": "слой зон ПЗЗ",
+    "pzz_zone_vri_labels_file": "описания зон ПЗЗ",
+    "pzz_descriptions_file": "описания зон ПЗЗ",
+    "vri_classifier_file": "классификатор ВРИ",
+}
+
+# The structured-data slots accept only what the service actually has a reader
+# for. Without an explicit gate an unreadable file (the ПЗЗ regulations as .docx,
+# a .pdf, an archive) reaches ``json.load`` and comes back as "must contain valid
+# JSON" — technically true, useless to the user, and it hides the real answer:
+# that format is not supported at all. Tables have their own converter endpoint,
+# so the refusal points there instead of pretending the slot might take one.
+_JSON_SLOT_EXTENSIONS = frozenset({".json"})
+_TABLE_SLOT_EXTENSIONS = frozenset({".csv", ".xlsx"})
+
+
+def _unsupported_geo_format_error(field_name: str, suffix: str) -> HTTPException:
+    """415 for a layer in a format no reader handles — worded like every other
+    slot's refusal, so a user meets one message, not two dialects."""
+    return HTTPException(
+        status_code=415,
+        detail=(
+            f"{_FIELD_TITLES.get(field_name, field_name)}: формат «{suffix}» "
+            "не поддерживается, принимаются только "
+            + ", ".join(sorted(supported_extensions()))
+            + "."
+        ),
+    )
+
+
+def _ensure_supported_extension(
+    upload: UploadFile, field_name: str, allowed: frozenset[str]
+) -> None:
+    """Refuse (415) an upload whose extension this slot cannot read.
+
+    A missing extension is tolerated, matching ``is_geojson_filename``: callers
+    have always been able to post bytes without a usable filename, and the
+    content check downstream still applies to them.
+    """
+    suffix = Path(upload.filename or "").suffix.lower()
+    if suffix == "" or suffix in allowed:
+        return
+    title = _FIELD_TITLES.get(field_name, field_name)
+    accepted = ", ".join(sorted(allowed))
+    hint = ""
+    if allowed == _JSON_SLOT_EXTENSIONS:
+        hint = (
+            " Таблицу CSV/XLSX сначала преобразуйте через "
+            "POST /pzz/zone-descriptions/convert."
+        )
+    raise HTTPException(
+        status_code=415,
+        detail=(
+            f"{title}: формат «{suffix}» не поддерживается, "
+            f"принимаются только {accepted}.{hint}"
+        ),
+    )
+
+
 def _validate_json_file(
     path: Path,
     expected_type: type[Any] | tuple[type[Any], ...],
     field_name: str,
-) -> None:
-    """Load ``path`` as JSON and assert its top-level type."""
+) -> Any:
+    """Load ``path`` as JSON, assert its top-level type, return the parsed data."""
     try:
         with path.open("rb") as fh:
             data = json.load(fh)
-    except json.JSONDecodeError as exc:
+    # A binary in a JSON slot (a .docx dropped on the labels/classifier field is
+    # a ZIP) fails to decode BEFORE it fails to parse, and UnicodeDecodeError is
+    # not a JSONDecodeError — uncaught, it left the caller with a 500 instead of
+    # the 400 this branch exists to produce. Both are ValueError.
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         path.unlink(missing_ok=True)
         api_log("create_task", "invalid_json", field=field_name)
         raise HTTPException(
@@ -208,6 +289,7 @@ def _validate_json_file(
             status_code=400,
             detail=f"{field_name} must be a JSON {expected_type_name}",
         )
+    return data
 
 
 def _ingest_upload(
@@ -219,11 +301,22 @@ def _ingest_upload(
     max_bytes: int,
     external_id: str,
     storage,
+    require_wgs84: bool = False,
+    allowed_extensions: frozenset[str] | None = None,
 ) -> str:
     """Stream → validate → persist to storage. Returns the stored path."""
+    if allowed_extensions is not None:
+        _ensure_supported_extension(upload, field_name, allowed_extensions)
     local_path = task_dir / filename
     stream_upload_to_file(upload, local_path, max_bytes, field_name)
-    _validate_json_file(local_path, expected_json_type, field_name)
+    data = _validate_json_file(local_path, expected_json_type, field_name)
+    if require_wgs84:
+        try:
+            ensure_wgs84(data)
+        except GeoCrsError as exc:
+            local_path.unlink(missing_ok=True)
+            api_log("create_task", "bad_crs", field=field_name)
+            raise _crs_http_error(field_name, exc) from exc
     object_key = f"inputs/{external_id}/{filename}"
     stored = storage.upload_file(str(local_path.resolve()), object_key)
     if storage.is_remote():
@@ -258,22 +351,21 @@ def _ingest_geo_upload(
             max_bytes,
             external_id,
             storage,
+            require_wgs84=True,
         )
 
     suffix = Path(upload.filename or "").suffix.lower()
     if suffix not in supported_extensions():
-        raise HTTPException(
-            status_code=415,
-            detail=(
-                f"{field_name}: unsupported format '{suffix}'. Supported: "
-                + ", ".join(sorted(supported_extensions()))
-            ),
-        )
+        raise _unsupported_geo_format_error(field_name, suffix)
 
     raw_path = task_dir / f"{Path(filename).stem}{suffix}"
     stream_upload_to_file(upload, raw_path, max_bytes, field_name)
     try:
         feature_collection = geo_file_to_geojson_dict(raw_path)
+    except GeoCrsError as exc:
+        raw_path.unlink(missing_ok=True)
+        api_log("create_task", "bad_crs", field=field_name)
+        raise _crs_http_error(field_name, exc) from exc
     except GeoIngestError as exc:
         raw_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"{field_name}: {exc}") from exc
@@ -316,21 +408,21 @@ def _upload_to_feature_collection(
                 raise HTTPException(
                     status_code=400, detail=f"{field_name} must be a GeoJSON object"
                 )
+            try:
+                ensure_wgs84(data)
+            except GeoCrsError as exc:
+                raise _crs_http_error(field_name, exc) from exc
             return data
 
         suffix = Path(upload.filename or "").suffix.lower()
         if suffix not in supported_extensions():
-            raise HTTPException(
-                status_code=415,
-                detail=(
-                    f"{field_name}: unsupported format '{suffix}'. Supported: "
-                    + ", ".join(sorted(supported_extensions()))
-                ),
-            )
+            raise _unsupported_geo_format_error(field_name, suffix)
         raw_path = task_dir / f"detect{suffix}"
         stream_upload_to_file(upload, raw_path, max_bytes, field_name)
         try:
             return geo_file_to_geojson_dict(raw_path)
+        except GeoCrsError as exc:
+            raise _crs_http_error(field_name, exc) from exc
         except GeoIngestError as exc:
             raise HTTPException(status_code=400, detail=f"{field_name}: {exc}") from exc
         finally:
@@ -436,6 +528,7 @@ def _create_pipeline_task(
                 app_settings.max_upload_bytes,
                 external_id,
                 storage,
+                allowed_extensions=_JSON_SLOT_EXTENSIONS,
             )
         else:
             stored_labels = ""
@@ -449,6 +542,7 @@ def _create_pipeline_task(
             app_settings.max_upload_bytes,
             external_id,
             storage,
+            allowed_extensions=_JSON_SLOT_EXTENSIONS,
         )
     elif include_pzz_check:
         stored_labels = str(Path(app_settings.default_pzz_zone_labels_path).resolve())
@@ -465,6 +559,7 @@ def _create_pipeline_task(
             app_settings.max_upload_bytes,
             external_id,
             storage,
+            allowed_extensions=_JSON_SLOT_EXTENSIONS,
         )
     else:
         stored_classifier = str(
@@ -1176,6 +1271,7 @@ async def _convert_descriptions_if_table(
     descriptions_file: UploadFile | None,
     app_settings: Settings,
     model: str | None,
+    field_name: str = "pzz_descriptions_file",
 ) -> tuple[UploadFile | None, str]:
     """Convert a CSV/XLSX ``pzz_descriptions_file`` to the label JSON in place.
 
@@ -1191,6 +1287,12 @@ async def _convert_descriptions_if_table(
         return None, ""
     name = (descriptions_file.filename or "").lower()
     if not (name.endswith(".csv") or name.endswith(".xlsx")):
+        # Not a table, so it has to be the label JSON. Checking that here rather
+        # than at ingestion means the auto flow refuses an unreadable file before
+        # paying for column detection, instead of after.
+        _ensure_supported_extension(
+            descriptions_file, field_name, _JSON_SLOT_EXTENSIONS
+        )
         return descriptions_file, ""
     data = await descriptions_file.read()
     try:
@@ -1713,7 +1815,10 @@ async def create_auto_chat_stream_endpoint(
         try:
             pzz_zone_vri_labels_file, labels_note = (
                 await _convert_descriptions_if_table(
-                    pzz_zone_vri_labels_file, app_settings, model
+                    pzz_zone_vri_labels_file,
+                    app_settings,
+                    model,
+                    "pzz_zone_vri_labels_file",
                 )
             )
         except _DescriptionsTableError as exc:

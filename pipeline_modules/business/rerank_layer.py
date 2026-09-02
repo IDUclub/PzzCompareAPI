@@ -892,10 +892,17 @@ def build_zone_check_prompt(vri_text: str, zone_ref: dict[str, Any], exact_match
             f" name={normalize_text(match.get('matched_vri_name'))}\n")
     if not exact_lines:
         exact_lines = ['- нет\n']
-    lines = [f'Кадастровый ВРИ: {normalize_text(vri_text)}\n',
+    # Placeholder VRI values ("-", blank) would otherwise render as an empty line
+    # the model reads straight past, and it then answers not_allowed — reporting a
+    # gap in the source data as a PZZ violation. Name the gap explicitly instead.
+    vri_line = normalize_text(vri_text) or '(не указан — сведения о ВРИ отсутствуют)'
+    lines = [f'Кадастровый ВРИ: {vri_line}\n',
              f'Код фактической зоны ПЗЗ: {normalize_text(actual_zone_code)}\n', f'Базовый код зоны: {base_zone_code}\n',
              f'Наименование фактической зоны: {zone_heading}\n',
              f'Профиль объекта: {render_profile_hint(object_profile)}\n', '\n', 'Инструкция по принятию решения:\n',
+             '- Если кадастровый ВРИ не указан, пуст или является заглушкой ("-", "н/д", "нет данных"),\n',
+             '  верни unclear и не проверяй зону дальше: это пробел в исходных данных,\n',
+             '  а не нарушение ПЗЗ, поэтому not_allowed здесь недопустим.\n',
              '- Сначала определи функциональную категорию кадастрового ВРИ.\n',
              '- Затем ищи только прямое совпадение, прямое покрытие подтипа через описание разрешенного ВРИ\n',
              '  или действительно близкую более широкую категорию в retrieval_text.\n',
@@ -906,7 +913,8 @@ def build_zone_check_prompt(vri_text: str, zone_ref: dict[str, Any], exact_match
              '  но итоговое решение принимай только по retrieval_text фактической зоны и официальным ВРИ этой зоны.\n',
              '- Кандидаты с present_in_zone=yes особенно важны, но если самый близкий по смыслу кандидат имеет present_in_zone=no,\n',
              '  это не основание автоматически разрешать использование.\n',
-             '- Если надежного текстового покрытия нет, верни not_allowed.\n',
+             '- Если надежного текстового покрытия нет, верни not_allowed —\n',
+             '  но только когда кадастровый ВРИ вообще указан.\n',
              '- Не делай широких аналогий между разными функциональными категориями.\n',
              '- Не предлагай альтернативные зоны.\n', '\n', 'Универсальные ограничения:\n',
              '- Производство / промышленность / цех / завод / склад / логистика не равны торговле,\n',
@@ -918,6 +926,7 @@ def build_zone_check_prompt(vri_text: str, zone_ref: dict[str, Any], exact_match
              '- Не путай ИЖС, малоэтажную, среднеэтажную и многоэтажную жилую застройку.\n',
              '- Для verdict=allowed_* в reason обязательно укажи,\n',
              '  какая категория, описание VRI или формулировка зоны из retrieval_text покрывает кадастровый ВРИ.\n',
+             '- Поле reason пиши на русском языке.\n',
              '\n', 'Точные / почти точные совпадения в этой зоне:\n', *exact_lines, '\n',
              'Classifier-aligned snapshot фактической зоны:\n', (classifier_snapshot or '- нет данных') + '\n', '\n',
              'Embedding-shortlist канонических ВРИ классификатора:\n',

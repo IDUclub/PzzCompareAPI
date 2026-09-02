@@ -170,9 +170,20 @@ def _prefill_query_vectors(
     if not missing:
         return
 
-    embed_queries = [build_not_allowed_embed_query_text(t) for t in missing]
-    vecs = context.vectorizer.embed_many(embed_queries, batch_size=64)
-    for text, vec in zip(missing, vecs):
+    # ``normalize_text`` passes values like "-" that ``build_not_allowed_embed_query_text``
+    # then strips to "". Caching a zero vector for those would let junk VRI text
+    # score against the catalog, so drop them here and let the per-row path fall
+    # through its own "no query vector" guard.
+    embeddable = [
+        (text, query)
+        for text, query in ((t, build_not_allowed_embed_query_text(t)) for t in missing)
+        if normalize_text(query)
+    ]
+    if not embeddable:
+        return
+
+    vecs = context.vectorizer.embed_many([query for _, query in embeddable], batch_size=64)
+    for (text, _), vec in zip(embeddable, vecs):
         context.not_allowed_query_vector_cache[get_not_allowed_query_key(text)] = vec
 
 
@@ -431,8 +442,11 @@ def run_pipeline(
                     "reason": llm_response.get("reason"),
                 }
             except Exception as exc:
+                # A failed LLM call is missing evidence, not evidence of a
+                # violation: verdict stays "unclear" so an unreachable backend
+                # shows up as manual review instead of reported PZZ breaches.
                 computed = {
-                    "verdict": "not_allowed",
+                    "verdict": "unclear",
                     "matched_vri_name": None,
                     "matched_vri_code": None,
                     "reason": f"LLM-check завершился ошибкой: {exc}",
@@ -480,8 +494,11 @@ def run_pipeline(
                     "MATCH_METHOD": "error",
                     "MATCHED_VRI_NAME": pd.NA,
                     "MATCHED_VRI_CODE": pd.NA,
-                    "PZZ_VRI_VERDICT": "not_allowed",
-                    "Статус": status_to_russian_label("not_allowed"),
+                    # Same reasoning as the LLM-check except-branch: a crash
+                    # while classifying tells us nothing about the parcel, so
+                    # it must not be reported as a PZZ violation.
+                    "PZZ_VRI_VERDICT": "unclear",
+                    "Статус": status_to_russian_label("unclear"),
                     "PZZ_REASON": f"Внутренняя ошибка классификации: {exc}",
                     "PZZ_NOT_ALLOWED_TOP5_CANDIDATES": pd.NA,
                 }
@@ -500,12 +517,20 @@ def run_pipeline(
     )
     _log_stage("postprocess_rerank", "finished", duration_ms=int((perf_counter() - rerank_started) * 1000), rows=len(classified_unique_df))
 
+    # Explicit suffixes: the source layer is user data and can carry a column
+    # named like one of ours — ЕГРН/MapInfo cadastral exports ship a "Статус"
+    # field ("Учтенный"), which is exactly the name the verdict lives under.
+    # With pandas' default ("_x", "_y") both sides get renamed, the plain
+    # column disappears, and ``ensure_classification_columns`` then recreates
+    # it from its default — silently stamping "Требуется ручная проверка" over
+    # every verdict. Suffixing only the source side keeps our columns intact.
     classified_gdf = source_with_spatial_gdf.merge(
         classified_unique_df,
         on="__comparison_key__",
         how="left",
+        suffixes=("_src", ""),
     )
-    source_vri_col_after_merge = f"{cadastral_vri_col}_x"
+    source_vri_col_after_merge = f"{cadastral_vri_col}_src"
     if cadastral_vri_col not in classified_gdf.columns and source_vri_col_after_merge in classified_gdf.columns:
         classified_gdf[cadastral_vri_col] = classified_gdf[source_vri_col_after_merge]
 

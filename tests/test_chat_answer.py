@@ -1,6 +1,7 @@
 """Tests for the conversational answer use-case (phase 3)."""
 
 import asyncio
+import json
 
 from service.infrastructure.chat_llm_client import ChatLlmError
 from service.application.use_cases.chat_answer import (
@@ -261,3 +262,85 @@ def test_build_messages_and_context() -> None:
         and "РЕЗЮМЕ" in msgs[0]["content"]
     )
     assert msgs[1] == {"role": "user", "content": "вопрос"}
+
+
+_LEAKED_SECRET = "Bearer eyJhbGciOiJSUzI1NiJ9.secret-service-token.sig"
+
+
+def test_storage_failure_never_forwards_the_upstream_body() -> None:
+    """ChatStorage echoes the request headers (service token included) in its 5xx
+    body. That body must stay in the logs, never reach a client event."""
+    from service.infrastructure.chat_storage_client import ChatStorageError
+
+    class LeakyChatStorage(FakeChatStorage):
+        async def create_chat(self, user_id, **kwargs):
+            raise ChatStorageError(
+                500, {"request": {"headers": {"authorization": _LEAKED_SECRET}}}
+            )
+
+    events = _collect(
+        stream_chat_answer(
+            chat_client=FakeOllama(("x",)),
+            chat_storage_client=LeakyChatStorage(),
+            user_id="tok",
+            system_prompt="SYS",
+            user_query="q",
+            chat_id=None,
+        )
+    )
+    serialized = json.dumps(events, ensure_ascii=False)
+    assert "secret-service-token" not in serialized
+    assert "authorization" not in serialized.lower()
+    warning = next(e for e in events if e["type"] == "warning")
+    assert warning["detail"] == "chat_storage returned 500"
+
+
+def test_llm_error_detail_carries_status_not_the_upstream_body() -> None:
+    class LeakyLlm(FakeOllama):
+        async def stream_chat(self, messages, *, model=None, temperature=None):
+            raise ChatLlmError(500, {"internal": _LEAKED_SECRET})
+            yield  # pragma: no cover — generator marker
+
+    events = _collect(
+        stream_chat_answer(
+            chat_client=LeakyLlm(),
+            chat_storage_client=FakeChatStorage(),
+            user_id="tok",
+            system_prompt="SYS",
+            user_query="q",
+            chat_id="c1",
+        )
+    )
+    error = next(e for e in events if e["type"] == "error")
+    assert error["detail"] == "chat backend returned 500"
+    assert "secret-service-token" not in json.dumps(events, ensure_ascii=False)
+
+
+def test_unreachable_and_rejected_storage_read_differently() -> None:
+    """A rejected request must not be reported as an unavailable service —
+    that wording sends an incident investigation the wrong way."""
+    from service.infrastructure.chat_storage_client import ChatStorageError
+
+    def _warning_for(status: int) -> dict:
+        class Failing(FakeChatStorage):
+            async def create_chat(self, user_id, **kwargs):
+                raise ChatStorageError(status, "boom")
+
+        events = _collect(
+            stream_chat_answer(
+                chat_client=FakeOllama(("x",)),
+                chat_storage_client=Failing(),
+                user_id="tok",
+                system_prompt="SYS",
+                user_query="q",
+                chat_id=None,
+            )
+        )
+        return next(e for e in events if e["type"] == "warning")
+
+    unreachable = _warning_for(0)
+    rejected = _warning_for(500)
+    assert "недоступен" in unreachable["message"]
+    assert unreachable["detail"] == "chat_storage unreachable"
+    assert "отклонил запрос" in rejected["message"]
+    assert rejected["detail"] == "chat_storage returned 500"
