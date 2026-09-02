@@ -91,9 +91,18 @@ class VectorizerClient:
         cleaned = [normalize_text(text) for text in texts]
         if not cleaned:
             return np.zeros((0, 0), dtype=np.float32)
+        # Embedding servers reject empty strings and fail the WHOLE batch
+        # ("every input item must be a non-empty string"), so one junk cadastral
+        # VRI like "-" — which normalizes down to "" — would otherwise abort the
+        # entire run. Send only the non-empty texts and leave zero vectors in
+        # place of the rest: they match nothing, which is the intended meaning.
+        keep_indices = [index for index, text in enumerate(cleaned) if text]
+        if not keep_indices:
+            return np.zeros((0, 0), dtype=np.float32)
+        payload_texts = [cleaned[index] for index in keep_indices]
         batches: list[list[str]] = [
-            cleaned[start:start + batch_size]
-            for start in range(0, len(cleaned), batch_size)
+            payload_texts[start:start + batch_size]
+            for start in range(0, len(payload_texts), batch_size)
         ]
         all_vectors: list[list[float]] = []
         if self.max_parallel_requests == 1 or len(batches) == 1:
@@ -114,6 +123,12 @@ class VectorizerClient:
         matrix = np.asarray(all_vectors, dtype=np.float32)
         if matrix.size == 0:
             return np.zeros((0, 0), dtype=np.float32)
+        if len(keep_indices) != len(cleaned):
+            # Re-expand to the caller's row order; skipped (empty) texts stay
+            # zero so callers can keep zipping against their input list.
+            expanded = np.zeros((len(cleaned), matrix.shape[1]), dtype=np.float32)
+            expanded[keep_indices] = matrix
+            matrix = expanded
         norms = np.linalg.norm(matrix, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         return matrix / norms

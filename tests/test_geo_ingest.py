@@ -7,7 +7,9 @@ import pytest
 from shapely.geometry import Point
 
 from service.infrastructure.geo_ingest import (
+    GeoCrsError,
     GeoIngestError,
+    ensure_wgs84,
     geo_file_to_geojson_dict,
     is_geojson_filename,
     supported_extensions,
@@ -64,3 +66,96 @@ def test_supported_extensions_cover_selected_formats() -> None:
     ext = supported_extensions()
     for e in (".geojson", ".json", ".gpkg", ".gml", ".kml", ".geoparquet", ".parquet"):
         assert e in ext
+
+
+# --- WGS84 gate on upload ----------------------------------------------------
+#
+# A GeoJSON exported from a local/NonEarth projection keeps projected metres and
+# declares no CRS. It used to pass ingestion and only blow up minutes later in
+# the pipeline, on ``estimate_utm_crs``.
+
+
+def _fc(*coordinates, crs_name: str | None = None) -> dict:
+    fc: dict = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": list(xy)},
+                "properties": {},
+            }
+            for xy in coordinates
+        ],
+    }
+    if crs_name is not None:
+        fc["crs"] = {"type": "name", "properties": {"name": crs_name}}
+    return fc
+
+
+def test_wgs84_layer_passes() -> None:
+    ensure_wgs84(_fc([142.75, 46.96], [30.3, 59.9], [-179.9, -89.9]))
+
+
+def test_projected_metres_are_rejected() -> None:
+    # The Yuzhno-Sakhalinsk parcels layer: NonEarth metres, no declared CRS.
+    with pytest.raises(GeoCrsError) as exc:
+        ensure_wgs84(_fc([1284377.58, 709961.18]))
+    assert "1284377.58" in str(exc.value)
+
+
+def test_declared_non_wgs84_crs_is_rejected_even_when_values_are_in_range() -> None:
+    with pytest.raises(GeoCrsError) as exc:
+        ensure_wgs84(_fc([10.0, 20.0], crs_name="urn:ogc:def:crs:EPSG::3857"))
+    assert "3857" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "crs_name",
+    ["EPSG:4326", "urn:ogc:def:crs:OGC:1.3:CRS84", "urn:ogc:def:crs:EPSG::4326"],
+)
+def test_declared_wgs84_crs_passes(crs_name: str) -> None:
+    ensure_wgs84(_fc([142.75, 46.96], crs_name=crs_name))
+
+
+def test_nested_and_missing_geometry_do_not_break_the_check() -> None:
+    ensure_wgs84({"type": "FeatureCollection", "features": []})
+    ensure_wgs84({"type": "FeatureCollection", "features": [{"geometry": None}]})
+    polygon = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "geometry": {
+                    "type": "MultiPolygon",
+                    "coordinates": [[[[142.7, 46.9], [142.8, 46.9], [142.7, 47.0]]]],
+                }
+            }
+        ],
+    }
+    ensure_wgs84(polygon)
+
+
+def test_geometry_collection_is_walked() -> None:
+    with pytest.raises(GeoCrsError):
+        ensure_wgs84(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "geometry": {
+                            "type": "GeometryCollection",
+                            "geometries": [
+                                {
+                                    "type": "Point",
+                                    "coordinates": [1284377.58, 709961.18],
+                                }
+                            ],
+                        }
+                    }
+                ],
+            }
+        )
+
+
+def test_geo_crs_error_is_a_geo_ingest_error() -> None:
+    # Callers that only know the base class must still catch it.
+    assert issubclass(GeoCrsError, GeoIngestError)
