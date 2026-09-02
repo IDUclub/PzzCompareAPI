@@ -12,7 +12,7 @@
 |---|---|
 | **Base URL** | `http://<host>:8000` |
 | **Swagger UI** | `GET /docs` |
-| **Auth** | `Authorization: Bearer <jwt>` обязателен для `/scenarios/*` (пробрасывается в urban_api) и для всех чат-ручек `*/chat/stream` (под этим пользователем пишется история чата). Остальные файловые ручки токен не требуют. |
+| **Auth** | `Authorization: Bearer <jwt>` обязателен для `/scenarios/*` (пробрасывается в urban_api), для всех чат-ручек `*/chat/stream` (под этим пользователем пишется история чата) и для `/uploads` (загрузка привязывается к владельцу). Остальные файловые ручки токен не требуют, но если он передан — `*_upload_id` проверяется на принадлежность вызывающему. |
 | **Content-Type** | `multipart/form-data` для создания задач (файлы), `application/json` для остального |
 
 ---
@@ -67,6 +67,52 @@ Swagger UI с полной OpenAPI-схемой.
 
 ## B. Создание задачи (выбрать ОДИН способ)
 
+### B0. `POST /uploads` — загрузить файл заранее, ссылаться по id (опционально)
+
+**Когда:** один и тот же слой уходит в несколько прогонов (перезапуск с другими колонками,
+повтор `building-pzz-check` после подтверждения зон), или файл большой и гонять его в каждом
+multipart не хочется. Ручки создания задач принимают вместо файла его `upload_id`.
+
+**Запрос:** `multipart/form-data`, одно поле `file`. **Требует `Authorization: Bearer <jwt>`.**
+
+**Ответ (201):**
+```json
+{
+  "upload_id": "9f3c1a...",
+  "filename": "cadastre.geojson",
+  "size": 10485760,
+  "content_type": "application/geo+json",
+  "created_at": 1756800000.0,
+  "expires_at": 1756886400.0,
+  "url": "http://<host>:8000/uploads/9f3c1a..."
+}
+```
+
+**Как использовать:** вместо файлового поля `X` передать форм-поле `X_upload_id`:
+
+| Файловое поле | Форм-поле с id | Где принимается |
+|---|---|---|
+| `cadastral_feature_collection_file` | `cadastral_feature_collection_upload_id` | B1, B2 |
+| `pzz_zones_feature_collection_file` | `pzz_zones_feature_collection_upload_id` | B1, B5 |
+| `pzz_zone_vri_labels_file` | `pzz_zone_vri_labels_upload_id` | B1 |
+| `vri_classifier_file` | `vri_classifier_upload_id` | B1, B2 |
+| `buildings_feature_collection_file` | `buildings_feature_collection_upload_id` | B5 |
+| `pzz_descriptions_file` | `pzz_descriptions_upload_id` | B5 |
+
+Если переданы и файл, и `*_upload_id` — выигрывает `upload_id`. **Стримовые и чат-ручки
+(`*/stream`, `*/chat/stream`) `upload_id` не принимают** — там файлы идут телом запроса.
+
+**Срок жизни:** загрузка хранится `UPLOADS_MAX_AGE_HOURS` (по умолчанию 24 ч), затем удаляется
+фоновой очисткой. Лимит размера общий с остальными ручками — 200 МБ.
+
+**`GET /uploads/{upload_id}`** — скачать свою загрузку обратно (требует токен).
+
+**Ошибки (и на `/uploads/{id}`, и при подаче `*_upload_id`):** `404` — id не найден; `403` —
+загрузка другого пользователя; `410` — истекла или файла больше нет; `422` — для обязательного
+слота не передан ни файл, ни id.
+
+---
+
 ### B1. `POST /tasks/pzz-check` — полная проверка с PZZ
 
 **Когда использовать:** у юзера есть и кадастр, и PZZ-зоны в виде GeoJSON.
@@ -104,6 +150,9 @@ Swagger UI с полной OpenAPI-схемой.
 }
 ```
 
+Любой из четырёх файлов можно не прикладывать, а сослаться на заранее загруженный —
+форм-поле `<имя_поля>_upload_id`, см. [B0](#b0-post-uploads--загрузить-файл-заранее-ссылаться-по-id-опционально).
+
 **Что делать дальше:** запомнить `external_id`, поллить `GET /tasks/{external_id}`.
 
 **Поддерживаемые форматы файлов** (для `cadastral_*` и `pzz_zones_*`): `.geojson` / `.json`
@@ -112,11 +161,26 @@ Swagger UI с полной OpenAPI-схемой.
 как GeoJSON. CRS берётся из самого файла; если в файле CRS не задан — данные считаются уже
 в EPSG:4326.
 
-**Возможные ошибки:**
-- `422` — GeoJSON некорректный или не в EPSG:4326
-- `415` — неподдерживаемое расширение файла
-- `400` — гео-файл не читается / не конвертируется
-- `413` — файл больше лимита (200 МБ)
+**Возможные ошибки:** см. [«Проверки входных файлов»](#проверки-входных-файлов-общие-для-всех-ручек-создания) ниже.
+
+---
+
+### Проверки входных файлов (общие для всех ручек создания)
+
+Работают одинаково в B1, B2, B5 и в `*/stream` / `*/chat/stream`. Все проверки — **на входе**,
+до постановки задачи в очередь: непригодный файл отбивается сразу, а не падает через 20 минут
+в пайплайне. `detail` приходит **по-русски и называет слой** («слой земельных участков»,
+«слой зон ПЗЗ», «описания зон ПЗЗ», «классификатор ВРИ») — его можно показывать пользователю как есть.
+
+| Код | Когда | Что показать / что делать |
+|-----|-------|---------------------------|
+| `413` | Файл больше 200 МБ | «файл слишком большой» |
+| `415` | Расширение слот не читает | Гео-слоты: только `.geojson`/`.json`, `.gpkg`, `.gml`, `.kml`, `.geoparquet`/`.parquet`. Слоты описаний и классификатора в B1/B2 (`pzz_zone_vri_labels_file`, `vri_classifier_file`) — только `.json`, в тексте ошибки есть подсказка про `POST /pzz/zone-descriptions/convert`. Исключение: там, где таблица конвертируется на месте (`pzz_descriptions_file` в B5 и `/tasks/auto/chat/stream`, `pzz_zone_vri_labels_file` в `/tasks/auto/chat/stream`), `.csv`/`.xlsx` принимаются |
+| `422` | Слой **не в WGS 84 (EPSG:4326)** | Предложить перевыгрузить слой в EPSG:4326. Ловится двумя способами: по объявленному `crs` и по значениям координат (долгота >180° / широта >90° — типичная выгрузка в метрах местной проекции, где `crs` вообще не записан) |
+| `400` | Файл читается, но содержимое не то: битый JSON, бинарник в JSON-слоте, гео-формат не конвертируется | Показать `detail` |
+| `422` | Для обязательного слота не передан ни файл, ни `*_upload_id` | Ошибка вызова API |
+
+Файл без расширения не отбивается по `415` — для него работает проверка содержимого.
 
 ---
 
@@ -186,8 +250,71 @@ Authorization: Bearer <jwt>     ← обязателен, пробрасывае
 | статус задачи | `GET /scenarios/{scenario_id}/tasks/{external_id}` |
 | GeoJSON-результат | `GET /scenarios/{scenario_id}/tasks/{external_id}/result` |
 | UI/чат-агрегация | `GET /scenarios/{scenario_id}/tasks/{external_id}/object-zone-fit?group_by=zone\|object` |
+| журнал событий | `GET /scenarios/{scenario_id}/tasks/{external_id}/events` |
+| SSE-поток статуса | `GET /scenarios/{scenario_id}/tasks/{external_id}/stream` |
+| пересчёт | `POST /scenarios/{scenario_id}/tasks/{external_id}/recompute` |
+| отмена | `DELETE /scenarios/{scenario_id}/tasks/{external_id}` |
 
 Бэкенд сначала проверяет доступ к `scenario_id` в urban_api по токену, затем проверяет, что `external_id` действительно относится к этому сценарию. Общие `/tasks/{external_id}/*` остаются для задач, созданных загрузкой файлов.
+
+Scenario-стрим (`/stream`) шлёт на один event больше, чем общий: сразу после подключения —
+`zones_info` (зоны из urban_api), дальше `task_event` / `status` / `object_zone_fit` / `result` /
+`done`.
+
+---
+
+### B5. `POST /tasks/building-pzz-check` — проверка ПЗЗ по зданиям (без чата)
+
+**Когда:** тот же режим, что `building_pzz_check` в `/tasks/auto/chat/stream`, но обычным
+JSON-ответом, без SSE и без текста LLM. Здания (формат Urban API: `physical_object_type_id` /
+`service_type_id` + этажность, либо человеческий текст типа/сервиса) проверяются на допустимость
+их ВРИ в своей зоне ПЗЗ. **Колонки определяются автоматически** — имена полей не передаются.
+
+**Тело (multipart/form-data):**
+
+| Поле | Тип | Обязательно | Описание |
+|------|-----|-------------|----------|
+| `buildings_feature_collection_file` | File | да¹ | Здания. GeoJSON/гео-формат, EPSG:4326 |
+| `pzz_zones_feature_collection_file` | File | да¹ | Зоны ПЗЗ |
+| `pzz_descriptions_file` | File | – | Свои описания зон (буквенная или числовая схема, а также CSV/XLSX) |
+| `confirmed_zone_map` | string (JSON) | – | Подтверждённые пары «код юзера → код шаблона», см. ниже |
+| `model` | string | – | Переопределение модели LLM |
+| `priority` | int 1–10 | – | 1 |
+| `force_recompute` | bool | – | false |
+| `Idempotency-Key` | string (header или form) | – | опционально |
+
+¹ либо файлом, либо соответствующим `*_upload_id` (см. B0).
+
+**Ответ (200) — `BuildingPzzCheckOut`.** Задача создаётся **не всегда**: та же двухфазная логика
+подтверждения зон, что и в чат-режиме (см. раздел H, «Зоны: числовой id или буквенный индекс ПЗЗ»),
+но выражена полем `action`, а не событием `zone_review`:
+
+```json
+{
+  "action": "confirm",
+  "narrative": "текст о том, что определилось",
+  "detail": "",
+  "next_step": "show the suggested zone matches to the user and resubmit with confirmed_zone_map ...",
+  "chat_message": "готовый текст для пользователя",
+  "suggestions": [
+    {"user_code": "СХ-3", "user_name": "Зона сельхозиспользования",
+     "suggested_code": "АГ-1", "suggested_name": "ЗОНА СЕЛЬХОЗ..."}
+  ],
+  "task": null
+}
+```
+
+| `action` | Что это значит | `task` |
+|---|---|---|
+| `created` | Задача создана, дальше как обычно — поллинг `GET /tasks/{external_id}` | `TaskOut` |
+| `confirm` | 1–4 зоны не покрыты шаблоном: показать `suggestions`, собрать подтверждённые пары и повторить запрос с `confirmed_zone_map` | `null` |
+| `suggest_upload` | Непокрытых зон ≥5: шаблон не подходит, нужен свой `pzz_descriptions_file` | `null` |
+| `detection_failed` | Не удалось определить обязательные колонки — уточнить у пользователя и повторить | `null` |
+
+`next_step` — та же подсказка машиночитаемо (рассчитана в том числе на MCP-клиента),
+`chat_message` — она же прозой, её и показывайте пользователю.
+
+`confirmed_zone_map` — JSON-строка вида `{"СХ-3":"АГ-1","Т-1":"П-1"}`.
 
 ---
 
@@ -231,6 +358,19 @@ Authorization: Bearer <jwt>     ← обязателен, пробрасывае
 ]
 ```
 
+### `GET /tasks/{external_id}/stream`
+
+**Что:** то же состояние, но пушем — SSE вместо поллинга. Параметр `poll_interval`
+(сек, `0.5`–`10`, по умолчанию `2`) задаёт частоту опроса на стороне бэкенда.
+
+| event | data | Когда |
+|---|---|---|
+| `task_event` | `TaskEventOut` | на каждое новое событие пайплайна |
+| `status` | `TaskOut` | при смене статуса |
+| `done` | `{"status": "finished"\|"failed"}` | терминальное, поток закрывается |
+
+Токен не нужен (для задач из файлов). Scenario-вариант — `GET /scenarios/{scenario_id}/tasks/{external_id}/stream`, см. B4.
+
 ### `GET /tasks_list?status=&limit=&offset=`
 
 **Что:** список всех задач с фильтром по статусу и пагинацией.
@@ -266,6 +406,13 @@ Authorization: Bearer <jwt>     ← обязателен, пробрасывае
 `Статус_классификации`, значение всегда `"Только кандидаты классификатора"` (это не вердикт
 соответствия, просто пометка режима). Полей `Код/Название фактической зоны`, `Подобранный_ВРИ`,
 `Код_подобранного_ВРИ` в classify_only нет — используйте `Топ1_возможный_ВРИ`.
+
+Технические поля (для отладки и пометок в UI, есть в обоих режимах):
+- `Область_проверки` — `actual_zone` (проверка по зоне) / `classifier_only` / `error`
+- `Метод_сопоставления` — как подобран ВРИ: `actual_zone_exact`, `actual_zone_fast_string`,
+  `actual_zone_fast_embed`, `actual_zone_llm`, `actual_zone_not_allowed`, `no_actual_zone`,
+  `no_zone_metadata`, `classifier_top5_llm_or_fast`, `not_classified`, `error`. По нему видно,
+  сопоставлено ли точно, по смыслу (эмбеддер) или ЛЛМ.
 
 Эта ручка для **карты / GIS-клиента** — отдаёт геометрию + атрибуты.
 
@@ -328,6 +475,33 @@ Authorization: Bearer <jwt>     ← обязателен, пробрасывае
 | `zones[].objects[].feature_index` | Привязка к Feature в GeoJSON (D1) для подсветки на карте |
 | `zones[].objects[].fit` | Цвет маркера: correct=зелёный, wrong=красный, unclear=жёлтый |
 | `zones[].objects[].reason` | Тултип или модалка при клике на объект |
+
+### D3. `GET /tasks/{external_id}/classify-summary`
+
+**Аналог `object-zone-fit` для `classify_only`** (там зон нет, значит нет и вердикта по зоне).
+Возвращает по каждому объекту исходный текст ВРИ и кандидатов классификатора.
+
+```json
+{
+  "task_external_id": "abc...",
+  "group_by": "object",
+  "summary": {"total": 60, "with_candidate": 57, "without_candidate": 3},
+  "chat_message": "готовый текст для чата",
+  "objects": [
+    {
+      "feature_index": 0,
+      "vri_text": "Для индивидуального жилищного строительства",
+      "matched_vri": "2.1 — Для индивидуального жилищного строительства",
+      "candidates": "2.1; 2.2; 13.2; ...",
+      "reason": "...",
+      "fit": "matched"
+    }
+  ]
+}
+```
+
+`fit`: `"matched"` (кандидат найден) | `"unclear"` (не найден). Ошибки: `409` — задача не
+`finished`; `404` — задачи или результата нет.
 
 ---
 

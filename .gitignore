@@ -234,6 +234,7 @@ scripts/test_mcp_scenario.py
 # Internal dev docs kept locally only (frontend guide stays tracked)
 service/README.md
 pipeline_modules/README.md
+docs/service_type_to_vri_review.md
 
 # Sample input files are documentation assets: they must survive the
 # *.geojson/*.csv/*.xlsx rules above, so re-include them explicitly.
