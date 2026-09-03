@@ -27,38 +27,57 @@ def truncate_text(text: Any, max_chars: int) -> str:
         return value
     if max_chars <= 1:
         return value[:max_chars]
-    return value[:max_chars - 1].rstrip() + '…'
+    return value[: max_chars - 1].rstrip() + "…"
 
 
 ENABLE_EMBED_CANDIDATE_SHORTLIST = bool(ENABLE_EMBED_FAST_MATCH)
 
 
-def build_classifier_embedding_items(classifier_by_code: Optional[dict[str, dict[str, Any]]]) -> pd.DataFrame:
+def build_classifier_embedding_items(
+    classifier_by_code: Optional[dict[str, dict[str, Any]]],
+) -> pd.DataFrame:
     """Build one compact dataframe for Rosreestr classifier embedding search."""
     rows: list[dict[str, Any]] = []
     for code, entry in (classifier_by_code or {}).items():
         code_norm = normalize_text(code)
-        name = normalize_text((entry or {}).get('name'))
-        description = normalize_text((entry or {}).get('description'))
-        parent_code = normalize_text((entry or {}).get('parent_code'))
-        top_level_code = normalize_text((entry or {}).get('top_level_code'))
-        name_plain = normalize_text((entry or {}).get('name_plain')) or name
+        name = normalize_text((entry or {}).get("name"))
+        description = normalize_text((entry or {}).get("description"))
+        parent_code = normalize_text((entry or {}).get("parent_code"))
+        top_level_code = normalize_text((entry or {}).get("top_level_code"))
+        name_plain = normalize_text((entry or {}).get("name_plain")) or name
         if not is_valid_vri_code(code_norm) or not name:
             continue
-        if len(code_norm.split('.')) == 1 and name.isdigit():
+        if len(code_norm.split(".")) == 1 and name.isdigit():
             continue
-        rows.append({'classifier_code': code_norm, 'classifier_name': name, 'classifier_name_plain': name_plain,
-                     'classifier_description': description, 'classifier_parent_code': parent_code,
-                     'classifier_top_level_code': top_level_code})
-    df = pd.DataFrame(rows).drop_duplicates(subset=['classifier_code']).reset_index(drop=True)
+        rows.append(
+            {
+                "classifier_code": code_norm,
+                "classifier_name": name,
+                "classifier_name_plain": name_plain,
+                "classifier_description": description,
+                "classifier_parent_code": parent_code,
+                "classifier_top_level_code": top_level_code,
+            }
+        )
+    df = (
+        pd.DataFrame(rows)
+        .drop_duplicates(subset=["classifier_code"])
+        .reset_index(drop=True)
+    )
     if df.empty:
         return df
-    df['classifier_embed_text'] = (
-                df['classifier_name'].fillna('') + ' | ' + df['classifier_description'].fillna('')).map(
-        canonicalize_vri_name)
-    df['classifier_match_text'] = (
-                df['classifier_name'].fillna('') + ' | ' + df['classifier_description'].fillna('') + ' | ' + df[
-            'classifier_name_plain'].fillna('')).map(canonicalize_vri_name)
+    df["classifier_embed_text"] = (
+        df["classifier_name"].fillna("")
+        + " | "
+        + df["classifier_description"].fillna("")
+    ).map(canonicalize_vri_name)
+    df["classifier_match_text"] = (
+        df["classifier_name"].fillna("")
+        + " | "
+        + df["classifier_description"].fillna("")
+        + " | "
+        + df["classifier_name_plain"].fillna("")
+    ).map(canonicalize_vri_name)
     return df
 
 
@@ -70,21 +89,33 @@ def build_zone_section_code_cache(
     cache: dict[str, dict[str, set[str]]] = {}
     children_map = classifier_children_map or {}
     for zone_code, zone_items in (zone_items_lookup_map or {}).items():
-        section_cache: dict[str, set[str]] = {'main': set(), 'conditional': set(), 'auxiliary': set()}
+        section_cache: dict[str, set[str]] = {
+            "main": set(),
+            "conditional": set(),
+            "auxiliary": set(),
+        }
         if zone_items is None or zone_items.empty:
             cache[zone_code] = section_cache
             continue
-        for section_name in ('main', 'conditional', 'auxiliary'):
-            raw_codes = {normalize_text(code) for code in zone_items.loc[
-                zone_items['section_name'].map(normalize_text) == section_name, 'catalog_vri_code'].tolist() if
-                         normalize_text(code)}
-            section_cache[section_name] = expand_vri_codes_with_classifier_children(raw_codes,
-                                                                                    classifier_children_map=children_map)
+        for section_name in ("main", "conditional", "auxiliary"):
+            raw_codes = {
+                normalize_text(code)
+                for code in zone_items.loc[
+                    zone_items["section_name"].map(normalize_text) == section_name,
+                    "catalog_vri_code",
+                ].tolist()
+                if normalize_text(code)
+            }
+            section_cache[section_name] = expand_vri_codes_with_classifier_children(
+                raw_codes, classifier_children_map=children_map
+            )
         cache[zone_code] = section_cache
     return cache
 
 
-NOT_ALLOWED_RECALL_CACHE_TOP_N = max(int(NOT_ALLOWED_CANDIDATES_TOP_N), int(NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N), 20)
+NOT_ALLOWED_RECALL_CACHE_TOP_N = max(
+    int(NOT_ALLOWED_CANDIDATES_TOP_N), int(NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N), 20
+)
 
 NOT_ALLOWED_QUERY_VECTOR_CACHE: dict[str, np.ndarray] = {}
 
@@ -95,7 +126,14 @@ NOT_ALLOWED_FAST_RERANK_CACHE: dict[str, list[dict[str, Any]]] = {}
 NOT_ALLOWED_LLM_RERANK_CACHE: dict[str, list[dict[str, Any]]] = {}
 
 
-def _cache_maps(context: Any=None) -> tuple[dict[str, np.ndarray], dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+def _cache_maps(
+    context: Any = None,
+) -> tuple[
+    dict[str, np.ndarray],
+    dict[str, list[dict[str, Any]]],
+    dict[str, list[dict[str, Any]]],
+    dict[str, list[dict[str, Any]]],
+]:
     if context is None:
         return (
             NOT_ALLOWED_QUERY_VECTOR_CACHE,
@@ -125,129 +163,275 @@ def build_not_allowed_embed_query_text(vri_text: Any) -> str:
     raw_text = normalize_text(vri_text)
     canon = canonicalize_vri_name(raw_text)
     if not canon:
-        return ''
+        return ""
     hints: list[str] = []
-    if re.search('административн\\s+здан|административн', canon):
-        hints.extend(['общественное управление', 'деловое управление', 'административное здание', 'офис'])
-    if re.search('воинск|военн|казарм|штаб|гарнизон|полигон|оборон|част[ьи]\\s*№', canon):
-        hints.extend(['обеспечение обороны и безопасности', 'военные объекты', 'воинская часть'])
+    if re.search("административн\\s+здан|административн", canon):
+        hints.extend(
+            [
+                "общественное управление",
+                "деловое управление",
+                "административное здание",
+                "офис",
+            ]
+        )
+    if re.search(
+        "воинск|военн|казарм|штаб|гарнизон|полигон|оборон|част[ьи]\\s*№", canon
+    ):
+        hints.extend(
+            ["обеспечение обороны и безопасности", "военные объекты", "воинская часть"]
+        )
     # Многоквартирные дома — самый частый источник ошибок (попадают в 3.2.1 Дома соц. обслуживания).
     # Опечатки: «могоквартирн», «многквартирн» (часты в реальных кадастровых данных).
     # NB: «малоэтажная многоквартирная» НЕ добавляется в хинты — иначе embedding отдаёт
     # 2.1.1 предпочтение из-за лексического совпадения слова «многоквартирная»; для МКД
     # без явного «малоэтажный» мы хотим 2.5/2.6/2.0.
-    if re.search('многоквартирн|многквартирн|могоквартирн|мкд\\b|многоэтажн|среднеэтажн', canon):
-        hints.extend([
-            'среднеэтажная жилая застройка',
-            'многоэтажная жилая застройка',
-            'размещение многоквартирного жилого дома',
-            'жилая застройка',
-        ])
+    if re.search(
+        "многоквартирн|многквартирн|могоквартирн|мкд\\b|многоэтажн|среднеэтажн", canon
+    ):
+        hints.extend(
+            [
+                "среднеэтажная жилая застройка",
+                "многоэтажная жилая застройка",
+                "размещение многоквартирного жилого дома",
+                "жилая застройка",
+            ]
+        )
     # Только при явном «малоэтажная многоквартирная» — добавляем 2.1.1
-    if re.search('малоэтажн\\s+многоквартирн', canon):
-        hints.append('малоэтажная многоквартирная жилая застройка')
+    if re.search("малоэтажн\\s+многоквартирн", canon):
+        hints.append("малоэтажная многоквартирная жилая застройка")
     # ИЖС / индивидуальный дом — приоритет перед общим «жилой дом»
-    if re.search('индивидуальн\\s+жил|ижс|индивидуальн\\s+застройк|одна\\s+семь|однокварт', canon):
-        hints.append('для индивидуального жилищного строительства')
+    if re.search(
+        "индивидуальн\\s+жил|ижс|индивидуальн\\s+застройк|одна\\s+семь|однокварт", canon
+    ):
+        hints.append("для индивидуального жилищного строительства")
     # Жилой дом без уточнений — НЕ должен скатываться в блокированную (2.3)
-    if re.search('жил[а-я\\s-]*дом|под\\s+жил', canon) and not re.search('многоквартирн|многоэтажн|среднеэтажн|блокирован', canon):
-        hints.extend(['для индивидуального жилищного строительства', 'жилая застройка'])
+    if re.search("жил[а-я\\s-]*дом|под\\s+жил", canon) and not re.search(
+        "многоквартирн|многоэтажн|среднеэтажн|блокирован", canon
+    ):
+        hints.extend(["для индивидуального жилищного строительства", "жилая застройка"])
     # Электрические объекты
-    if re.search('подстанц|трансформатор|\\bтп\\s*№|\\bтп\\s*\\d|\\bтп\\b', canon):
-        hints.extend([
-            'трансформаторная подстанция', 'линии электропередач',
-            'предоставление коммунальных услуг', 'коммунальное обслуживание',
-            'электричество электроснабжение',
-        ])
+    if re.search("подстанц|трансформатор|\\bтп\\s*№|\\bтп\\s*\\d|\\bтп\\b", canon):
+        hints.extend(
+            [
+                "трансформаторная подстанция",
+                "линии электропередач",
+                "предоставление коммунальных услуг",
+                "коммунальное обслуживание",
+                "электричество электроснабжение",
+            ]
+        )
     # Тепловые и инженерные сети
-    if re.search('теплотрасс|теплосет|теплоснабж|теплопровод|тепловая\\s+сеть|тепло[\\s-]?трасс', canon):
-        hints.extend([
-            'предоставление коммунальных услуг', 'коммунальное обслуживание',
-            'теплоснабжение тепловые сети', 'инженерная инфраструктура',
-        ])
+    if re.search(
+        "теплотрасс|теплосет|теплоснабж|теплопровод|тепловая\\s+сеть|тепло[\\s-]?трасс",
+        canon,
+    ):
+        hints.extend(
+            [
+                "предоставление коммунальных услуг",
+                "коммунальное обслуживание",
+                "теплоснабжение тепловые сети",
+                "инженерная инфраструктура",
+            ]
+        )
     # Водоснабжение, канализация, газ
-    if re.search('водопровод|водоснабж|канализац|водоотвед|газопровод|газоснабж|очистн\\s+сооруж|насосн\\s+станц|котельн', canon):
-        hints.extend([
-            'предоставление коммунальных услуг', 'коммунальное обслуживание',
-            'инженерная коммунальная инфраструктура',
-        ])
+    if re.search(
+        "водопровод|водоснабж|канализац|водоотвед|газопровод|газоснабж|очистн\\s+сооруж|насосн\\s+станц|котельн",
+        canon,
+    ):
+        hints.extend(
+            [
+                "предоставление коммунальных услуг",
+                "коммунальное обслуживание",
+                "инженерная коммунальная инфраструктура",
+            ]
+        )
     # Улицы, проезды, переулки, дороги — частая ошибка → ЖД/заправка/промышленность
-    if re.search('улиц|переулок|проезд|тротуар|пешеходн|набережн|бульвар|велодорож|автомобильн\\s+дорог|капитальн\\s+ремонт\\s+пер|капитальн\\s+ремонт\\s+ул', canon):
-        hints.extend([
-            'улично-дорожная сеть', 'размещение автомобильных дорог',
-            'земельные участки территории общего пользования',
-            'тротуары пешеходные переходы',
-        ])
+    if re.search(
+        "улиц|переулок|проезд|тротуар|пешеходн|набережн|бульвар|велодорож|автомобильн\\s+дорог|капитальн\\s+ремонт\\s+пер|капитальн\\s+ремонт\\s+ул",
+        canon,
+    ):
+        hints.extend(
+            [
+                "улично-дорожная сеть",
+                "размещение автомобильных дорог",
+                "земельные участки территории общего пользования",
+                "тротуары пешеходные переходы",
+            ]
+        )
     # Внутримикрорайонные проезды
-    if re.search('внутримикрорайон|внутриквартал|внутридворов', canon):
-        hints.extend(['улично-дорожная сеть', 'земельные участки общего пользования', 'размещение автомобильных дорог'])
+    if re.search("внутримикрорайон|внутриквартал|внутридворов", canon):
+        hints.extend(
+            [
+                "улично-дорожная сеть",
+                "земельные участки общего пользования",
+                "размещение автомобильных дорог",
+            ]
+        )
     # Временные гаражи / гаражи без признака «служебный» — не должны идти в 4.9
-    if re.search('гараж', canon) and not re.search('служебн|ведомствен|корпоративн|такси', canon):
-        hints.extend([
-            'размещение гаражей для собственных нужд',
-            'хранение автотранспорта', 'гараж индивидуальный',
-        ])
+    if re.search("гараж", canon) and not re.search(
+        "служебн|ведомствен|корпоративн|такси", canon
+    ):
+        hints.extend(
+            [
+                "размещение гаражей для собственных нужд",
+                "хранение автотранспорта",
+                "гараж индивидуальный",
+            ]
+        )
     # Благоустройство — отдельная категория
-    if re.search('благоустройств', canon):
-        hints.extend(['благоустройство территории'])
+    if re.search("благоустройств", canon):
+        hints.extend(["благоустройство территории"])
     # ЗРУ / ЗТП / КТП — закрытые и комплектные трансформаторные/распределительные устройства
-    if re.search('\\bзру\\b|\\bзтп\\b|\\bктп\\b', canon):
-        hints.extend(['трансформаторная подстанция', 'предоставление коммунальных услуг', 'коммунальное обслуживание'])
+    if re.search("\\bзру\\b|\\bзтп\\b|\\bктп\\b", canon):
+        hints.extend(
+            [
+                "трансформаторная подстанция",
+                "предоставление коммунальных услуг",
+                "коммунальное обслуживание",
+            ]
+        )
     # Бойлерная — тепловое оборудование
-    if re.search('бойлерн', canon):
-        hints.extend(['котельная', 'предоставление коммунальных услуг', 'коммунальное обслуживание'])
+    if re.search("бойлерн", canon):
+        hints.extend(
+            [
+                "котельная",
+                "предоставление коммунальных услуг",
+                "коммунальное обслуживание",
+            ]
+        )
     # ТЭЦ — электростанция, а не обычный объект коммунальной сети
-    if re.search('теплоэлектроцентрал|\\bтэц\\b', canon):
-        hints.extend(['теплоэлектроцентраль', 'тепловая электростанция', 'энергетика', 'код 6.7'])
+    if re.search("теплоэлектроцентрал|\\bтэц\\b", canon):
+        hints.extend(
+            ["теплоэлектроцентраль", "тепловая электростанция", "энергетика", "код 6.7"]
+        )
     # Насосная как самостоятельный объект (без слова "станция")
-    if re.search('\\bнасосн\\b', canon) and not re.search('станц', canon):
-        hints.extend(['насосная станция', 'предоставление коммунальных услуг', 'коммунальное обслуживание'])
+    if re.search("\\bнасосн\\b", canon) and not re.search("станц", canon):
+        hints.extend(
+            [
+                "насосная станция",
+                "предоставление коммунальных услуг",
+                "коммунальное обслуживание",
+            ]
+        )
     # ГСК — гаражно-строительный кооператив
-    if re.search('\\bгск\\b|гаражн\\s+кооператив', canon):
-        hints.extend(['хранение автотранспорта гаражи', 'гаражи для личных нужд', 'гараж'])
+    if re.search("\\bгск\\b|гаражн\\s+кооператив", canon):
+        hints.extend(
+            ["хранение автотранспорта гаражи", "гаражи для личных нужд", "гараж"]
+        )
     # Автостоянка, многоярусная стоянка — парковка, НЕ ИЖС и не частный гараж
-    if re.search('автостоянк|стоянк\\b|многоярусн', canon) and not re.search('автомобилестроен|производств\\s+автомобил', canon):
-        hints.extend(['стоянка транспортных средств', 'парковка легкового автотранспорта', 'код 4.9.2'])
+    if re.search("автостоянк|стоянк\\b|многоярусн", canon) and not re.search(
+        "автомобилестроен|производств\\s+автомобил", canon
+    ):
+        hints.extend(
+            [
+                "стоянка транспортных средств",
+                "парковка легкового автотранспорта",
+                "код 4.9.2",
+            ]
+        )
     # Гостевой дом, гостиница, хостел
-    if re.search('гостев|гостиниц|хостел|мотел', canon):
-        hints.extend(['гостиничное обслуживание', 'средства размещения', 'гостиница'])
+    if re.search("гостев|гостиниц|хостел|мотел", canon):
+        hints.extend(["гостиничное обслуживание", "средства размещения", "гостиница"])
     # Рекреационные объекты
-    if re.search('рекреацион|рекпеацион', canon):
-        hints.extend(['отдых рекреация', 'природные рекреационные территории', 'зоны отдыха', 'код 5.0'])
+    if re.search("рекреацион|рекпеацион", canon):
+        hints.extend(
+            [
+                "отдых рекреация",
+                "природные рекреационные территории",
+                "зоны отдыха",
+                "код 5.0",
+            ]
+        )
+    # Общая транспортная безопасность — транспорт, а не спорт (слово «спорт» входит в «транспорт»).
+    if re.search("транспортн\\s+безопасн|антитеррористическ.*мероприят", canon):
+        hints.extend(["транспорт", "обеспечение транспортной безопасности", "код 7.0"])
+    # Отдельно стоящие грузовые/складские контейнеры.
+    if re.search("контейнер", canon) and not re.search(
+        "тко|отход|мусор|контейнерн\\s+площадк|гараж",
+        canon,
+    ):
+        hints.extend(["склад", "складирование", "код 6.9"])
+    if re.search("сенокос", canon):
+        hints.extend(["сенокошение", "кошение трав", "код 1.19"])
+    if re.search("кинодосугов|кинотеатр|кинозал", canon):
+        hints.extend(
+            ["объекты культурно-досуговой деятельности", "кинотеатр", "код 3.6.1"]
+        )
+    if re.search("узел\\s+связ", canon):
+        hints.extend(["инфраструктура связи", "узел связи", "код 6.8"])
+    if re.search("лечебн\\s+корпус|инфекционн\\s+отделен", canon):
+        hints.extend(["стационарное медицинское обслуживание", "больница", "код 3.4.2"])
+    if re.search(
+        "цветочн.*(?:павильон|магазин)|(?:павильон|магазин).*цветочн|киоск", canon
+    ):
+        hints.extend(["магазины", "розничная торговля", "код 4.4"])
+    if re.search("ремонт\\s+обув|обув.*ремонт", canon):
+        hints.extend(["бытовое обслуживание", "мастерская мелкого ремонта", "код 3.3"])
+    if re.search("аптек", canon):
+        hints.extend(["здравоохранение", "аптека", "код 3.4"])
+    if re.search("шашлычн", canon):
+        hints.extend(["общественное питание", "кафе закусочная", "код 4.6"])
+    if re.search("стрелков.*тир|\\bтир\\b", canon):
+        hints.extend(["спорт", "стрелковый спорт", "код 5.1"])
     # Суд, судебное здание
-    if re.search('\\bсуд\\b|городск.*суд|районн.*суд|мировой.*суд|арбитражн.*суд', canon):
-        hints.extend(['общественное управление', 'судебная власть', 'административное здание'])
+    if re.search(
+        "\\bсуд\\b|городск.*суд|районн.*суд|мировой.*суд|арбитражн.*суд", canon
+    ):
+        hints.extend(
+            ["общественное управление", "судебная власть", "административное здание"]
+        )
     # Мастерская — производственная деятельность
-    if re.search('мастерск', canon):
-        hints.extend(['производственная деятельность', 'промышленность'])
+    if re.search("мастерск", canon):
+        hints.extend(["производственная деятельность", "промышленность"])
     # Дорога без уточняющих атрибутов
-    if re.search('\\bдорог\\b', canon) and not re.search('автомобильн|железнодорож', canon):
-        hints.extend(['улично-дорожная сеть', 'размещение автомобильных дорог'])
+    if re.search("\\bдорог\\b", canon) and not re.search(
+        "автомобильн|железнодорож", canon
+    ):
+        hints.extend(["улично-дорожная сеть", "размещение автомобильных дорог"])
     # Пожарная часть / депо — безопасность, НЕ гараж
-    if re.search('пожарн', canon):
-        hints.extend(['пожарная безопасность', 'спасательные службы', 'обеспечение внутреннего правопорядка', 'код 8.3'])
+    if re.search("пожарн", canon):
+        hints.extend(
+            [
+                "пожарная безопасность",
+                "спасательные службы",
+                "обеспечение внутреннего правопорядка",
+                "код 8.3",
+            ]
+        )
     # Портовые объекты, ковш, причал
-    if re.search('\\bпорт\\b|причал|ковш|жбф', canon):
-        hints.extend(['водный транспорт', 'порт', 'причальные сооружения'])
-    if re.search('паромн.*(?:причал|переправ)|(?:причал|переправ).*паромн', canon):
-        hints.extend(['водный транспорт', 'код 7.3'])
-    if re.search('бассейн|\\bфок\\b|физкультурно[\\s-]+оздоровительн|крыт[а-я]*\\s+каток|каток.*крыт', canon):
-        hints.extend(['обеспечение занятий спортом в помещениях', 'код 5.1.2'])
-    if re.search('памятник|объект\\s+культурн\\s+наслед|достопримечательн', canon):
-        hints.extend(['охрана историко культурного наследия', 'исторический памятник', 'благоустройство территории', 'коды 9.3 12.0.2'])
+    if re.search("\\bпорт\\b|причал|ковш|жбф", canon):
+        hints.extend(["водный транспорт", "порт", "причальные сооружения"])
+    if re.search("паромн.*(?:причал|переправ)|(?:причал|переправ).*паромн", canon):
+        hints.extend(["водный транспорт", "код 7.3"])
+    if re.search(
+        "бассейн|\\bфок\\b|физкультурно[\\s-]+оздоровительн|крыт[а-я]*\\s+каток|каток.*крыт",
+        canon,
+    ):
+        hints.extend(["обеспечение занятий спортом в помещениях", "код 5.1.2"])
+    if re.search("памятник|объект\\s+культурн\\s+наслед|достопримечательн", canon):
+        hints.extend(
+            [
+                "охрана историко культурного наследия",
+                "исторический памятник",
+                "благоустройство территории",
+                "коды 9.3 12.0.2",
+            ]
+        )
     # Огородный участок — огородничество, НЕ ЛПХ
-    if re.search('\\bогородн\\b', canon) and not re.search('огородничеств', canon):
-        hints.extend(['ведение огородничества', 'огородный земельный участок'])
+    if re.search("\\bогородн\\b", canon) and not re.search("огородничеств", canon):
+        hints.extend(["ведение огородничества", "огородный земельный участок"])
     # Инфекционное отделение, лечебный корпус — здравоохранение
-    if re.search('инфекцион|лечебн\\s+корпус', canon):
-        hints.extend(['здравоохранение', 'амбулаторное лечение', 'стационарное лечение'])
+    if re.search("инфекцион|лечебн\\s+корпус", canon):
+        hints.extend(
+            ["здравоохранение", "амбулаторное лечение", "стационарное лечение"]
+        )
     # Киоск — розничная торговля, НЕ общепит
-    if re.search('\\bкиоск\\b', canon) and not re.search('кафе|буфет', canon):
-        hints.extend(['размещение объектов розничной торговли', 'торговля'])
+    if re.search("\\bкиоск\\b", canon) and not re.search("кафе|буфет", canon):
+        hints.extend(["размещение объектов розничной торговли", "торговля"])
     # Подпорная стенка — инженерная инфраструктура
-    if re.search('подпорн\\s+стенк|подпорн\\s+сооруж', canon):
-        hints.extend(['инженерная инфраструктура', 'благоустройство территории'])
-    merged = ' | '.join([raw_text] + hints)
+    if re.search("подпорн\\s+стенк|подпорн\\s+сооруж", canon):
+        hints.extend(["инженерная инфраструктура", "благоустройство территории"])
+    merged = " | ".join([raw_text] + hints)
     return build_catalog_embed_text(merged)
 
 
@@ -258,7 +442,11 @@ def _simple_match_tokens(text: Any) -> list[str]:
     canon = canonicalize_vri_name(text)
     if not canon:
         return []
-    return [token for token in re.findall('[a-zA-Zа-яА-ЯёЁ0-9]+', canon.lower()) if len(token) >= 3]
+    return [
+        token
+        for token in re.findall("[a-zA-Zа-яА-ЯёЁ0-9]+", canon.lower())
+        if len(token) >= 3
+    ]
 
 
 def _token_overlap_ratio(query_text: Any, candidate_text: Any) -> float:
@@ -279,10 +467,12 @@ def _specificity_bonus_from_code(code: Any) -> float:
     code_norm = normalize_text(code)
     if not code_norm:
         return 0.0
-    return min(code_norm.count('.'), 3) * 0.03
+    return min(code_norm.count("."), 3) * 0.03
 
 
-def fast_rerank_not_allowed_candidates(vri_text: Any, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def fast_rerank_not_allowed_candidates(
+    vri_text: Any, candidates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """
     Fast deterministic rerank for global not_allowed candidates before LLM.
     """
@@ -294,13 +484,13 @@ def fast_rerank_not_allowed_candidates(vri_text: Any, candidates: list[dict[str,
     reranked: list[dict[str, Any]] = []
     for item in candidates:
         item_copy = dict(item)
-        name = normalize_text(item_copy.get('name'))
-        description = normalize_text(item_copy.get('description'))
-        combined = ' | '.join([part for part in [name, description] if part])
-        embed_score = float(item_copy.get('score') or 0.0)
+        name = normalize_text(item_copy.get("name"))
+        description = normalize_text(item_copy.get("description"))
+        combined = " | ".join([part for part in [name, description] if part])
+        embed_score = float(item_copy.get("score") or 0.0)
         name_overlap = _token_overlap_ratio(query_text, name)
         text_overlap = _token_overlap_ratio(query_text, combined)
-        profile_rank = int(item_copy.get('profile_rank') or 0)
+        profile_rank = int(item_copy.get("profile_rank") or 0)
         profile_score = min(profile_rank, 100) / 100.0
         exactish_bonus = 0.0
         name_canon = canonicalize_vri_name(name)
@@ -309,17 +499,31 @@ def fast_rerank_not_allowed_candidates(vri_text: Any, candidates: list[dict[str,
                 exactish_bonus += 0.5
             elif query_canon in name_canon or name_canon in query_canon:
                 exactish_bonus += 0.22
-        rerank_score = embed_score * 1.0 + name_overlap * 0.9 + text_overlap * 0.55 + profile_score * 0.45 + exactish_bonus + _specificity_bonus_from_code(
-            item_copy.get('code'))
-        item_copy['rerank_score'] = float(rerank_score)
+        rerank_score = (
+            embed_score * 1.0
+            + name_overlap * 0.9
+            + text_overlap * 0.55
+            + profile_score * 0.45
+            + exactish_bonus
+            + _specificity_bonus_from_code(item_copy.get("code"))
+        )
+        item_copy["rerank_score"] = float(rerank_score)
         reranked.append(item_copy)
-    reranked.sort(key=lambda x: (
-    float(x.get('rerank_score') or 0.0), float(x.get('score') or 0.0), int(x.get('profile_rank') or 0),
-    normalize_text(x.get('code'))), reverse=True)
+    reranked.sort(
+        key=lambda x: (
+            float(x.get("rerank_score") or 0.0),
+            float(x.get("score") or 0.0),
+            int(x.get("profile_rank") or 0),
+            normalize_text(x.get("code")),
+        ),
+        reverse=True,
+    )
     return reranked
 
 
-def should_run_not_allowed_llm_rerank(vri_text: Any, candidates: list[dict[str, Any]]) -> bool:
+def should_run_not_allowed_llm_rerank(
+    vri_text: Any, candidates: list[dict[str, Any]]
+) -> bool:
     """
     Run LLM rerank only for uncertain cases.
     """
@@ -327,27 +531,43 @@ def should_run_not_allowed_llm_rerank(vri_text: Any, candidates: list[dict[str, 
         return False
     if not candidates:
         return False
-    top_candidates = candidates[:max(2, NOT_ALLOWED_CANDIDATES_TOP_N)]
-    top1 = float(top_candidates[0].get('rerank_score') or top_candidates[0].get('score') or 0.0)
-    top2 = float(top_candidates[1].get('rerank_score') or top_candidates[1].get('score') or 0.0) if len(
-        top_candidates) > 1 else 0.0
+    top_candidates = candidates[: max(2, NOT_ALLOWED_CANDIDATES_TOP_N)]
+    top1 = float(
+        top_candidates[0].get("rerank_score") or top_candidates[0].get("score") or 0.0
+    )
+    top2 = (
+        float(
+            top_candidates[1].get("rerank_score")
+            or top_candidates[1].get("score")
+            or 0.0
+        )
+        if len(top_candidates) > 1
+        else 0.0
+    )
     gap = top1 - top2
     profile = classify_object_profile(vri_text)
-    confidence = normalize_text(profile.get('confidence'))
-    profile_rank = int(top_candidates[0].get('profile_rank') or 0)
+    confidence = normalize_text(profile.get("confidence"))
+    profile_rank = int(top_candidates[0].get("profile_rank") or 0)
     query_key = get_not_allowed_query_key(vri_text)
     is_generic = len(query_key.split()) <= 4
-    if gap >= 0.16 and profile_rank >= 85 and (confidence in {'strong', 'medium'}) and (not is_generic):
+    if (
+        gap >= 0.16
+        and profile_rank >= 85
+        and (confidence in {"strong", "medium"})
+        and (not is_generic)
+    ):
         return False
     return True
 
 
 # Codes look like 2.1, 2.1.1, 4.9.1.1, 12.0.1 — 2 to 4 dotted numeric segments.
 # Word boundaries prevent matching cadastral numbers (65:04:0000040:1661 etc.).
-EXPLICIT_VRI_CODE_RE = re.compile(r'(?<![\d:])(\d{1,2}(?:\.\d{1,2}){1,3})(?![\d:])')
+EXPLICIT_VRI_CODE_RE = re.compile(r"(?<![\d:])(\d{1,2}(?:\.\d{1,2}){1,3})(?![\d:])")
 
 
-def extract_explicit_vri_code(vri_text: Any, context: Any = None) -> Optional[dict[str, Any]]:
+def extract_explicit_vri_code(
+    vri_text: Any, context: Any = None
+) -> Optional[dict[str, Any]]:
     """If the cadastral text contains an explicit valid Rosreestr VRI code, return it as a candidate.
 
     Many cadastral entries contain the code directly (e.g. "2.7.2 Размещение гаражей").
@@ -355,7 +575,7 @@ def extract_explicit_vri_code(vri_text: Any, context: Any = None) -> Optional[di
     """
     if context is None:
         return None
-    classifier_by_code = getattr(context, 'rosreestr_classifier_by_code', None) or {}
+    classifier_by_code = getattr(context, "rosreestr_classifier_by_code", None) or {}
     if not classifier_by_code:
         return None
 
@@ -376,31 +596,36 @@ def extract_explicit_vri_code(vri_text: Any, context: Any = None) -> Optional[di
         if code not in seen:
             seen.add(code)
             unique_in_order.append(code)
-    unique_in_order.sort(key=lambda c: -c.count('.'))
+    unique_in_order.sort(key=lambda c: -c.count("."))
 
     for code in unique_in_order:
         entry = classifier_by_code.get(code)
         if not entry:
             continue
         return {
-            'score': 1.0,
-            'section_name': 'explicit_code',
-            'code': code,
-            'name': normalize_text(entry.get('name')),
-            'description': normalize_text(entry.get('description')),
-            'name_plain': normalize_text(entry.get('name_plain') or entry.get('name')),
-            'parent_code': normalize_text(entry.get('parent_code')),
-            'top_level_code': normalize_text(entry.get('top_level_code')),
-            'profile_rank': 100,
-            'query_key': get_not_allowed_query_key(text),
-            'explicit_code': True,
+            "score": 1.0,
+            "section_name": "explicit_code",
+            "code": code,
+            "name": normalize_text(entry.get("name")),
+            "description": normalize_text(entry.get("description")),
+            "name_plain": normalize_text(entry.get("name_plain") or entry.get("name")),
+            "parent_code": normalize_text(entry.get("parent_code")),
+            "top_level_code": normalize_text(entry.get("top_level_code")),
+            "profile_rank": 100,
+            "query_key": get_not_allowed_query_key(text),
+            "explicit_code": True,
         }
     return None
 
 
-def build_not_allowed_same_zone_candidates(vri_text: Any, actual_zone_code: Any,
-                                           query_vector: Optional[np.ndarray] = None, top_n: Optional[int] = None,
-                                           min_similarity: Optional[float] = None, context: Any=None) -> list[dict[str, Any]]:
+def build_not_allowed_same_zone_candidates(
+    vri_text: Any,
+    actual_zone_code: Any,
+    query_vector: Optional[np.ndarray] = None,
+    top_n: Optional[int] = None,
+    min_similarity: Optional[float] = None,
+    context: Any = None,
+) -> list[dict[str, Any]]:
     """
     Build cached global Rosreestr classifier candidates for not_allowed rows.
     """
@@ -414,12 +639,16 @@ def build_not_allowed_same_zone_candidates(vri_text: Any, actual_zone_code: Any,
     explicit_candidate = extract_explicit_vri_code(vri_text, context=context)
     if explicit_candidate is not None:
         query_vector_cache, recall_candidates_cache, _, _ = _cache_maps(context)
-        query_key = explicit_candidate['query_key']
+        query_key = explicit_candidate["query_key"]
         recall_candidates_cache[query_key] = [dict(explicit_candidate)]
         return [dict(explicit_candidate)]
 
-    classifier_items_df = context.classifier_embed_items_df if context is not None else None
-    classifier_vectors = context.classifier_embed_vectors if context is not None else None
+    classifier_items_df = (
+        context.classifier_embed_items_df if context is not None else None
+    )
+    classifier_vectors = (
+        context.classifier_embed_vectors if context is not None else None
+    )
     local_vectorizer = context.vectorizer if context is not None else None
     if classifier_items_df is None or classifier_items_df.empty:
         return []
@@ -431,7 +660,11 @@ def build_not_allowed_same_zone_candidates(vri_text: Any, actual_zone_code: Any,
     query_vector_cache, recall_candidates_cache, _, _ = _cache_maps(context)
     query_key = get_not_allowed_query_key(query_text)
     top_n = int(top_n or NOT_ALLOWED_CANDIDATES_TOP_N)
-    min_similarity = float(NOT_ALLOWED_CANDIDATES_MIN_SIMILARITY if min_similarity is None else min_similarity)
+    min_similarity = float(
+        NOT_ALLOWED_CANDIDATES_MIN_SIMILARITY
+        if min_similarity is None
+        else min_similarity
+    )
     cached_candidates = recall_candidates_cache.get(query_key)
     if cached_candidates is not None and len(cached_candidates) >= top_n:
         return [dict(item) for item in cached_candidates[:top_n]]
@@ -439,7 +672,9 @@ def build_not_allowed_same_zone_candidates(vri_text: Any, actual_zone_code: Any,
     if query_vector is None:
         query_vector = query_vector_cache.get(query_key)
     if query_vector is None:
-        query_matrix = local_vectorizer.embed_many(texts=[build_not_allowed_embed_query_text(query_text)], batch_size=1)
+        query_matrix = local_vectorizer.embed_many(
+            texts=[build_not_allowed_embed_query_text(query_text)], batch_size=1
+        )
         if query_matrix is None or query_matrix.size == 0:
             return []
         query_vector = query_matrix[0]
@@ -457,28 +692,41 @@ def build_not_allowed_same_zone_candidates(vri_text: Any, actual_zone_code: Any,
         if score < min_similarity:
             continue
         row = classifier_items_df.iloc[int(global_idx)]
-        code = normalize_text(row.get('classifier_code'))
-        name = normalize_text(row.get('classifier_name'))
+        code = normalize_text(row.get("classifier_code"))
+        name = normalize_text(row.get("classifier_name"))
         if not code and (not name):
             continue
         if code in seen_codes:
             continue
         entry = row.to_dict()
         seen_codes.add(code)
-        candidates.append({'score': score, 'section_name': 'classifier_global', 'code': code, 'name': name,
-                           'description': normalize_text(entry.get('classifier_description')),
-                           'name_plain': normalize_text(entry.get('classifier_name_plain')),
-                           'parent_code': normalize_text(entry.get('classifier_parent_code')),
-                           'top_level_code': normalize_text(entry.get('classifier_top_level_code')),
-                           'profile_rank': int(rank_classifier_entry_for_profile(entry, object_profile)),
-                           'query_key': query_key})
+        candidates.append(
+            {
+                "score": score,
+                "section_name": "classifier_global",
+                "code": code,
+                "name": name,
+                "description": normalize_text(entry.get("classifier_description")),
+                "name_plain": normalize_text(entry.get("classifier_name_plain")),
+                "parent_code": normalize_text(entry.get("classifier_parent_code")),
+                "top_level_code": normalize_text(
+                    entry.get("classifier_top_level_code")
+                ),
+                "profile_rank": int(
+                    rank_classifier_entry_for_profile(entry, object_profile)
+                ),
+                "query_key": query_key,
+            }
+        )
         if len(candidates) >= recall_top_n:
             break
     recall_candidates_cache[query_key] = [dict(item) for item in candidates]
     return [dict(item) for item in candidates[:top_n]]
 
 
-def promote_generic_residential_first(vri_text: Any, candidates: list[dict[str, Any]], context: Any=None) -> list[dict[str, Any]]:
+def promote_generic_residential_first(
+    vri_text: Any, candidates: list[dict[str, Any]], context: Any = None
+) -> list[dict[str, Any]]:
     """Force generic residential code 2.0 «Жилая застройка» to the top of the candidate list.
 
     Применяется к жилым ВРИ без указания этажности/типа застройки. Если код 2.0 уже есть
@@ -496,40 +744,132 @@ def promote_generic_residential_first(vri_text: Any, candidates: list[dict[str, 
     generic_item: Optional[dict[str, Any]] = None
     rest: list[dict[str, Any]] = []
     for item in candidates:
-        if generic_item is None and normalize_text(item.get('code')) == generic_code:
+        if generic_item is None and normalize_text(item.get("code")) == generic_code:
             generic_item = dict(item)
         else:
             rest.append(item)
     if generic_item is None:
-        classifier_by_code = getattr(context, 'rosreestr_classifier_by_code', None) or {}
+        classifier_by_code = (
+            getattr(context, "rosreestr_classifier_by_code", None) or {}
+        )
         entry = classifier_by_code.get(generic_code) or {}
-        generic_item = {'score': float(candidates[0].get('score') or 1.0) if candidates else 1.0, 'section_name': 'classifier_global', 'code': generic_code, 'name': normalize_text(entry.get('name')) or 'Жилая застройка', 'description': normalize_text(entry.get('description')), 'profile_rank': 100}
+        generic_item = {
+            "score": float(candidates[0].get("score") or 1.0) if candidates else 1.0,
+            "section_name": "classifier_global",
+            "code": generic_code,
+            "name": normalize_text(entry.get("name")) or "Жилая застройка",
+            "description": normalize_text(entry.get("description")),
+            "profile_rank": 100,
+        }
     return [generic_item] + rest
 
 
 STRONG_MARKER_CODE_RULES: tuple[tuple[str, str], ...] = (
-    ('теплоэлектроцентрал|\\bтэц\\b', '6.7'),
-    ('пожарн\\s+(?:част|депо|охран|станц|гараж)|\\bмчс\\b', '8.3'),
-    ('бассейн|\\bфок\\b|физкультурно[\\s-]+оздоровительн|крыт[а-я]*\\s+каток|каток.*крыт', '5.1.2'),
-    ('паромн.*(?:причал|переправ)|(?:причал|переправ).*паромн', '7.3'),
-    ('автостоянк|парковк|стоянк[а-я\\s-]*(?:автомоб|автотранспорт|транспортн)|многоярусн[а-я\\s-]*(?:стоянк|паркинг)', '4.9.2'),
+    ("благоустройств\\s+территор", "12.0.2"),
+    ("внутримикрорайон.*проезд|внутриквартал.*проезд|внутридворов.*проезд", "12.0.1"),
+    ("капитальн\\s+ремонт.*(?:\\bпер\\b|улиц|дорог|проезд)", "12.0.1"),
+    ("бокс.*гараж|гараж.*бокс|времен.*гараж|гараж.*времен", "2.7.2"),
+    ("обществен\\s+застройк", "3.0"),
+    ("столов|кафетер", "4.6"),
+    ("крыт\\s+спортивн\\s+площадк|атлетическ\\s+павильон", "5.1.2"),
+    ("сенокос", "1.19"),
+    ("\\bзру\\b|\\bзтп\\b|\\bктп\\b", "3.1.1"),
+    ("подпорн\\s+(?:стенк|сооруж)", "12.0.2"),
+    ("кинодосугов|кинотеатр|кинозал", "3.6.1"),
+    ("узел\\s+связ", "6.8"),
+    ("лечебн\\s+корпус|инфекцион\\s+отделен", "3.4.2"),
+    ("цветочн.*(?:павильон|магазин)|(?:павильон|магазин).*цветочн|\\bкиоск\\b", "4.4"),
+    (
+        "городск.*суд|районн.*суд|мировой.*суд|арбитражн.*суд|здани[ея].*\\bсуд\\b",
+        "3.8.1",
+    ),
+    ("ремонт\\s+обув|обув.*ремонт", "3.3"),
+    ("памятник|объект\\s+культурн\\s+наслед|достопримечательн", "9.3"),
+    ("здан\\s+управлен.*\\b[зр]эс\\b|\\b[зр]эс\\b.*здан\\s+управлен", "3.1.2"),
+    ("хозя[йи]?ствен\\s+площадк", "12.0.2"),
+    ("гост[ео]в\\s+дом", "4.7"),
+    ("производствен\\s+(?:территор|баз)", "6.0"),
+    ("складск.*производствен|производствен.*складск", "6.0"),
+    ("аптек", "3.4"),
+    ("огородн\\s+земельн\\s+участ|для\\s+ведения\\s+огородничеств", "13.1"),
+    (
+        "физическ\\s+культур.*(?:спорт|спор\\b)|(?:спорт|спор\\b).*физическ\\s+культур",
+        "5.1",
+    ),
+    ("шашлычн", "4.6"),
+    ("стрелков.*тир|\\bтир\\b", "5.1"),
+    ("баз\\s+зимн\\s+отд|зимн\\s+отд", "5.0"),
+    ("теплоэлектроцентрал|\\bтэц\\b", "6.7"),
+    ("пожарн\\s+(?:част|депо|охран|станц|гараж)|\\bмчс\\b", "8.3"),
+    (
+        "бассейн|\\bфок\\b|физкультурно[\\s-]+оздоровительн|крыт[а-я]*\\s+каток|каток.*крыт",
+        "5.1.2",
+    ),
+    ("паромн.*(?:причал|переправ)|(?:причал|переправ).*паромн", "7.3"),
+    (
+        "автостоянк|парковк|стоянк[а-я\\s-]*(?:автомоб|автотранспорт|транспортн)|многоярусн[а-я\\s-]*(?:стоянк|паркинг)",
+        "4.9.2",
+    ),
+    ("рекреацион|рекпеацион", "5.0"),
+    ("транспортн\\s+безопасн|антитеррористическ.*мероприят", "7.0"),
 )
 
 
-def _classifier_candidate(code: str, candidates: list[dict[str, Any]], context: Any = None) -> dict[str, Any]:
+MANUAL_REVIEW_MARKER_RULES: tuple[str, ...] = (
+    # Назначение здания не раскрыто: выбирать коммунальную или иную узкую функцию нельзя.
+    "служебн\\s+техническ\\s+здан",
+    "^(?:размещен\\s+)?нежил\\s+здан$",
+    # В исходном ВРИ одновременно заявлены разные функциональные семейства.
+    "жил\\s+и\\s+обществен\\s+делов\\s+назначен",
+)
+
+
+def classifier_requires_manual_review(vri_text: Any) -> bool:
+    """Return True when the source text cannot support one defensible Top-1 code."""
+    canon = canonicalize_vri_name(normalize_text(vri_text))
+    if not canon:
+        return False
+    generic_admin = bool(
+        re.search(
+            "административн\\s+здан|здан.*административн.*назначен",
+            canon,
+        )
+    )
+    identified_admin_owner = bool(
+        re.search(
+            "администрац\\b|государствен|муниципальн|суд|прокуратур|полиц|"
+            "коммунальн|жкх|водоканал|теплосет|электросет|энергосбыт|"
+            "газоснаб|водоснаб|теплоснаб|\\b[зр]эс\\b",
+            canon,
+        )
+    )
+    if generic_admin and not identified_admin_owner:
+        return True
+    if re.fullmatch("(?:под\\s+)?здан\\s+кадастров(?:\\s+\\d+)+", canon):
+        return True
+    if re.search("казин.*бар.*офис.*жил\\s+дом", canon):
+        return True
+    return any(re.search(pattern, canon) for pattern in MANUAL_REVIEW_MARKER_RULES)
+
+
+def _classifier_candidate(
+    code: str, candidates: list[dict[str, Any]], context: Any = None
+) -> dict[str, Any]:
     """Build a shortlist item from the classifier while preserving the current score scale."""
-    entry = (getattr(context, 'rosreestr_classifier_by_code', None) or {}).get(code) or {}
+    entry = (getattr(context, "rosreestr_classifier_by_code", None) or {}).get(
+        code
+    ) or {}
     return {
-        'score': float(candidates[0].get('score') or 1.0) if candidates else 1.0,
-        'section_name': 'classifier_policy',
-        'code': code,
-        'name': normalize_text(entry.get('name')),
-        'description': normalize_text(entry.get('description')),
-        'name_plain': normalize_text(entry.get('name_plain')),
-        'parent_code': normalize_text(entry.get('parent_code')),
-        'top_level_code': normalize_text(entry.get('top_level_code')),
-        'profile_rank': 100,
-        'policy_forced': True,
+        "score": float(candidates[0].get("score") or 1.0) if candidates else 1.0,
+        "section_name": "classifier_policy",
+        "code": code,
+        "name": normalize_text(entry.get("name")),
+        "description": normalize_text(entry.get("description")),
+        "name_plain": normalize_text(entry.get("name_plain")),
+        "parent_code": normalize_text(entry.get("parent_code")),
+        "top_level_code": normalize_text(entry.get("top_level_code")),
+        "profile_rank": 100,
+        "policy_forced": True,
     }
 
 
@@ -542,60 +882,145 @@ def enforce_classifier_candidate_policies(
     result: list[dict[str, Any]] = []
     seen_codes: set[str] = set()
     for item in candidates or []:
-        code = normalize_text(item.get('code'))
+        code = normalize_text(item.get("code"))
         if code and code in seen_codes:
             continue
         if code:
             seen_codes.add(code)
         result.append(dict(item))
-    if any(item.get('explicit_code') for item in result):
+    if any(item.get("explicit_code") for item in result):
         return result
 
+    if classifier_requires_manual_review(vri_text):
+        return []
     canon = canonicalize_vri_name(normalize_text(vri_text))
     if not canon:
         return result
 
-    fire_case = bool(re.search('пожарн\\s+(?:част|депо|охран|станц|гараж)|\\bмчс\\b', canon))
-    parking_case = bool(re.search(
-        'автостоянк|парковк|стоянк[а-я\\s-]*(?:автомоб|автотранспорт|транспортн)|'
-        'многоярусн[а-я\\s-]*(?:стоянк|паркинг)',
-        canon,
-    )) and not fire_case
-    generic_admin_case = bool(re.search('административн(?:ое|ого|ый|ая|ые)?\\s+здан|административн', canon))
-    utility_admin_case = bool(re.search(
-        'коммунальн|жкх|водоканал|теплосет|электросет|энергосбыт|газоснаб|водоснаб|теплоснаб|\\b[зр]эс\\b',
-        canon,
-    ))
+    fire_case = bool(
+        re.search("пожарн\\s+(?:част|депо|охран|станц|гараж)|\\bмчс\\b", canon)
+    )
+    tec_case = bool(re.search("теплоэлектроцентрал|\\bтэц\\b", canon))
+    transport_safety_case = bool(
+        re.search(
+            "транспортн\\s+безопасн|антитеррористическ.*мероприят",
+            canon,
+        )
+    )
+    container_case = bool(re.search("контейнер", canon)) and not bool(
+        re.search(
+            "тко|отход|мусор|контейнерн\\s+площадк|гараж",
+            canon,
+        )
+    )
+    parking_case = (
+        bool(
+            re.search(
+                "автостоянк|парковк|стоянк[а-я\\s-]*(?:автомоб|автотранспорт|транспортн)|"
+                "многоярусн[а-я\\s-]*(?:стоянк|паркинг)",
+                canon,
+            )
+        )
+        and not fire_case
+    )
+    generic_admin_case = bool(
+        re.search("административн(?:ое|ого|ый|ая|ые)?\\s+здан|административн", canon)
+    )
+    utility_admin_case = bool(
+        re.search(
+            "коммунальн|жкх|водоканал|теплосет|электросет|энергосбыт|газоснаб|водоснаб|теплоснаб|\\b[зр]эс\\b",
+            canon,
+        )
+    )
 
     banned_codes: set[str] = set()
     if parking_case:
-        banned_codes.update({'2.0', '2.1', '2.1.1', '2.2', '2.3', '2.4', '2.5', '2.6', '2.7.2'})
+        banned_codes.update(
+            {"2.0", "2.1", "2.1.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7.2"}
+        )
     if fire_case:
-        banned_codes.update({'2.7.1', '2.7.2', '4.9'})
+        banned_codes.update(
+            {
+                "2.0",
+                "2.1",
+                "2.1.1",
+                "2.2",
+                "2.3",
+                "2.4",
+                "2.5",
+                "2.6",
+                "2.7.1",
+                "2.7.2",
+                "3.1",
+                "3.1.1",
+                "3.1.2",
+                "4.9",
+                "4.9.1",
+                "4.9.1.1",
+                "4.9.1.2",
+                "4.9.1.3",
+                "4.9.1.4",
+                "4.9.2",
+            }
+        )
+    if tec_case:
+        banned_codes.update({"3.1", "3.1.1", "3.1.2", "3.2.3", "3.8", "6.7.1"})
+    if transport_safety_case:
+        banned_codes.update(
+            {
+                "5.0",
+                "5.1",
+                "5.1.1",
+                "5.1.2",
+                "5.1.3",
+                "5.1.4",
+                "5.1.5",
+                "5.1.6",
+                "5.1.7",
+            }
+        )
     if generic_admin_case and not utility_admin_case:
-        banned_codes.add('3.1.2')
-    result = [item for item in result if normalize_text(item.get('code')) not in banned_codes]
+        banned_codes.add("3.1.2")
+    result = [
+        item for item in result if normalize_text(item.get("code")) not in banned_codes
+    ]
 
     strong_code = next(
-        (code for pattern, code in STRONG_MARKER_CODE_RULES if re.search(pattern, canon)),
+        (
+            code
+            for pattern, code in STRONG_MARKER_CODE_RULES
+            if re.search(pattern, canon)
+        ),
         None,
     )
+    if container_case:
+        strong_code = "6.9"
     shortlist_codes: list[str] = []
-    if re.search('рекреацион|рекпеацион', canon):
-        shortlist_codes.append('5.0')
-    if re.search('памятник|объект\\s+культурн\\s+наслед|достопримечательн', canon):
-        shortlist_codes.extend(['9.3', '12.0.2'])
+    if re.search("памятник|объект\\s+культурн\\s+наслед|достопримечательн", canon):
+        shortlist_codes.append("12.0.2")
 
-    by_code = {normalize_text(item.get('code')): item for item in result if normalize_text(item.get('code'))}
+    by_code = {
+        normalize_text(item.get("code")): item
+        for item in result
+        if normalize_text(item.get("code"))
+    }
     if strong_code:
-        strong_item = by_code.get(strong_code) or _classifier_candidate(strong_code, result, context)
-        result = [strong_item] + [item for item in result if normalize_text(item.get('code')) != strong_code]
+        strong_item = by_code.get(strong_code) or _classifier_candidate(
+            strong_code, result, context
+        )
+        result = [strong_item] + [
+            item for item in result if normalize_text(item.get("code")) != strong_code
+        ]
 
     # Shortlist-only rules keep the current Top-1, but guarantee candidates in the final Top-5.
     insert_at = 1 if result else 0
     for code in shortlist_codes:
         item = by_code.get(code) or _classifier_candidate(code, result, context)
-        result = [existing for existing in result if normalize_text(existing.get('code')) != code]
+        result = [
+            existing
+            for existing in result
+            if normalize_text(existing.get("code")) != code
+        ]
         result.insert(insert_at, item)
         insert_at += 1
     return result
@@ -607,31 +1032,31 @@ def serialize_not_allowed_same_zone_candidates(candidates: list[dict[str, Any]])
         return pd.NA
     parts: list[str] = []
     for item in candidates:
-        code = normalize_text(item.get('code'))
-        name = normalize_text(item.get('name'))
+        code = normalize_text(item.get("code"))
+        name = normalize_text(item.get("name"))
         if code and name:
-            parts.append(f'{code} {name}')
+            parts.append(f"{code} {name}")
         elif name:
             parts.append(name)
         elif code:
             parts.append(code)
     if not parts:
         return pd.NA
-    return ', '.join(parts)
+    return ", ".join(parts)
 
 
 NOT_ALLOWED_RERANK_SCHEMA = {
-    'type': 'object',
-    'additionalProperties': False,
-    'properties': {
-        'ranked_codes': {
-            'type': 'array',
-            'items': {'type': 'string'},
-            'minItems': NOT_ALLOWED_CANDIDATES_TOP_N,
-            'maxItems': NOT_ALLOWED_CANDIDATES_TOP_N,
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "ranked_codes": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": NOT_ALLOWED_CANDIDATES_TOP_N,
+            "maxItems": NOT_ALLOWED_CANDIDATES_TOP_N,
         }
     },
-    'required': ['ranked_codes'],
+    "required": ["ranked_codes"],
 }
 
 NOT_ALLOWED_RERANK_SYSTEM_PROMPT = """Ты ранжируешь кандидатов ВРИ Росреестра для кадастровой записи.
@@ -691,16 +1116,22 @@ NOT_ALLOWED_RERANK_SYSTEM_PROMPT = """Ты ранжируешь кандидат
 17. Бассейн, ФОК, физкультурно-оздоровительный комплекс и крытый каток — 5.1.2.
 18. Паромный причал / паромная переправа — 7.3, а НЕ 5.4 для маломерных судов.
 19. 3.1.2 выбирай только для административного здания организации, прямо обеспечивающей
-    коммунальные услуги. Само слово «административное» для этого недостаточно."""
+    коммунальные услуги. Само слово «административное» для этого недостаточно.
+20. «Рекреационная зона» и рекреационные цели, в том числе с опечаткой «рекпеационные»,
+    — 5.0 «Отдых (рекреация)».
+21. Обеспечение транспортной безопасности и антитеррористические мероприятия на транспорте
+    — 7.0 «Транспорт», а НЕ спортивные коды 5.1.x.
+22. Размещение обычных грузовых или временных контейнеров — 6.9 «Склад», если в тексте
+    прямо не указаны ТКО, мусор или отходы."""
 NOT_ALLOWED_LLM_RERANK_MAX_ATTEMPTS = 3
 NOT_ALLOWED_LLM_RERANK_RETRY_DELAY_SEC = 0.35
 RETRYABLE_VLLM_ERROR_MARKERS = (
-    'empty assistant content',
-    'content',
-    'finish_reason',
-    'length',
-    'reasoning',
-    'json',
+    "empty assistant content",
+    "content",
+    "finish_reason",
+    "length",
+    "reasoning",
+    "json",
 )
 
 
@@ -712,41 +1143,45 @@ def is_retryable_llm_rerank_error(exc: Exception) -> bool:
     return any(marker in text for marker in RETRYABLE_VLLM_ERROR_MARKERS)
 
 
-def build_not_allowed_rerank_prompt(vri_text: Any, candidates: list[dict[str, Any]]) -> str:
+def build_not_allowed_rerank_prompt(
+    vri_text: Any, candidates: list[dict[str, Any]]
+) -> str:
     """Build compact LLM prompt for reranking global classifier candidates."""
     query_text = normalize_text(vri_text)
     profile = classify_object_profile(query_text)
     profile_hint = render_profile_hint(profile)
 
     lines = [
-        f'Кадастровый ВРИ: {query_text}\n',
-        f'Профиль объекта: {profile_hint}\n',
-        '\n',
-        f'Выбери ровно {NOT_ALLOWED_CANDIDATES_TOP_N} лучших кодов из shortlist ниже.\n',
+        f"Кадастровый ВРИ: {query_text}\n",
+        f"Профиль объекта: {profile_hint}\n",
+        "\n",
+        f"Выбери ровно {NOT_ALLOWED_CANDIDATES_TOP_N} лучших кодов из shortlist ниже.\n",
         'Верни только JSON вида {"ranked_codes":["2.1","2.3","2.1.1","4.4","3.1"]}.\n',
-        'Не добавляй никаких пояснений и не возвращай полный порядок всех кандидатов.\n',
-        'Если сильных прямых совпадений меньше пяти, добери оставшиеся места ближайшими по смыслу кандидатами из shortlist.\n',
-        'Нельзя возвращать меньше пяти кодов.\n',
-        '\n',
-        'Shortlist кандидатов:\n',
+        "Не добавляй никаких пояснений и не возвращай полный порядок всех кандидатов.\n",
+        "Если сильных прямых совпадений меньше пяти, добери оставшиеся места ближайшими по смыслу кандидатами из shortlist.\n",
+        "Нельзя возвращать меньше пяти кодов.\n",
+        "\n",
+        "Shortlist кандидатов:\n",
     ]
 
     for idx, item in enumerate(candidates, start=1):
-        code = normalize_text(item.get('code'))
-        name = normalize_text(item.get('name'))
+        code = normalize_text(item.get("code"))
+        name = normalize_text(item.get("name"))
         description = truncate_text(
-            item.get('description'),
+            item.get("description"),
             max_chars=min(int(NOT_ALLOWED_LLM_RERANK_DESC_MAX_CHARS), 180),
         )
-        line = f'{idx}. {code} | {name}'
+        line = f"{idx}. {code} | {name}"
         if description:
-            line += f' | {description}'
-        lines.append(line + '\n')
+            line += f" | {description}"
+        lines.append(line + "\n")
 
-    return ''.join(lines)
+    return "".join(lines)
 
 
-def run_not_allowed_rerank_with_llm(vri_text: Any, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def run_not_allowed_rerank_with_llm(
+    vri_text: Any, candidates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Select top codes with LLM and keep only returned known codes."""
     if not ENABLE_LLM or not NOT_ALLOWED_LLM_RERANK_ENABLED:
         return candidates
@@ -781,12 +1216,12 @@ def run_not_allowed_rerank_with_llm(vri_text: Any, candidates: list[dict[str, An
                 think_override=think_override,
             )
 
-            ranked_codes_raw = response.get('ranked_codes') or []
+            ranked_codes_raw = response.get("ranked_codes") or []
             ranked_codes = [
-                               normalize_text(code)
-                               for code in ranked_codes_raw
-                               if normalize_text(code)
-                           ][:NOT_ALLOWED_CANDIDATES_TOP_N]
+                normalize_text(code)
+                for code in ranked_codes_raw
+                if normalize_text(code)
+            ][:NOT_ALLOWED_CANDIDATES_TOP_N]
 
             if len(ranked_codes) != NOT_ALLOWED_CANDIDATES_TOP_N:
                 raise ValueError(
@@ -795,7 +1230,7 @@ def run_not_allowed_rerank_with_llm(vri_text: Any, candidates: list[dict[str, An
 
             by_code: dict[str, dict[str, Any]] = {}
             for item in narrowed_candidates:
-                code = normalize_text(item.get('code'))
+                code = normalize_text(item.get("code"))
                 if code and code not in by_code:
                     by_code[code] = item
 
@@ -808,7 +1243,7 @@ def run_not_allowed_rerank_with_llm(vri_text: Any, candidates: list[dict[str, An
                     used_codes.add(code)
 
             for item in narrowed_candidates:
-                code = normalize_text(item.get('code'))
+                code = normalize_text(item.get("code"))
                 if code and code not in used_codes:
                     reranked.append(item)
                     used_codes.add(code)
@@ -840,11 +1275,9 @@ def run_not_allowed_rerank_with_llm(vri_text: Any, candidates: list[dict[str, An
     return candidates[:NOT_ALLOWED_CANDIDATES_TOP_N]
 
 
-
-
-
-
-def get_zone_status_for_classifier_code(zone_code: Any, classifier_code: Any, context: Any=None) -> tuple[bool, Optional[str]]:
+def get_zone_status_for_classifier_code(
+    zone_code: Any, classifier_code: Any, context: Any = None
+) -> tuple[bool, Optional[str]]:
     """Return whether a classifier code is present in the zone after parent-child expansion."""
     zone_code_norm = normalize_text(zone_code)
     code_norm = normalize_text(classifier_code)
@@ -852,21 +1285,29 @@ def get_zone_status_for_classifier_code(zone_code: Any, classifier_code: Any, co
         return (False, None)
     zone_section_cache = context.zone_section_code_cache if context is not None else {}
     section_cache = zone_section_cache.get(zone_code_norm) or {}
-    for section_name in ('main', 'conditional', 'auxiliary'):
+    for section_name in ("main", "conditional", "auxiliary"):
         if code_norm in (section_cache.get(section_name) or set()):
             return (True, section_name)
     return (False, None)
 
 
-def rank_classifier_entry_for_profile(entry: dict[str, Any], profile: dict[str, Any]) -> int:
+def rank_classifier_entry_for_profile(
+    entry: dict[str, Any], profile: dict[str, Any]
+) -> int:
     """Score one Rosreestr classifier entry against the profiled object family."""
-    family = normalize_text(profile.get('family'))
-    candidate_keys = profile.get('candidate_keys') or ([] if not family else [family])
-    if not candidate_keys or family == 'unknown':
+    family = normalize_text(profile.get("family"))
+    candidate_keys = profile.get("candidate_keys") or ([] if not family else [family])
+    if not candidate_keys or family == "unknown":
         return 0
-    combined = canonicalize_vri_name(' | '.join(
-        [normalize_text(entry.get('classifier_name')), normalize_text(entry.get('classifier_description')),
-         normalize_text(entry.get('classifier_name_plain'))]))
+    combined = canonicalize_vri_name(
+        " | ".join(
+            [
+                normalize_text(entry.get("classifier_name")),
+                normalize_text(entry.get("classifier_description")),
+                normalize_text(entry.get("classifier_name_plain")),
+            ]
+        )
+    )
     if not combined:
         return 0
     best_rank = 0
@@ -877,13 +1318,20 @@ def rank_classifier_entry_for_profile(entry: dict[str, Any], profile: dict[str, 
     return best_rank
 
 
-def build_embed_classifier_candidates(vri_text: Any, actual_zone_code: Any, query_vector: Optional[np.ndarray] = None,
-                                      top_n: Optional[int] = None, min_similarity: Optional[float] = None,
-                                      context: Any = None) -> list[dict[str, Any]]:
+def build_embed_classifier_candidates(
+    vri_text: Any,
+    actual_zone_code: Any,
+    query_vector: Optional[np.ndarray] = None,
+    top_n: Optional[int] = None,
+    min_similarity: Optional[float] = None,
+    context: Any = None,
+) -> list[dict[str, Any]]:
     """Build a Rosreestr-classifier shortlist for LLM reranking, not for direct verdicts."""
     if not ENABLE_EMBED_CANDIDATE_SHORTLIST:
         return []
-    classifier_embed_vectors = context.classifier_embed_vectors if context is not None else None
+    classifier_embed_vectors = (
+        context.classifier_embed_vectors if context is not None else None
+    )
     if classifier_embed_vectors is None or classifier_embed_vectors.size == 0:
         return []
     query_text = normalize_text(vri_text)
@@ -892,13 +1340,17 @@ def build_embed_classifier_candidates(vri_text: Any, actual_zone_code: Any, quer
     zone_code = normalize_text(actual_zone_code)
     object_profile = classify_object_profile(query_text)
     top_n = int(top_n or TOP_N_EMBED_CANDIDATES)
-    min_similarity = float(MIN_EMBED_CANDIDATE_SIMILARITY if min_similarity is None else min_similarity)
+    min_similarity = float(
+        MIN_EMBED_CANDIDATE_SIMILARITY if min_similarity is None else min_similarity
+    )
     try:
         if query_vector is None:
             local_vectorizer = context.vectorizer if context is not None else None
             if local_vectorizer is None:
                 return []
-            query_matrix = local_vectorizer.embed_many(texts=[build_catalog_embed_text(query_text)], batch_size=1)
+            query_matrix = local_vectorizer.embed_many(
+                texts=[build_catalog_embed_text(query_text)], batch_size=1
+            )
             if query_matrix is None or query_matrix.size == 0:
                 return []
             query_vector = query_matrix[0]
@@ -906,7 +1358,9 @@ def build_embed_classifier_candidates(vri_text: Any, actual_zone_code: Any, quer
         if scores.size == 0:
             return []
         top_pool = min(max(top_n * 4, top_n), len(scores))
-        classifier_embed_items = context.classifier_embed_items_df if context is not None else None
+        classifier_embed_items = (
+            context.classifier_embed_items_df if context is not None else None
+        )
         if classifier_embed_items is None:
             return []
         candidate_ids = np.argsort(-scores)[:top_pool]
@@ -918,21 +1372,39 @@ def build_embed_classifier_candidates(vri_text: Any, actual_zone_code: Any, quer
             row = classifier_embed_items.iloc[int(idx)]
             entry = row.to_dict()
             profile_rank = rank_classifier_entry_for_profile(entry, object_profile)
-            present_in_zone, zone_status = get_zone_status_for_classifier_code(zone_code, entry.get('classifier_code'), context=context)
-            candidates.append({'score': score, 'code': normalize_text(entry.get('classifier_code')),
-                               'name': normalize_text(entry.get('classifier_name')),
-                               'description': normalize_text(entry.get('classifier_description')),
-                               'parent_code': normalize_text(entry.get('classifier_parent_code')),
-                               'top_level_code': normalize_text(entry.get('classifier_top_level_code')),
-                               'present_in_zone': bool(present_in_zone),
-                               'zone_status': normalize_text(zone_status) or None, 'profile_rank': int(profile_rank)})
+            present_in_zone, zone_status = get_zone_status_for_classifier_code(
+                zone_code, entry.get("classifier_code"), context=context
+            )
+            candidates.append(
+                {
+                    "score": score,
+                    "code": normalize_text(entry.get("classifier_code")),
+                    "name": normalize_text(entry.get("classifier_name")),
+                    "description": normalize_text(entry.get("classifier_description")),
+                    "parent_code": normalize_text(entry.get("classifier_parent_code")),
+                    "top_level_code": normalize_text(
+                        entry.get("classifier_top_level_code")
+                    ),
+                    "present_in_zone": bool(present_in_zone),
+                    "zone_status": normalize_text(zone_status) or None,
+                    "profile_rank": int(profile_rank),
+                }
+            )
         if not candidates:
             return []
         deduped: list[dict[str, Any]] = []
         seen_codes: set[str] = set()
-        for item in sorted(candidates, key=lambda x: (x['score'], x['present_in_zone'], x['profile_rank'], x['code']),
-                           reverse=True):
-            code_norm = normalize_text(item.get('code'))
+        for item in sorted(
+            candidates,
+            key=lambda x: (
+                x["score"],
+                x["present_in_zone"],
+                x["profile_rank"],
+                x["code"],
+            ),
+            reverse=True,
+        ):
+            code_norm = normalize_text(item.get("code"))
             if not code_norm or code_norm in seen_codes:
                 continue
             seen_codes.add(code_norm)
@@ -941,107 +1413,154 @@ def build_embed_classifier_candidates(vri_text: Any, actual_zone_code: Any, quer
                 break
         return deduped
     except Exception as exc:
-        logger.warning("Embedding classifier shortlist failed for '%s' in zone '%s': %s", query_text, zone_code, exc)
+        logger.warning(
+            "Embedding classifier shortlist failed for '%s' in zone '%s': %s",
+            query_text,
+            zone_code,
+            exc,
+        )
         return []
 
 
 def format_embed_candidates_for_prompt(candidates: list[dict[str, Any]]) -> str:
     """Render embedding shortlist in a compact deterministic prompt-friendly form."""
     if not candidates:
-        return '- нет\n'
+        return "- нет\n"
     lines: list[str] = []
     for item in candidates[:MAX_EMBED_CANDIDATES_IN_PROMPT]:
-        meta_parts = [f"score={float(item.get('score', 0.0)):.4f}", f"code={normalize_text(item.get('code'))}",
-                      f"name={normalize_text(item.get('name'))}"]
-        if normalize_text(item.get('parent_code')):
+        meta_parts = [
+            f"score={float(item.get('score', 0.0)):.4f}",
+            f"code={normalize_text(item.get('code'))}",
+            f"name={normalize_text(item.get('name'))}",
+        ]
+        if normalize_text(item.get("parent_code")):
             meta_parts.append(f"parent={normalize_text(item.get('parent_code'))}")
-        if normalize_text(item.get('top_level_code')):
+        if normalize_text(item.get("top_level_code")):
             meta_parts.append(f"top={normalize_text(item.get('top_level_code'))}")
-        meta_parts.append(f"present_in_zone={('yes' if item.get('present_in_zone') else 'no')}")
-        if normalize_text(item.get('zone_status')):
+        meta_parts.append(
+            f"present_in_zone={('yes' if item.get('present_in_zone') else 'no')}"
+        )
+        if normalize_text(item.get("zone_status")):
             meta_parts.append(f"zone_status={normalize_text(item.get('zone_status'))}")
-        if int(item.get('profile_rank', 0)) > 0:
+        if int(item.get("profile_rank", 0)) > 0:
             meta_parts.append(f"profile_rank={int(item.get('profile_rank', 0))}")
-        lines.append('- ' + '; '.join(meta_parts))
-        description = normalize_text(item.get('description'))
+        lines.append("- " + "; ".join(meta_parts))
+        description = normalize_text(item.get("description"))
         if description:
-            lines.append(f'  desc={description[:360]}')
-    return '\n'.join(lines) + '\n'
+            lines.append(f"  desc={description[:360]}")
+    return "\n".join(lines) + "\n"
 
 
-def build_zone_check_prompt(vri_text: str, zone_ref: dict[str, Any], exact_matches: list[dict[str, Any]],
-                            actual_zone_code: str, actual_zone_name: Any, actual_share: Any,
-                            intersect_codes: Any, context: Any=None) -> str:
+def build_zone_check_prompt(
+    vri_text: str,
+    zone_ref: dict[str, Any],
+    exact_matches: list[dict[str, Any]],
+    actual_zone_code: str,
+    actual_zone_name: Any,
+    actual_share: Any,
+    intersect_codes: Any,
+    context: Any = None,
+) -> str:
     """Build a strict actual-zone prompt using retrieval_text plus embedding shortlist hints."""
     raw_zone_lookup_map = context.raw_zone_lookup if context is not None else {}
-    zone_template = raw_zone_lookup_map[zone_ref['zone_code']]
-    retrieval_text = normalize_text(zone_template.get('retrieval_text'))
+    zone_template = raw_zone_lookup_map[zone_ref["zone_code"]]
+    retrieval_text = normalize_text(zone_template.get("retrieval_text"))
     zone_heading = normalize_text(
-        zone_template.get('zone_heading') or zone_template.get('zone_name') or actual_zone_name)
-    base_zone_code = normalize_text(zone_template.get('base_zone_code'))
-    zone_summary = normalize_text(zone_template.get('zone_summary'))
+        zone_template.get("zone_heading")
+        or zone_template.get("zone_name")
+        or actual_zone_name
+    )
+    base_zone_code = normalize_text(zone_template.get("base_zone_code"))
+    zone_summary = normalize_text(zone_template.get("zone_summary"))
     object_profile = classify_object_profile(vri_text)
     classifier_snapshot = build_zone_classifier_snapshot(zone_template, context=context)
-    shortlist_top_n = TOP_N_EMBED_CANDIDATES_HARD if should_use_deeper_llm_reasoning(vri_text,
-                                                                                     zone_template) else TOP_N_EMBED_CANDIDATES
-    embed_candidates = build_embed_classifier_candidates(vri_text=vri_text, actual_zone_code=actual_zone_code,
-                                                         query_vector=None, top_n=shortlist_top_n,
-                                                         min_similarity=MIN_EMBED_CANDIDATE_SIMILARITY,
-                                                         context=context)
+    shortlist_top_n = (
+        TOP_N_EMBED_CANDIDATES_HARD
+        if should_use_deeper_llm_reasoning(vri_text, zone_template)
+        else TOP_N_EMBED_CANDIDATES
+    )
+    embed_candidates = build_embed_classifier_candidates(
+        vri_text=vri_text,
+        actual_zone_code=actual_zone_code,
+        query_vector=None,
+        top_n=shortlist_top_n,
+        min_similarity=MIN_EMBED_CANDIDATE_SIMILARITY,
+        context=context,
+    )
     exact_lines: list[str] = []
     for match in exact_matches[:5]:
         exact_lines.append(
             f"- section={normalize_text(match.get('section_name'))};"
             f" code={normalize_text(match.get('matched_vri_code'))};"
-            f" name={normalize_text(match.get('matched_vri_name'))}\n")
+            f" name={normalize_text(match.get('matched_vri_name'))}\n"
+        )
     if not exact_lines:
-        exact_lines = ['- нет\n']
+        exact_lines = ["- нет\n"]
     # Placeholder VRI values ("-", blank) would otherwise render as an empty line
     # the model reads straight past, and it then answers not_allowed — reporting a
     # gap in the source data as a PZZ violation. Name the gap explicitly instead.
-    vri_line = normalize_text(vri_text) or '(не указан — сведения о ВРИ отсутствуют)'
-    lines = [f'Кадастровый ВРИ: {vri_line}\n',
-             f'Код фактической зоны ПЗЗ: {normalize_text(actual_zone_code)}\n', f'Базовый код зоны: {base_zone_code}\n',
-             f'Наименование фактической зоны: {zone_heading}\n',
-             f'Профиль объекта: {render_profile_hint(object_profile)}\n', '\n', 'Инструкция по принятию решения:\n',
-             '- Если кадастровый ВРИ не указан, пуст или является заглушкой ("-", "н/д", "нет данных"),\n',
-             '  верни unclear и не проверяй зону дальше: это пробел в исходных данных,\n',
-             '  а не нарушение ПЗЗ, поэтому not_allowed здесь недопустим.\n',
-             '- Сначала определи функциональную категорию кадастрового ВРИ.\n',
-             '- Затем ищи только прямое совпадение, прямое покрытие подтипа через описание разрешенного ВРИ\n',
-             '  или действительно близкую более широкую категорию в retrieval_text.\n',
-             '- Если кадастровая формулировка прямо перечислена в описании разрешенного VRI,\n',
-             '  это считается надежным прямым покрытием, даже если название VRI шире.\n',
-             '- Ниже дан embedding-shortlist канонических ВРИ классификатора Росреестра. Это только гипотезы,\n',
-             '  а не источник истины. Используй shortlist как ограниченный набор кандидатов для сопоставления смысла,\n',
-             '  но итоговое решение принимай только по retrieval_text фактической зоны и официальным ВРИ этой зоны.\n',
-             '- Кандидаты с present_in_zone=yes особенно важны, но если самый близкий по смыслу кандидат имеет present_in_zone=no,\n',
-             '  это не основание автоматически разрешать использование.\n',
-             '- Если надежного текстового покрытия нет, верни not_allowed —\n',
-             '  но только когда кадастровый ВРИ вообще указан.\n',
-             '- Не делай широких аналогий между разными функциональными категориями.\n',
-             '- Не предлагай альтернативные зоны.\n', '\n', 'Универсальные ограничения:\n',
-             '- Производство / промышленность / цех / завод / склад / логистика не равны торговле,\n',
-             '  магазинам, общепиту, бытовому обслуживанию, деловому управлению,\n',
-             '  социальной или жилой функции, если это прямо не указано.\n',
-             '- Пожарная охрана / спасательные службы / МЧС / ГО и ЧС не равны торговле или жилью;\n',
-             '  их можно разрешать только если retrieval_text реально покрывает публичные / общественные /\n',
-             '  управленческие / социальные объекты такого типа.\n',
-             '- Не путай ИЖС, малоэтажную, среднеэтажную и многоэтажную жилую застройку.\n',
-             '- Для verdict=allowed_* в reason обязательно укажи,\n',
-             '  какая категория, описание VRI или формулировка зоны из retrieval_text покрывает кадастровый ВРИ.\n',
-             '- Поле reason пиши на русском языке.\n',
-             '\n', 'Точные / почти точные совпадения в этой зоне:\n', *exact_lines, '\n',
-             'Classifier-aligned snapshot фактической зоны:\n', (classifier_snapshot or '- нет данных') + '\n', '\n',
-             'Embedding-shortlist канонических ВРИ классификатора:\n',
-             format_embed_candidates_for_prompt(embed_candidates), '\n', 'Короткое summary зоны:\n',
-             (zone_summary or '- нет данных') + '\n', '\n', 'Полное описание фактической зоны (retrieval_text):\n',
-             (retrieval_text or '- нет данных') + '\n', '\n',
-             'Верни строго JSON вида: {"verdict":"...","matched_vri_name":"...","matched_vri_code":"...","reason":"..."}\n']
-    return ''.join(lines)
+    vri_line = normalize_text(vri_text) or "(не указан — сведения о ВРИ отсутствуют)"
+    lines = [
+        f"Кадастровый ВРИ: {vri_line}\n",
+        f"Код фактической зоны ПЗЗ: {normalize_text(actual_zone_code)}\n",
+        f"Базовый код зоны: {base_zone_code}\n",
+        f"Наименование фактической зоны: {zone_heading}\n",
+        f"Профиль объекта: {render_profile_hint(object_profile)}\n",
+        "\n",
+        "Инструкция по принятию решения:\n",
+        '- Если кадастровый ВРИ не указан, пуст или является заглушкой ("-", "н/д", "нет данных"),\n',
+        "  верни unclear и не проверяй зону дальше: это пробел в исходных данных,\n",
+        "  а не нарушение ПЗЗ, поэтому not_allowed здесь недопустим.\n",
+        "- Сначала определи функциональную категорию кадастрового ВРИ.\n",
+        "- Затем ищи только прямое совпадение, прямое покрытие подтипа через описание разрешенного ВРИ\n",
+        "  или действительно близкую более широкую категорию в retrieval_text.\n",
+        "- Если кадастровая формулировка прямо перечислена в описании разрешенного VRI,\n",
+        "  это считается надежным прямым покрытием, даже если название VRI шире.\n",
+        "- Ниже дан embedding-shortlist канонических ВРИ классификатора Росреестра. Это только гипотезы,\n",
+        "  а не источник истины. Используй shortlist как ограниченный набор кандидатов для сопоставления смысла,\n",
+        "  но итоговое решение принимай только по retrieval_text фактической зоны и официальным ВРИ этой зоны.\n",
+        "- Кандидаты с present_in_zone=yes особенно важны, но если самый близкий по смыслу кандидат имеет present_in_zone=no,\n",
+        "  это не основание автоматически разрешать использование.\n",
+        "- Если надежного текстового покрытия нет, верни not_allowed —\n",
+        "  но только когда кадастровый ВРИ вообще указан.\n",
+        "- Не делай широких аналогий между разными функциональными категориями.\n",
+        "- Не предлагай альтернативные зоны.\n",
+        "\n",
+        "Универсальные ограничения:\n",
+        "- Производство / промышленность / цех / завод / склад / логистика не равны торговле,\n",
+        "  магазинам, общепиту, бытовому обслуживанию, деловому управлению,\n",
+        "  социальной или жилой функции, если это прямо не указано.\n",
+        "- Пожарная охрана / спасательные службы / МЧС / ГО и ЧС не равны торговле или жилью;\n",
+        "  их можно разрешать только если retrieval_text реально покрывает публичные / общественные /\n",
+        "  управленческие / социальные объекты такого типа.\n",
+        "- Не путай ИЖС, малоэтажную, среднеэтажную и многоэтажную жилую застройку.\n",
+        "- Для verdict=allowed_* в reason обязательно укажи,\n",
+        "  какая категория, описание VRI или формулировка зоны из retrieval_text покрывает кадастровый ВРИ.\n",
+        "- Поле reason пиши на русском языке.\n",
+        "\n",
+        "Точные / почти точные совпадения в этой зоне:\n",
+        *exact_lines,
+        "\n",
+        "Classifier-aligned snapshot фактической зоны:\n",
+        (classifier_snapshot or "- нет данных") + "\n",
+        "\n",
+        "Embedding-shortlist канонических ВРИ классификатора:\n",
+        format_embed_candidates_for_prompt(embed_candidates),
+        "\n",
+        "Короткое summary зоны:\n",
+        (zone_summary or "- нет данных") + "\n",
+        "\n",
+        "Полное описание фактической зоны (retrieval_text):\n",
+        (retrieval_text or "- нет данных") + "\n",
+        "\n",
+        'Верни строго JSON вида: {"verdict":"...","matched_vri_name":"...","matched_vri_code":"...","reason":"..."}\n',
+    ]
+    return "".join(lines)
 
 
-def attach_not_allowed_llm_rerank_column(df: pd.DataFrame, cadastral_vri_col: str, context: Any=None) -> pd.DataFrame:
+def attach_not_allowed_llm_rerank_column(
+    df: pd.DataFrame, cadastral_vri_col: str, context: Any = None
+) -> pd.DataFrame:
     """Rerank cached global classifier candidates for not_allowed rows in a separate post-processing step.
 
     LLM calls for unique VRI texts are dispatched concurrently via ThreadPoolExecutor
@@ -1054,12 +1573,12 @@ def attach_not_allowed_llm_rerank_column(df: pd.DataFrame, cadastral_vri_col: st
     n_workers = max(1, int(os.getenv("PIPELINE_LLM_WORKERS", "4")))
 
     work_df = df.copy()
-    if 'PZZ_NOT_ALLOWED_TOP5_CANDIDATES' not in work_df.columns:
-        work_df['PZZ_NOT_ALLOWED_TOP5_CANDIDATES'] = pd.NA
-    mask = (work_df['PZZ_VRI_VERDICT'].map(normalize_text) == 'not_allowed')
+    if "PZZ_NOT_ALLOWED_TOP5_CANDIDATES" not in work_df.columns:
+        work_df["PZZ_NOT_ALLOWED_TOP5_CANDIDATES"] = pd.NA
+    mask = work_df["PZZ_VRI_VERDICT"].map(normalize_text) == "not_allowed"
     mask_series = pd.Series(mask, index=work_df.index)
     if not bool(mask_series.any()):
-        logger.info('No not_allowed rows for post-pipeline LLM rerank.')
+        logger.info("No not_allowed rows for post-pipeline LLM rerank.")
         return work_df
 
     unique_queries: dict[str, dict[str, Any]] = {}
@@ -1070,23 +1589,36 @@ def attach_not_allowed_llm_rerank_column(df: pd.DataFrame, cadastral_vri_col: st
         if not query_key:
             continue
         if query_key not in unique_queries:
-            unique_queries[query_key] = {'query_text': query_text, 'indexes': []}
-        unique_queries[query_key]['indexes'].append(idx)
+            unique_queries[query_key] = {"query_text": query_text, "indexes": []}
+        unique_queries[query_key]["indexes"].append(idx)
 
-    logger.info('Post-pipeline not_allowed LLM rerank | rows=%s | unique queries=%s | workers=%s',
-                int(mask_series.astype(int).sum()), len(unique_queries), n_workers)
+    logger.info(
+        "Post-pipeline not_allowed LLM rerank | rows=%s | unique queries=%s | workers=%s",
+        int(mask_series.astype(int).sum()),
+        len(unique_queries),
+        n_workers,
+    )
 
-    query_vector_cache, recall_candidates_cache, fast_rerank_cache, llm_rerank_cache = _cache_maps(context)
+    query_vector_cache, recall_candidates_cache, fast_rerank_cache, llm_rerank_cache = (
+        _cache_maps(context)
+    )
     _write_lock = threading.Lock()
 
-    def _rerank_one(query_key: str, query_text: Any) -> tuple[str, list[dict[str, Any]]]:
+    def _rerank_one(
+        query_key: str, query_text: Any
+    ) -> tuple[str, list[dict[str, Any]]]:
         """Compute fast+LLM candidates for a single unique VRI text."""
         # Fast path: already cached from the main classification loop
         cached = llm_rerank_cache.get(query_key)
         if cached is not None:
-            return query_key, enforce_classifier_candidate_policies(
-                query_text, cached, context,
-            )[:NOT_ALLOWED_CANDIDATES_TOP_N]
+            return (
+                query_key,
+                enforce_classifier_candidate_policies(
+                    query_text,
+                    cached,
+                    context,
+                )[:NOT_ALLOWED_CANDIDATES_TOP_N],
+            )
 
         recall_candidates = recall_candidates_cache.get(query_key)
         if recall_candidates is None:
@@ -1094,7 +1626,9 @@ def attach_not_allowed_llm_rerank_column(df: pd.DataFrame, cadastral_vri_col: st
                 vri_text=query_text,
                 actual_zone_code=None,
                 query_vector=query_vector_cache.get(query_key),
-                top_n=max(NOT_ALLOWED_RECALL_CACHE_TOP_N, NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N),
+                top_n=max(
+                    NOT_ALLOWED_RECALL_CACHE_TOP_N, NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N
+                ),
                 min_similarity=NOT_ALLOWED_CANDIDATES_MIN_SIMILARITY,
                 context=context,
             )
@@ -1105,13 +1639,19 @@ def attach_not_allowed_llm_rerank_column(df: pd.DataFrame, cadastral_vri_col: st
                 vri_text=query_text, candidates=recall_candidates or []
             )
             fast_candidates = enforce_classifier_candidate_policies(
-                query_text, fast_candidates, context,
+                query_text,
+                fast_candidates,
+                context,
             )
             with _write_lock:
-                fast_rerank_cache.setdefault(query_key, [dict(i) for i in fast_candidates])
+                fast_rerank_cache.setdefault(
+                    query_key, [dict(i) for i in fast_candidates]
+                )
             fast_candidates = fast_rerank_cache[query_key]
 
-        llm_input_candidates = (fast_candidates or [])[:NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N]
+        llm_input_candidates = (fast_candidates or [])[
+            :NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N
+        ]
 
         if not should_run_not_allowed_llm_rerank(query_text, llm_input_candidates):
             result = llm_input_candidates[:NOT_ALLOWED_CANDIDATES_TOP_N]
@@ -1121,11 +1661,17 @@ def attach_not_allowed_llm_rerank_column(df: pd.DataFrame, cadastral_vri_col: st
                     vri_text=query_text, candidates=llm_input_candidates
                 )
             except Exception as exc:
-                logger.warning("Not-allowed LLM rerank failed for '%s': %s", normalize_text(query_text), exc)
+                logger.warning(
+                    "Not-allowed LLM rerank failed for '%s': %s",
+                    normalize_text(query_text),
+                    exc,
+                )
                 result = llm_input_candidates[:NOT_ALLOWED_CANDIDATES_TOP_N]
 
         result = enforce_classifier_candidate_policies(
-            query_text, result + list(fast_candidates or []), context,
+            query_text,
+            result + list(fast_candidates or []),
+            context,
         )[:NOT_ALLOWED_CANDIDATES_TOP_N]
         with _write_lock:
             llm_rerank_cache.setdefault(query_key, [dict(i) for i in result])
@@ -1136,13 +1682,15 @@ def attach_not_allowed_llm_rerank_column(df: pd.DataFrame, cadastral_vri_col: st
     query_items = list(unique_queries.items())
     with ThreadPoolExecutor(max_workers=n_workers) as pool:
         future_map = {
-            pool.submit(_rerank_one, qk, payload['query_text']): qk
+            pool.submit(_rerank_one, qk, payload["query_text"]): qk
             for qk, payload in query_items
         }
-        for future in tqdm(_as_completed(future_map),
-                           total=len(future_map),
-                           desc='Not-allowed LLM rerank',
-                           **progress_kwargs(leave=False)):
+        for future in tqdm(
+            _as_completed(future_map),
+            total=len(future_map),
+            desc="Not-allowed LLM rerank",
+            **progress_kwargs(leave=False),
+        ):
             qk = future_map[future]
             try:
                 _, final_candidates = future.result()
@@ -1155,13 +1703,19 @@ def attach_not_allowed_llm_rerank_column(df: pd.DataFrame, cadastral_vri_col: st
     for query_key, payload in query_items:
         final_candidates = results.get(query_key, [])
         final_candidates = promote_generic_residential_first(
-            vri_text=payload['query_text'], candidates=final_candidates, context=context,
+            vri_text=payload["query_text"],
+            candidates=final_candidates,
+            context=context,
         )
         final_candidates = enforce_classifier_candidate_policies(
-            payload['query_text'], final_candidates, context,
+            payload["query_text"],
+            final_candidates,
+            context,
         )
-        serialized = serialize_not_allowed_same_zone_candidates(final_candidates[:NOT_ALLOWED_CANDIDATES_TOP_N])
-        for idx in payload['indexes']:
-            work_df.at[idx, 'PZZ_NOT_ALLOWED_TOP5_CANDIDATES'] = serialized
+        serialized = serialize_not_allowed_same_zone_candidates(
+            final_candidates[:NOT_ALLOWED_CANDIDATES_TOP_N]
+        )
+        for idx in payload["indexes"]:
+            work_df.at[idx, "PZZ_NOT_ALLOWED_TOP5_CANDIDATES"] = serialized
 
     return work_df

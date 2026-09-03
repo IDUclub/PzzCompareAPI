@@ -42,6 +42,7 @@ from .rerank_layer import (
     build_zone_section_code_cache,
     build_not_allowed_embed_query_text,
     build_not_allowed_same_zone_candidates,
+    classifier_requires_manual_review,
     enforce_classifier_candidate_policies,
     fast_rerank_not_allowed_candidates,
     get_not_allowed_query_key,
@@ -61,7 +62,10 @@ from .text_utils import (
     sanitize_zone_catalog,
     status_to_russian_label,
 )
-from .profiled_fast_match_layer import should_use_deeper_llm_reasoning, build_rosreestr_classifier_children_map
+from .profiled_fast_match_layer import (
+    should_use_deeper_llm_reasoning,
+    build_rosreestr_classifier_children_map,
+)
 from .clients import llm_client
 from .runtime_context import PipelineRuntimeContext
 
@@ -76,17 +80,29 @@ def _log_stage(stage: str, status: str, **extra: Any) -> None:
     logger.info("PIPELINE_STAGE | %s", details)
 
 
-def _init_runtime_context(zone_templates: list[dict[str, Any]], rosreestr_classifier: Any) -> PipelineRuntimeContext:
+def _init_runtime_context(
+    zone_templates: list[dict[str, Any]], rosreestr_classifier: Any
+) -> PipelineRuntimeContext:
     """Initialize global notebook-era runtime objects used across business layers."""
     classifier_by_code, _ = build_rosreestr_classifier_maps(rosreestr_classifier)
-    sanitized_templates, _ = sanitize_zone_catalog(zone_templates, classifier_by_code=classifier_by_code)
+    sanitized_templates, _ = sanitize_zone_catalog(
+        zone_templates, classifier_by_code=classifier_by_code
+    )
 
     pzz_ref_df, pzz_vri_items_df = flatten_zone_catalog(sanitized_templates)
     pzz_vri_items_df = pzz_vri_items_df.copy()
-    pzz_vri_items_df["catalog_vri_name_match"] = pzz_vri_items_df["catalog_vri_name_norm"].map(normalize_text)
-    pzz_vri_items_df["catalog_vri_description_match"] = pzz_vri_items_df["catalog_vri_description"].map(normalize_text)
+    pzz_vri_items_df["catalog_vri_name_match"] = pzz_vri_items_df[
+        "catalog_vri_name_norm"
+    ].map(normalize_text)
+    pzz_vri_items_df["catalog_vri_description_match"] = pzz_vri_items_df[
+        "catalog_vri_description"
+    ].map(normalize_text)
 
-    zone_lookup = {normalize_text(item.get("zone_code")): item for item in sanitized_templates if normalize_text(item.get("zone_code"))}
+    zone_lookup = {
+        normalize_text(item.get("zone_code")): item
+        for item in sanitized_templates
+        if normalize_text(item.get("zone_code"))
+    }
     base_zone_lookup: dict[str, list[dict[str, Any]]] = {}
     for item in sanitized_templates:
         base_code = normalize_text(item.get("base_zone_code"))
@@ -94,14 +110,18 @@ def _init_runtime_context(zone_templates: list[dict[str, Any]], rosreestr_classi
             base_zone_lookup.setdefault(base_code, []).append(item)
 
     zone_items_lookup: dict[str, pd.DataFrame] = {
-        zone_code: pzz_vri_items_df.loc[pzz_vri_items_df["zone_code"] == zone_code].reset_index(drop=True)
+        zone_code: pzz_vri_items_df.loc[
+            pzz_vri_items_df["zone_code"] == zone_code
+        ].reset_index(drop=True)
         for zone_code in pzz_ref_df["zone_code"].dropna().unique().tolist()
     }
     zone_fast_text_lookup = {
         normalize_text(item.get("zone_code")): {
             "zone_name_match": normalize_text(item.get("zone_name")),
             "zone_summary_match": normalize_text(item.get("zone_summary")),
-            "retrieval_text_short_match": normalize_text(item.get("retrieval_text_short")),
+            "retrieval_text_short_match": normalize_text(
+                item.get("retrieval_text_short")
+            ),
         }
         for item in sanitized_templates
     }
@@ -111,7 +131,9 @@ def _init_runtime_context(zone_templates: list[dict[str, Any]], rosreestr_classi
         zone_matrix = None
     else:
         zone_vectorizer = TfidfVectorizer(min_df=1)
-        zone_matrix = zone_vectorizer.fit_transform(pzz_ref_df["zone_search_text"].fillna("").tolist())
+        zone_matrix = zone_vectorizer.fit_transform(
+            pzz_ref_df["zone_search_text"].fillna("").tolist()
+        )
 
     zone_item_embeddings: dict[str, np.ndarray] = {}
     if _ENABLE_EMBED_FAST_MATCH and _ENABLE_ZONE_ITEM_EMBED_MATCH:
@@ -131,7 +153,9 @@ def _init_runtime_context(zone_templates: list[dict[str, Any]], rosreestr_classi
             batch_size=64,
         )
 
-    classifier_children_map = build_rosreestr_classifier_children_map(classifier_by_code)
+    classifier_children_map = build_rosreestr_classifier_children_map(
+        classifier_by_code
+    )
     zone_section_cache = build_zone_section_code_cache(
         zone_items_lookup_map=zone_items_lookup,
         classifier_children_map=classifier_children_map,
@@ -171,7 +195,11 @@ def _prefill_query_vectors(
     if not unique_texts or context.vectorizer is None:
         return
 
-    missing = [t for t in unique_texts if get_not_allowed_query_key(t) not in context.not_allowed_query_vector_cache]
+    missing = [
+        t
+        for t in unique_texts
+        if get_not_allowed_query_key(t) not in context.not_allowed_query_vector_cache
+    ]
     if not missing:
         return
 
@@ -187,7 +215,9 @@ def _prefill_query_vectors(
     if not embeddable:
         return
 
-    vecs = context.vectorizer.embed_many([query for _, query in embeddable], batch_size=64)
+    vecs = context.vectorizer.embed_many(
+        [query for _, query in embeddable], batch_size=64
+    )
     for (text, _), vec in zip(embeddable, vecs):
         context.not_allowed_query_vector_cache[get_not_allowed_query_key(text)] = vec
 
@@ -214,7 +244,9 @@ def run_pipeline(
     """Service-safe orchestrator that mirrors spatial-first notebook logic."""
     _ = (pzz_codes_path, base_url, embed_model, generate_model, top_k, batch_size)
     total_started = perf_counter()
-    _log_stage("pipeline", "start", include_pzz_check=include_pzz_check, batch_size=batch_size)
+    _log_stage(
+        "pipeline", "start", include_pzz_check=include_pzz_check, batch_size=batch_size
+    )
 
     references = ReferenceDataProvider().resolve_paths(
         pzz_zone_labels_override_path=pzz_zone_vri_labels_path,
@@ -223,19 +255,46 @@ def run_pipeline(
 
     load_started = perf_counter()
     source_gdf = InputDataLoader.load_geojson_to_gdf(cadastral_geojson_path)
-    rosreestr_classifier = ReferenceDataProvider.load_json(references.vri_classifier_path)
+    rosreestr_classifier = ReferenceDataProvider.load_json(
+        references.vri_classifier_path
+    )
 
     if include_pzz_check:
         pzz_zones_gdf = InputDataLoader.load_geojson_to_gdf(pzz_zones_geojson_path)
-        zone_templates = ReferenceDataProvider.load_json(references.pzz_zone_labels_path)
-        _log_stage("load_inputs", "finished", duration_ms=int((perf_counter() - load_started) * 1000), source_rows=len(source_gdf), pzz_rows=len(pzz_zones_gdf), zone_templates=len(zone_templates))
+        zone_templates = ReferenceDataProvider.load_json(
+            references.pzz_zone_labels_path
+        )
+        _log_stage(
+            "load_inputs",
+            "finished",
+            duration_ms=int((perf_counter() - load_started) * 1000),
+            source_rows=len(source_gdf),
+            pzz_rows=len(pzz_zones_gdf),
+            zone_templates=len(zone_templates),
+        )
     else:
         zone_templates = []  # not needed for classification-only mode
-        _log_stage("load_inputs", "finished", duration_ms=int((perf_counter() - load_started) * 1000), source_rows=len(source_gdf), pzz_rows=0, zone_templates=0)
+        _log_stage(
+            "load_inputs",
+            "finished",
+            duration_ms=int((perf_counter() - load_started) * 1000),
+            source_rows=len(source_gdf),
+            pzz_rows=0,
+            zone_templates=0,
+        )
 
     context_started = perf_counter()
-    context = _init_runtime_context(zone_templates=zone_templates, rosreestr_classifier=rosreestr_classifier)
-    _log_stage("init_runtime_context", "finished", duration_ms=int((perf_counter() - context_started) * 1000), zone_lookup=len(context.zone_lookup), zone_embeddings=len(context.zone_item_embeddings), classifier_embed_rows=len(context.classifier_embed_items_df))
+    context = _init_runtime_context(
+        zone_templates=zone_templates, rosreestr_classifier=rosreestr_classifier
+    )
+    _log_stage(
+        "init_runtime_context",
+        "finished",
+        duration_ms=int((perf_counter() - context_started) * 1000),
+        zone_lookup=len(context.zone_lookup),
+        zone_embeddings=len(context.zone_item_embeddings),
+        classifier_embed_rows=len(context.classifier_embed_items_df),
+    )
 
     if include_pzz_check:
         spatial_started = perf_counter()
@@ -246,7 +305,12 @@ def run_pipeline(
             pzz_zone_code_col=pzz_zone_code_col,
             pzz_zone_name_col=pzz_zone_name_col,
         )
-        _log_stage("spatial_join", "finished", duration_ms=int((perf_counter() - spatial_started) * 1000), rows=len(source_with_spatial_gdf))
+        _log_stage(
+            "spatial_join",
+            "finished",
+            duration_ms=int((perf_counter() - spatial_started) * 1000),
+            rows=len(source_with_spatial_gdf),
+        )
     else:
         source_with_spatial_gdf = source_gdf.copy()
         source_with_spatial_gdf["__comparison_key__"] = (
@@ -255,9 +319,9 @@ def run_pipeline(
         source_with_spatial_gdf["PZZ_ACTUAL_CODE"] = ""
         _log_stage("spatial_join", "skipped", reason="include_pzz_check=False")
 
-    unique_df = source_with_spatial_gdf[["__comparison_key__", cadastral_vri_col, "PZZ_ACTUAL_CODE"]].drop_duplicates(
-        subset=["__comparison_key__"]
-    )
+    unique_df = source_with_spatial_gdf[
+        ["__comparison_key__", cadastral_vri_col, "PZZ_ACTUAL_CODE"]
+    ].drop_duplicates(subset=["__comparison_key__"])
 
     embed_prefill_started = perf_counter()
     unique_vri_texts = [
@@ -266,9 +330,12 @@ def run_pipeline(
         if normalize_text(t)
     ]
     _prefill_query_vectors(unique_vri_texts, context)
-    _log_stage("embed_prefill", "finished",
-               duration_ms=int((perf_counter() - embed_prefill_started) * 1000),
-               unique_texts=len(unique_vri_texts))
+    _log_stage(
+        "embed_prefill",
+        "finished",
+        duration_ms=int((perf_counter() - embed_prefill_started) * 1000),
+        unique_texts=len(unique_vri_texts),
+    )
 
     llm_zone_check_cache: dict[str, dict[str, Any]] = {}
     llm_rerank_cache: dict[str, list[dict[str, Any]]] = {}
@@ -294,18 +361,34 @@ def run_pipeline(
         if not include_pzz_check:
             query_norm = normalize_text(vri_text).lower()
             exact_candidates: list[dict[str, Any]] = []
-            if query_norm and context.classifier_embed_items_df is not None and (not context.classifier_embed_items_df.empty):
+            if (
+                query_norm
+                and context.classifier_embed_items_df is not None
+                and (not context.classifier_embed_items_df.empty)
+            ):
                 df = context.classifier_embed_items_df
-                name_norm = df["classifier_name"].fillna("").map(lambda x: normalize_text(x).lower())
-                plain_norm = df["classifier_name_plain"].fillna("").map(lambda x: normalize_text(x).lower())
+                name_norm = (
+                    df["classifier_name"]
+                    .fillna("")
+                    .map(lambda x: normalize_text(x).lower())
+                )
+                plain_norm = (
+                    df["classifier_name_plain"]
+                    .fillna("")
+                    .map(lambda x: normalize_text(x).lower())
+                )
                 mask = (name_norm == query_norm) | (plain_norm == query_norm)
                 for rec in df[mask].head(5).to_dict("records"):
-                    exact_candidates.append({
-                        "score": 1.0,
-                        "code": normalize_text(rec.get("classifier_code")),
-                        "name": normalize_text(rec.get("classifier_name")),
-                        "description": normalize_text(rec.get("classifier_description")),
-                    })
+                    exact_candidates.append(
+                        {
+                            "score": 1.0,
+                            "code": normalize_text(rec.get("classifier_code")),
+                            "name": normalize_text(rec.get("classifier_name")),
+                            "description": normalize_text(
+                                rec.get("classifier_description")
+                            ),
+                        }
+                    )
 
             recall_candidates = build_not_allowed_same_zone_candidates(
                 vri_text=vri_text,
@@ -319,7 +402,9 @@ def run_pipeline(
                 candidates=(exact_candidates + (recall_candidates or [])),
             )
             ranked_candidates = enforce_classifier_candidate_policies(
-                vri_text=vri_text, candidates=ranked_candidates, context=context,
+                vri_text=vri_text,
+                candidates=ranked_candidates,
+                context=context,
             )
             llm_input = ranked_candidates[:NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N]
             final_candidates = ranked_candidates[:5]
@@ -328,14 +413,18 @@ def run_pipeline(
             # ставим обобщенный ВРИ 2.0 «Жилая застройка» в Топ-1 и не тратим LLM-реранк.
             residential_generic_case = is_residential_unspecified_vri(vri_text)
 
-            if not residential_generic_case and should_run_not_allowed_llm_rerank(vri_text, llm_input):
+            if not residential_generic_case and should_run_not_allowed_llm_rerank(
+                vri_text, llm_input
+            ):
                 rerank_key = normalize_text(vri_text).lower()
                 cached = llm_rerank_cache.get(rerank_key)
                 if cached is not None:
                     final_candidates = cached
                 else:
                     try:
-                        result = run_not_allowed_rerank_with_llm(vri_text=vri_text, candidates=llm_input)[:5]
+                        result = run_not_allowed_rerank_with_llm(
+                            vri_text=vri_text, candidates=llm_input
+                        )[:5]
                     except Exception:
                         result = ranked_candidates[:5]
                     with _llm_cache_lock:
@@ -345,7 +434,9 @@ def run_pipeline(
 
             if residential_generic_case:
                 final_candidates = promote_generic_residential_first(
-                    vri_text=vri_text, candidates=ranked_candidates, context=context,
+                    vri_text=vri_text,
+                    candidates=ranked_candidates,
+                    context=context,
                 )[:5]
             final_candidates = enforce_classifier_candidate_policies(
                 vri_text=vri_text,
@@ -354,12 +445,27 @@ def run_pipeline(
             )[:5]
 
             payload["CHECK_SCOPE"] = "classifier_only"
-            payload["MATCH_METHOD"] = "classifier_top5_llm_or_fast"
-            payload["PZZ_VRI_VERDICT"] = "classifier_only"
-            payload["Статус"] = "Только кандидаты классификатора"
-            payload["PZZ_REASON"] = "Только классификация ВРИ (без сопоставления с территориальными зонами): кандидаты из классификатора отобраны string-match + embed, при необходимости LLM-rerank."
-            payload["PZZ_NOT_ALLOWED_TOP1_CANDIDATE"] = serialize_not_allowed_same_zone_candidates(final_candidates[:1])
-            payload["PZZ_NOT_ALLOWED_TOP5_CANDIDATES"] = serialize_not_allowed_same_zone_candidates(final_candidates)
+            if classifier_requires_manual_review(vri_text):
+                payload["MATCH_METHOD"] = "classifier_manual_review"
+                payload["PZZ_VRI_VERDICT"] = "unclear"
+                payload["Статус"] = "Требуется ручная проверка"
+                payload["PZZ_REASON"] = (
+                    "Исходная формулировка не позволяет обоснованно выбрать один вид "
+                    "разрешенного использования без дополнительного контекста."
+                )
+            else:
+                payload["MATCH_METHOD"] = "classifier_top5_llm_or_fast"
+                payload["PZZ_VRI_VERDICT"] = "classifier_only"
+                payload["Статус"] = "Только кандидаты классификатора"
+                payload["PZZ_REASON"] = (
+                    "Только классификация ВРИ (без сопоставления с территориальными зонами): кандидаты из классификатора отобраны string-match + embed, при необходимости LLM-rerank."
+                )
+            payload["PZZ_NOT_ALLOWED_TOP1_CANDIDATE"] = (
+                serialize_not_allowed_same_zone_candidates(final_candidates[:1])
+            )
+            payload["PZZ_NOT_ALLOWED_TOP5_CANDIDATES"] = (
+                serialize_not_allowed_same_zone_candidates(final_candidates)
+            )
             return payload
 
         if not actual_zone_code:
@@ -374,57 +480,97 @@ def run_pipeline(
             payload["PZZ_VRI_VERDICT"] = "no_zone_metadata"
             payload["Статус"] = status_to_russian_label("no_zone_metadata")
             payload["MATCH_METHOD"] = "no_zone_metadata"
-            payload["PZZ_REASON"] = "Для фактической зоны не найдено описание в шаблоне ПЗЗ."
+            payload["PZZ_REASON"] = (
+                "Для фактической зоны не найдено описание в шаблоне ПЗЗ."
+            )
             return payload
 
         residential_generic = resolve_residential_unspecified_in_zone(
-            vri_text=vri_text, actual_zone_code=actual_zone_code, context=context,
+            vri_text=vri_text,
+            actual_zone_code=actual_zone_code,
+            context=context,
         )
         if residential_generic is not None:
             verdict = normalize_text(residential_generic.get("verdict")) or "unclear"
             payload["PZZ_VRI_VERDICT"] = verdict
             payload["Статус"] = status_to_russian_label(verdict)
-            payload["MATCH_METHOD"] = residential_generic.get("match_method") or "residential_unspecified_generic"
-            payload["MATCHED_VRI_NAME"] = normalize_text(residential_generic.get("matched_vri_name")) or pd.NA
-            payload["MATCHED_VRI_CODE"] = normalize_text(residential_generic.get("matched_vri_code")) or pd.NA
-            payload["PZZ_REASON"] = normalize_text(residential_generic.get("reason")) or payload["PZZ_REASON"]
+            payload["MATCH_METHOD"] = (
+                residential_generic.get("match_method")
+                or "residential_unspecified_generic"
+            )
+            payload["MATCHED_VRI_NAME"] = (
+                normalize_text(residential_generic.get("matched_vri_name")) or pd.NA
+            )
+            payload["MATCHED_VRI_CODE"] = (
+                normalize_text(residential_generic.get("matched_vri_code")) or pd.NA
+            )
+            payload["PZZ_REASON"] = (
+                normalize_text(residential_generic.get("reason"))
+                or payload["PZZ_REASON"]
+            )
             return payload
 
-        exact_matches = find_exact_zone_candidates(vri_text=vri_text, zone_code=actual_zone_code, context=context)
+        exact_matches = find_exact_zone_candidates(
+            vri_text=vri_text, zone_code=actual_zone_code, context=context
+        )
         best_exact = choose_best_exact_match(exact_matches)
         if best_exact is not None:
-            verdict = f"allowed_{normalize_text(best_exact.get('section_name'))}" if normalize_text(best_exact.get("section_name")) else "allowed_main"
+            verdict = (
+                f"allowed_{normalize_text(best_exact.get('section_name'))}"
+                if normalize_text(best_exact.get("section_name"))
+                else "allowed_main"
+            )
             payload["PZZ_VRI_VERDICT"] = verdict
             payload["Статус"] = status_to_russian_label(verdict)
             payload["MATCH_METHOD"] = "actual_zone_exact"
             payload["MATCHED_VRI_NAME"] = best_exact.get("matched_vri_name") or pd.NA
             payload["MATCHED_VRI_CODE"] = best_exact.get("matched_vri_code") or pd.NA
-            payload["PZZ_REASON"] = "Точное / почти точное совпадение в фактической зоне."
+            payload["PZZ_REASON"] = (
+                "Точное / почти точное совпадение в фактической зоне."
+            )
             return payload
 
-        string_hit = fast_string_match_in_zone(vri_text=vri_text, actual_zone_code=actual_zone_code, context=context)
+        string_hit = fast_string_match_in_zone(
+            vri_text=vri_text, actual_zone_code=actual_zone_code, context=context
+        )
         if string_hit and string_hit.get("use_direct"):
             verdict = normalize_text(string_hit.get("verdict")) or "unclear"
             payload["PZZ_VRI_VERDICT"] = verdict
             payload["Статус"] = status_to_russian_label(verdict)
             payload["MATCH_METHOD"] = "actual_zone_fast_string"
-            payload["MATCHED_VRI_NAME"] = normalize_text(string_hit.get("matched_vri_name")) or pd.NA
-            payload["MATCHED_VRI_CODE"] = normalize_text(string_hit.get("matched_vri_code")) or pd.NA
-            payload["PZZ_REASON"] = normalize_text(string_hit.get("reason")) or payload["PZZ_REASON"]
+            payload["MATCHED_VRI_NAME"] = (
+                normalize_text(string_hit.get("matched_vri_name")) or pd.NA
+            )
+            payload["MATCHED_VRI_CODE"] = (
+                normalize_text(string_hit.get("matched_vri_code")) or pd.NA
+            )
+            payload["PZZ_REASON"] = (
+                normalize_text(string_hit.get("reason")) or payload["PZZ_REASON"]
+            )
             return payload
 
-        embed_hit = fast_embed_match_in_zone(vri_text=vri_text, actual_zone_code=actual_zone_code, context=context)
+        embed_hit = fast_embed_match_in_zone(
+            vri_text=vri_text, actual_zone_code=actual_zone_code, context=context
+        )
         if embed_hit and embed_hit.get("use_direct"):
             verdict = normalize_text(embed_hit.get("verdict")) or "unclear"
             payload["PZZ_VRI_VERDICT"] = verdict
             payload["Статус"] = status_to_russian_label(verdict)
             payload["MATCH_METHOD"] = "actual_zone_fast_embed"
-            payload["MATCHED_VRI_NAME"] = normalize_text(embed_hit.get("matched_vri_name")) or pd.NA
-            payload["MATCHED_VRI_CODE"] = normalize_text(embed_hit.get("matched_vri_code")) or pd.NA
-            payload["PZZ_REASON"] = normalize_text(embed_hit.get("reason")) or payload["PZZ_REASON"]
+            payload["MATCHED_VRI_NAME"] = (
+                normalize_text(embed_hit.get("matched_vri_name")) or pd.NA
+            )
+            payload["MATCHED_VRI_CODE"] = (
+                normalize_text(embed_hit.get("matched_vri_code")) or pd.NA
+            )
+            payload["PZZ_REASON"] = (
+                normalize_text(embed_hit.get("reason")) or payload["PZZ_REASON"]
+            )
             return payload
 
-        llm_cache_key = build_actual_zone_key(vri_text=vri_text, actual_code=actual_zone_code)
+        llm_cache_key = build_actual_zone_key(
+            vri_text=vri_text, actual_code=actual_zone_code
+        )
         llm_decision = llm_zone_check_cache.get(llm_cache_key)
 
         if llm_decision is None and _ENABLE_LLM:
@@ -441,7 +587,9 @@ def run_pipeline(
             try:
                 llm_response = run_zone_check_with_llm(
                     prompt=llm_prompt,
-                    think_override=should_use_deeper_llm_reasoning(vri_text=vri_text, zone_ref=zone_ref),
+                    think_override=should_use_deeper_llm_reasoning(
+                        vri_text=vri_text, zone_ref=zone_ref
+                    ),
                     context=context,
                 )
                 computed = {
@@ -470,12 +618,21 @@ def run_pipeline(
             llm_decision = llm_zone_check_cache[llm_cache_key]
 
         if llm_decision is not None:
-            payload["PZZ_VRI_VERDICT"] = normalize_text(llm_decision.get("verdict")) or "unclear"
+            payload["PZZ_VRI_VERDICT"] = (
+                normalize_text(llm_decision.get("verdict")) or "unclear"
+            )
             payload["Статус"] = status_to_russian_label(payload["PZZ_VRI_VERDICT"])
             payload["MATCH_METHOD"] = "actual_zone_llm"
-            payload["MATCHED_VRI_NAME"] = normalize_text(llm_decision.get("matched_vri_name")) or pd.NA
-            payload["MATCHED_VRI_CODE"] = normalize_text(llm_decision.get("matched_vri_code")) or pd.NA
-            payload["PZZ_REASON"] = normalize_text(llm_decision.get("reason")) or "Решение принято на основе LLM-проверки фактической зоны."
+            payload["MATCHED_VRI_NAME"] = (
+                normalize_text(llm_decision.get("matched_vri_name")) or pd.NA
+            )
+            payload["MATCHED_VRI_CODE"] = (
+                normalize_text(llm_decision.get("matched_vri_code")) or pd.NA
+            )
+            payload["PZZ_REASON"] = (
+                normalize_text(llm_decision.get("reason"))
+                or "Решение принято на основе LLM-проверки фактической зоны."
+            )
             return payload
 
         if not _ENABLE_LLM and not _ENABLE_ZONE_ITEM_EMBED_MATCH:
@@ -491,24 +648,33 @@ def run_pipeline(
         payload["PZZ_VRI_VERDICT"] = "not_allowed"
         payload["Статус"] = status_to_russian_label("not_allowed")
         payload["MATCH_METHOD"] = "actual_zone_not_allowed"
-        payload["PZZ_REASON"] = "Совпадения с разрешенными ВРИ фактической зоны не найдено."
+        payload["PZZ_REASON"] = (
+            "Совпадения с разрешенными ВРИ фактической зоны не найдено."
+        )
         return payload
 
-    _log_stage("classification_loop", "start",
-               unique_rows=len(unique_df),
-               llm_workers=_PIPELINE_LLM_WORKERS)
+    _log_stage(
+        "classification_loop",
+        "start",
+        unique_rows=len(unique_df),
+        llm_workers=_PIPELINE_LLM_WORKERS,
+    )
 
     row_list = [row for _, row in unique_df.iterrows()]
     rows: list[dict[str, Any]] = [None] * len(row_list)  # type: ignore[list-item]
 
     with ThreadPoolExecutor(max_workers=_PIPELINE_LLM_WORKERS) as pool:
-        future_to_idx = {pool.submit(_process_row, row): idx for idx, row in enumerate(row_list)}
+        future_to_idx = {
+            pool.submit(_process_row, row): idx for idx, row in enumerate(row_list)
+        }
         for future in as_completed(future_to_idx):
             idx = future_to_idx[future]
             try:
                 rows[idx] = future.result()
             except Exception as exc:
-                logger.error("Classification row %d failed: %s", idx, exc, exc_info=True)
+                logger.error(
+                    "Classification row %d failed: %s", idx, exc, exc_info=True
+                )
                 row = row_list[idx]
                 rows[idx] = {
                     "__comparison_key__": row.get("__comparison_key__"),
@@ -526,10 +692,13 @@ def run_pipeline(
                     "PZZ_NOT_ALLOWED_TOP5_CANDIDATES": pd.NA,
                 }
 
-    _log_stage("classification_loop", "finished",
-               rows=len(rows),
-               llm_cache_size=len(llm_zone_check_cache),
-               rerank_cache_size=len(llm_rerank_cache))
+    _log_stage(
+        "classification_loop",
+        "finished",
+        rows=len(rows),
+        llm_cache_size=len(llm_zone_check_cache),
+        rerank_cache_size=len(llm_rerank_cache),
+    )
 
     rerank_started = perf_counter()
     classified_unique_df = pd.DataFrame(rows)
@@ -538,7 +707,12 @@ def run_pipeline(
         cadastral_vri_col=cadastral_vri_col,
         context=context,
     )
-    _log_stage("postprocess_rerank", "finished", duration_ms=int((perf_counter() - rerank_started) * 1000), rows=len(classified_unique_df))
+    _log_stage(
+        "postprocess_rerank",
+        "finished",
+        duration_ms=int((perf_counter() - rerank_started) * 1000),
+        rows=len(classified_unique_df),
+    )
 
     # Explicit suffixes: the source layer is user data and can carry a column
     # named like one of ours — ЕГРН/MapInfo cadastral exports ship a "Статус"
@@ -554,7 +728,10 @@ def run_pipeline(
         suffixes=("_src", ""),
     )
     source_vri_col_after_merge = f"{cadastral_vri_col}_src"
-    if cadastral_vri_col not in classified_gdf.columns and source_vri_col_after_merge in classified_gdf.columns:
+    if (
+        cadastral_vri_col not in classified_gdf.columns
+        and source_vri_col_after_merge in classified_gdf.columns
+    ):
         classified_gdf[cadastral_vri_col] = classified_gdf[source_vri_col_after_merge]
 
     classified_gdf = ensure_classification_columns(classified_gdf)
@@ -593,10 +770,17 @@ def run_pipeline(
 
     output_table = pd.DataFrame(output_gdf.drop(columns="geometry", errors="ignore"))
     output_table.to_excel(unique_results_xlsx_path, index=False)
-    output_table.to_json(unique_results_json_path, orient="records", force_ascii=False, indent=2)
-    _log_stage("write_outputs", "finished",
-               duration_ms=int((perf_counter() - write_started) * 1000),
-               output_geojson_path=Path(output_geojson_path).name,
-               unique_results_xlsx_path=Path(unique_results_xlsx_path).name,
-               unique_results_json_path=Path(unique_results_json_path).name)
-    _log_stage("pipeline", "finished", duration_ms=int((perf_counter() - total_started) * 1000))
+    output_table.to_json(
+        unique_results_json_path, orient="records", force_ascii=False, indent=2
+    )
+    _log_stage(
+        "write_outputs",
+        "finished",
+        duration_ms=int((perf_counter() - write_started) * 1000),
+        output_geojson_path=Path(output_geojson_path).name,
+        unique_results_xlsx_path=Path(unique_results_xlsx_path).name,
+        unique_results_json_path=Path(unique_results_json_path).name,
+    )
+    _log_stage(
+        "pipeline", "finished", duration_ms=int((perf_counter() - total_started) * 1000)
+    )
