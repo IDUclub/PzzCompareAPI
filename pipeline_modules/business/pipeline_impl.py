@@ -12,7 +12,11 @@ import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-from .runtime_settings import ENABLE_EMBED_FAST_MATCH as _ENABLE_EMBED_FAST_MATCH, ENABLE_LLM as _ENABLE_LLM
+from .runtime_settings import (
+    ENABLE_EMBED_FAST_MATCH as _ENABLE_EMBED_FAST_MATCH,
+    ENABLE_LLM as _ENABLE_LLM,
+    ENABLE_ZONE_ITEM_EMBED_MATCH as _ENABLE_ZONE_ITEM_EMBED_MATCH,
+)
 from .classification_layer import ensure_classification_columns
 from .clients import vectorizer
 from .data_loading import InputDataLoader, ReferenceDataProvider
@@ -109,7 +113,7 @@ def _init_runtime_context(zone_templates: list[dict[str, Any]], rosreestr_classi
         zone_matrix = zone_vectorizer.fit_transform(pzz_ref_df["zone_search_text"].fillna("").tolist())
 
     zone_item_embeddings: dict[str, np.ndarray] = {}
-    if _ENABLE_EMBED_FAST_MATCH:
+    if _ENABLE_EMBED_FAST_MATCH and _ENABLE_ZONE_ITEM_EMBED_MATCH:
         for zone_code, zone_items in zone_items_lookup.items():
             if zone_items.empty:
                 zone_item_embeddings[zone_code] = np.zeros((0, 0), dtype=np.float32)
@@ -463,6 +467,16 @@ def run_pipeline(
             payload["MATCHED_VRI_NAME"] = normalize_text(llm_decision.get("matched_vri_name")) or pd.NA
             payload["MATCHED_VRI_CODE"] = normalize_text(llm_decision.get("matched_vri_code")) or pd.NA
             payload["PZZ_REASON"] = normalize_text(llm_decision.get("reason")) or "Решение принято на основе LLM-проверки фактической зоны."
+            return payload
+
+        if not _ENABLE_LLM and not _ENABLE_ZONE_ITEM_EMBED_MATCH:
+            payload["PZZ_VRI_VERDICT"] = "unclear"
+            payload["Статус"] = status_to_russian_label("unclear")
+            payload["MATCH_METHOD"] = "actual_zone_semantic_checks_disabled"
+            payload["PZZ_REASON"] = (
+                "Точное или строковое совпадение не найдено, а семантическая "
+                "и LLM-проверки отключены. Требуется ручная проверка."
+            )
             return payload
 
         payload["PZZ_VRI_VERDICT"] = "not_allowed"

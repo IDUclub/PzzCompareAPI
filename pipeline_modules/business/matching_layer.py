@@ -185,7 +185,7 @@ def fast_string_match_in_zone(vri_text: str, actual_zone_code: Optional[str], co
 def fast_embed_match_in_zone(vri_text: str, actual_zone_code: Optional[str], query_vector: Optional[np.ndarray]=None, context: Any=None) -> Optional[dict[str, Any]]:
     """Run a fast local semantic comparison only inside the actual zone."""
     zone_code = normalize_text(actual_zone_code)
-    if not ENABLE_EMBED_FAST_MATCH or not zone_code:
+    if not ENABLE_EMBED_FAST_MATCH or not ENABLE_ZONE_ITEM_EMBED_MATCH or not zone_code:
         return None
     zone_items_lookup_map = context.zone_items_lookup if context is not None else {}
     zone_item_embeddings_map = context.zone_item_embeddings if context is not None else {}

@@ -4,6 +4,7 @@ import json
 import os
 import re
 from collections import defaultdict, Counter
+from functools import lru_cache
 from difflib import SequenceMatcher
 from typing import Any, Optional
 
@@ -48,6 +49,8 @@ TOKEN_PATTERN = re.compile('[0-9a-zа-яё]+', flags=re.IGNORECASE)
 
 _TOKEN_CANONICAL_MAP = {'ижс': 'индивидуальный'}
 
+_CANONICAL_REPLACEMENTS = [('^для\\s+', ''), ('^ведение\\s+', 'ведение '), ('\\bижс\\b', 'индивидуальное жилищное строительство'), ('\\bдля индивидуального жилищного строительства\\b', 'индивидуальное жилищное строительство'), ('\\bиндивидуальной жилой застройки\\b', 'индивидуальное жилищное строительство'), ('\\bиндивидуальной жилищной застройки\\b', 'индивидуальное жилищное строительство'), ('\\bдля размещения индивидуального жилого дома\\b', 'размещение индивидуального жилого дома'), ('\\bдля размещения жилого дома\\b', 'размещение жилого дома'), ('\\bразмещения\\b', 'размещение'), ('\\bсадоводства\\b', 'садоводство'), ('\\bведения садоводства\\b', 'садоводство'), ('\\bдля ведения садоводства\\b', 'садоводство')]
+
 _STEMMER = RussianStemmer()
 
 
@@ -70,7 +73,12 @@ def is_valid_vri_code(value: Any) -> bool:
 
 def normalize_russian_text(text: Any) -> str:
     """Normalize Russian text for matching."""
-    value = normalize_text(text).lower().replace('ё', 'е')
+    return _normalize_russian_text_cached(normalize_text(text))
+
+
+@lru_cache(maxsize=200_000)
+def _normalize_russian_text_cached(value: str) -> str:
+    value = value.lower().replace('ё', 'е')
     value = re.sub('["\\\'`«»]', ' ', value)
     value = re.sub('[\\(\\)\\[\\]\\{\\}:;,.!?]', ' ', value)
     value = re.sub('[\\\\/]', ' ', value)
@@ -78,6 +86,7 @@ def normalize_russian_text(text: Any) -> str:
     value = re.sub('\\s+', ' ', value).strip()
     return value
 
+@lru_cache(maxsize=200_000)
 def normalize_match_token(token: str) -> str:
     """Normalize one token with lemmatization when available and stemming fallback."""
     token_norm = normalize_russian_text(token)
@@ -98,24 +107,30 @@ def normalize_match_token(token: str) -> str:
 
 def normalize_match_tokens(text: Any) -> list[str]:
     """Tokenize text and normalize tokens for robust Russian matching."""
-    value = normalize_russian_text(text)
+    return list(_normalize_match_tokens_cached(normalize_russian_text(text)))
+
+
+@lru_cache(maxsize=100_000)
+def _normalize_match_tokens_cached(value: str) -> tuple[str, ...]:
     if not value:
-        return []
+        return ()
     tokens: list[str] = []
     for raw_token in TOKEN_PATTERN.findall(value):
         token = normalize_match_token(raw_token)
         if token:
             tokens.append(token)
-    return tokens
+    return tuple(tokens)
 
 def canonicalize_vri_name(value: Any) -> str:
     """Canonicalize VRI text for robust matching."""
-    text = normalize_russian_text(value)
-    replacements = [('^для\\s+', ''), ('^ведение\\s+', 'ведение '), ('\\bижс\\b', 'индивидуальное жилищное строительство'), ('\\bдля индивидуального жилищного строительства\\b', 'индивидуальное жилищное строительство'), ('\\bиндивидуальной жилой застройки\\b', 'индивидуальное жилищное строительство'), ('\\bиндивидуальной жилищной застройки\\b', 'индивидуальное жилищное строительство'), ('\\bдля размещения индивидуального жилого дома\\b', 'размещение индивидуального жилого дома'), ('\\bдля размещения жилого дома\\b', 'размещение жилого дома'), ('\\bразмещения\\b', 'размещение'), ('\\bсадоводства\\b', 'садоводство'), ('\\bведения садоводства\\b', 'садоводство'), ('\\bдля ведения садоводства\\b', 'садоводство')]
-    for pattern, replacement in replacements:
+    return _canonicalize_vri_name_cached(normalize_russian_text(value))
+
+
+@lru_cache(maxsize=100_000)
+def _canonicalize_vri_name_cached(text: str) -> str:
+    for pattern, replacement in _CANONICAL_REPLACEMENTS:
         text = re.sub(pattern, replacement, text).strip()
-    tokens = normalize_match_tokens(text)
-    return ' '.join(tokens)
+    return ' '.join(normalize_match_tokens(text))
 
 def tokenize_canonical(text: Any) -> list[str]:
     """Split canonicalized text into tokens."""

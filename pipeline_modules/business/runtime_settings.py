@@ -11,8 +11,24 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 ENABLE_EMBED_FAST_MATCH = _env_bool("ENABLE_EMBED_FAST_MATCH", True)
+# Per-zone VRI embeddings feed only ``fast_embed_match_in_zone``. Building them
+# costs one embedder call per zone up front, which on the current backends is
+# far more expensive than the LLM zone check they are meant to avoid.
+ENABLE_ZONE_ITEM_EMBED_MATCH = _env_bool("ENABLE_ZONE_ITEM_EMBED_MATCH", False)
 ENABLE_FAST_STRING_MATCH = _env_bool("ENABLE_FAST_STRING_MATCH", True)
 ENABLE_LLM = _env_bool("ENABLE_LLM", True)
+SPATIAL_MIN_POLYGON_INTERSECTION_AREA_M2 = max(
+    0.0,
+    float(os.getenv("SPATIAL_MIN_POLYGON_INTERSECTION_AREA_M2", "1.0")),
+)
+SPATIAL_MIN_LINE_INTERSECTION_LENGTH_M = max(
+    0.0,
+    float(os.getenv("SPATIAL_MIN_LINE_INTERSECTION_LENGTH_M", "0.01")),
+)
+SPATIAL_MIN_INTERSECTION_SHARE = max(
+    0.0,
+    float(os.getenv("SPATIAL_MIN_INTERSECTION_SHARE", "0.000001")),
+)
 NOT_ALLOWED_LLM_RERANK_ENABLED = _env_bool("NOT_ALLOWED_LLM_RERANK_ENABLED", True)
 NOT_ALLOWED_LLM_RERANK_THINK = os.getenv("NOT_ALLOWED_LLM_RERANK_THINK", "false").strip().lower() in {"1", "true", "yes", "on"}
 
