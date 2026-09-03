@@ -196,24 +196,24 @@ def build_not_allowed_embed_query_text(vri_text: Any) -> str:
     # Бойлерная — тепловое оборудование
     if re.search('бойлерн', canon):
         hints.extend(['котельная', 'предоставление коммунальных услуг', 'коммунальное обслуживание'])
-    # ТЭЦ — теплоэлектроцентраль
+    # ТЭЦ — электростанция, а не обычный объект коммунальной сети
     if re.search('теплоэлектроцентрал|\\bтэц\\b', canon):
-        hints.extend(['теплоснабжение', 'электроснабжение', 'коммунальное обслуживание'])
+        hints.extend(['теплоэлектроцентраль', 'тепловая электростанция', 'энергетика', 'код 6.7'])
     # Насосная как самостоятельный объект (без слова "станция")
     if re.search('\\bнасосн\\b', canon) and not re.search('станц', canon):
         hints.extend(['насосная станция', 'предоставление коммунальных услуг', 'коммунальное обслуживание'])
     # ГСК — гаражно-строительный кооператив
     if re.search('\\bгск\\b|гаражн\\s+кооператив', canon):
         hints.extend(['хранение автотранспорта гаражи', 'гаражи для личных нужд', 'гараж'])
-    # Автостоянка, многоярусная стоянка — хранение авто, НЕ автомобилестроение
+    # Автостоянка, многоярусная стоянка — парковка, НЕ ИЖС и не частный гараж
     if re.search('автостоянк|стоянк\\b|многоярусн', canon) and not re.search('автомобилестроен|производств\\s+автомобил', canon):
-        hints.extend(['хранение автотранспорта', 'парковка стоянка', 'гаражи для личных нужд'])
+        hints.extend(['стоянка транспортных средств', 'парковка легкового автотранспорта', 'код 4.9.2'])
     # Гостевой дом, гостиница, хостел
     if re.search('гостев|гостиниц|хостел|мотел', canon):
         hints.extend(['гостиничное обслуживание', 'средства размещения', 'гостиница'])
     # Рекреационные объекты
-    if re.search('рекреацион', canon):
-        hints.extend(['рекреация отдых', 'природные рекреационные территории', 'зоны отдыха'])
+    if re.search('рекреацион|рекпеацион', canon):
+        hints.extend(['отдых рекреация', 'природные рекреационные территории', 'зоны отдыха', 'код 5.0'])
     # Суд, судебное здание
     if re.search('\\bсуд\\b|городск.*суд|районн.*суд|мировой.*суд|арбитражн.*суд', canon):
         hints.extend(['общественное управление', 'судебная власть', 'административное здание'])
@@ -225,10 +225,16 @@ def build_not_allowed_embed_query_text(vri_text: Any) -> str:
         hints.extend(['улично-дорожная сеть', 'размещение автомобильных дорог'])
     # Пожарная часть / депо — безопасность, НЕ гараж
     if re.search('пожарн', canon):
-        hints.extend(['пожарная безопасность', 'обеспечение безопасности', 'пожарное депо'])
+        hints.extend(['пожарная безопасность', 'спасательные службы', 'обеспечение внутреннего правопорядка', 'код 8.3'])
     # Портовые объекты, ковш, причал
     if re.search('\\bпорт\\b|причал|ковш|жбф', canon):
         hints.extend(['водный транспорт', 'порт', 'причальные сооружения'])
+    if re.search('паромн.*(?:причал|переправ)|(?:причал|переправ).*паромн', canon):
+        hints.extend(['водный транспорт', 'код 7.3'])
+    if re.search('бассейн|\\bфок\\b|физкультурно[\\s-]+оздоровительн|крыт[а-я]*\\s+каток|каток.*крыт', canon):
+        hints.extend(['обеспечение занятий спортом в помещениях', 'код 5.1.2'])
+    if re.search('памятник|объект\\s+культурн\\s+наслед|достопримечательн', canon):
+        hints.extend(['охрана историко культурного наследия', 'исторический памятник', 'благоустройство территории', 'коды 9.3 12.0.2'])
     # Огородный участок — огородничество, НЕ ЛПХ
     if re.search('\\bогородн\\b', canon) and not re.search('огородничеств', canon):
         hints.extend(['ведение огородничества', 'огородный земельный участок'])
@@ -501,6 +507,100 @@ def promote_generic_residential_first(vri_text: Any, candidates: list[dict[str, 
     return [generic_item] + rest
 
 
+STRONG_MARKER_CODE_RULES: tuple[tuple[str, str], ...] = (
+    ('теплоэлектроцентрал|\\bтэц\\b', '6.7'),
+    ('пожарн\\s+(?:част|депо|охран|станц|гараж)|\\bмчс\\b', '8.3'),
+    ('бассейн|\\bфок\\b|физкультурно[\\s-]+оздоровительн|крыт[а-я]*\\s+каток|каток.*крыт', '5.1.2'),
+    ('паромн.*(?:причал|переправ)|(?:причал|переправ).*паромн', '7.3'),
+    ('автостоянк|парковк|стоянк[а-я\\s-]*(?:автомоб|автотранспорт|транспортн)|многоярусн[а-я\\s-]*(?:стоянк|паркинг)', '4.9.2'),
+)
+
+
+def _classifier_candidate(code: str, candidates: list[dict[str, Any]], context: Any = None) -> dict[str, Any]:
+    """Build a shortlist item from the classifier while preserving the current score scale."""
+    entry = (getattr(context, 'rosreestr_classifier_by_code', None) or {}).get(code) or {}
+    return {
+        'score': float(candidates[0].get('score') or 1.0) if candidates else 1.0,
+        'section_name': 'classifier_policy',
+        'code': code,
+        'name': normalize_text(entry.get('name')),
+        'description': normalize_text(entry.get('description')),
+        'name_plain': normalize_text(entry.get('name_plain')),
+        'parent_code': normalize_text(entry.get('parent_code')),
+        'top_level_code': normalize_text(entry.get('top_level_code')),
+        'profile_rank': 100,
+        'policy_forced': True,
+    }
+
+
+def enforce_classifier_candidate_policies(
+    vri_text: Any,
+    candidates: list[dict[str, Any]],
+    context: Any = None,
+) -> list[dict[str, Any]]:
+    """Apply deterministic strong-marker, shortlist and negative classifier rules."""
+    result: list[dict[str, Any]] = []
+    seen_codes: set[str] = set()
+    for item in candidates or []:
+        code = normalize_text(item.get('code'))
+        if code and code in seen_codes:
+            continue
+        if code:
+            seen_codes.add(code)
+        result.append(dict(item))
+    if any(item.get('explicit_code') for item in result):
+        return result
+
+    canon = canonicalize_vri_name(normalize_text(vri_text))
+    if not canon:
+        return result
+
+    fire_case = bool(re.search('пожарн\\s+(?:част|депо|охран|станц|гараж)|\\bмчс\\b', canon))
+    parking_case = bool(re.search(
+        'автостоянк|парковк|стоянк[а-я\\s-]*(?:автомоб|автотранспорт|транспортн)|'
+        'многоярусн[а-я\\s-]*(?:стоянк|паркинг)',
+        canon,
+    )) and not fire_case
+    generic_admin_case = bool(re.search('административн(?:ое|ого|ый|ая|ые)?\\s+здан|административн', canon))
+    utility_admin_case = bool(re.search(
+        'коммунальн|жкх|водоканал|теплосет|электросет|энергосбыт|газоснаб|водоснаб|теплоснаб|\\b[зр]эс\\b',
+        canon,
+    ))
+
+    banned_codes: set[str] = set()
+    if parking_case:
+        banned_codes.update({'2.0', '2.1', '2.1.1', '2.2', '2.3', '2.4', '2.5', '2.6', '2.7.2'})
+    if fire_case:
+        banned_codes.update({'2.7.1', '2.7.2', '4.9'})
+    if generic_admin_case and not utility_admin_case:
+        banned_codes.add('3.1.2')
+    result = [item for item in result if normalize_text(item.get('code')) not in banned_codes]
+
+    strong_code = next(
+        (code for pattern, code in STRONG_MARKER_CODE_RULES if re.search(pattern, canon)),
+        None,
+    )
+    shortlist_codes: list[str] = []
+    if re.search('рекреацион|рекпеацион', canon):
+        shortlist_codes.append('5.0')
+    if re.search('памятник|объект\\s+культурн\\s+наслед|достопримечательн', canon):
+        shortlist_codes.extend(['9.3', '12.0.2'])
+
+    by_code = {normalize_text(item.get('code')): item for item in result if normalize_text(item.get('code'))}
+    if strong_code:
+        strong_item = by_code.get(strong_code) or _classifier_candidate(strong_code, result, context)
+        result = [strong_item] + [item for item in result if normalize_text(item.get('code')) != strong_code]
+
+    # Shortlist-only rules keep the current Top-1, but guarantee candidates in the final Top-5.
+    insert_at = 1 if result else 0
+    for code in shortlist_codes:
+        item = by_code.get(code) or _classifier_candidate(code, result, context)
+        result = [existing for existing in result if normalize_text(existing.get('code')) != code]
+        result.insert(insert_at, item)
+        insert_at += 1
+    return result
+
+
 def serialize_not_allowed_same_zone_candidates(candidates: list[dict[str, Any]]) -> Any:
     """Serialize global classifier embedding candidates into one compact attribute."""
     if not candidates:
@@ -573,21 +673,25 @@ NOT_ALLOWED_RERANK_SYSTEM_PROMPT = """Ты ранжируешь кандидат
    промышленность, 'дом' != дома социального обслуживания).
 8. Если есть близкий прямой кандидат, ставь смежные сервисные объекты ниже.
 9. ЗРУ (закрытое распределительное устройство), ЗТП / КТП (трансформаторная подстанция),
-   ТЭЦ (теплоэлектроцентраль), бойлерная, насосная — это инженерная / коммунальная
-   инфраструктура. Верные коды: 3.1, 3.1.1, 3.1.2. Не 3.9 (наука), не 3.2.3 (связь),
-   не 4.6 (общепит), не 4.9.1.1 (заправка).
+   бойлерная и насосная — инженерная / коммунальная инфраструктура: 3.1, 3.1.1, 3.1.2.
+   ТЭЦ (теплоэлектроцентраль) — электростанция, для неё выбирай 6.7 «Энергетика»,
+   а НЕ коммунальные коды 3.1.x.
 10. ГСК (гаражно-строительный кооператив) — это гаражи (2.7.1, 2.7.2),
     НЕ парки / культура (3.6.x, 5.1).
-11. Автостоянка, многоярусная стоянка — это 2.7.1 / 4.9.1 (хранение авто),
-    НЕ 6.2.1 (автомобилестроение). «Авто» в составном слове ≠ производство автомобилей.
+11. Автостоянка, парковка, многоярусная стоянка — это 4.9.2 «Стоянка транспортных средств».
+    Это НЕ ИЖС/жилая застройка, НЕ гараж для собственных нужд и НЕ 6.2.1.
 12. Суд, городской / районный суд — это 3.8 (общественное управление),
     НЕ 3.1.2 (административные здания коммунальных организаций).
-13. Пожарная часть, пожарное депо, пожарная охрана — объекты безопасности.
-    НЕ 4.9 (служебный гараж), даже если в тексте упомянут «гараж».
+13. Пожарная часть, пожарное депо, пожарная охрана — код 8.3.
+    НЕ гаражи 2.7.x/4.9, даже если в тексте упомянут «гараж».
 14. Рекреационные цели, зоны отдыха — это 5.0 / 5.1 / 12.0.2, НЕ 4.6 (общепит).
 15. Гостевой дом, гостиница, хостел — это 4.7 (гостиничное обслуживание),
     НЕ 3.8 (общественное управление) и НЕ 4.6.
-16. Огородный земельный участок — это 13.1 (огородничество), НЕ 2.2 (ЛПХ приусадебный)."""
+16. Огородный земельный участок — это 13.1 (огородничество), НЕ 2.2 (ЛПХ приусадебный).
+17. Бассейн, ФОК, физкультурно-оздоровительный комплекс и крытый каток — 5.1.2.
+18. Паромный причал / паромная переправа — 7.3, а НЕ 5.4 для маломерных судов.
+19. 3.1.2 выбирай только для административного здания организации, прямо обеспечивающей
+    коммунальные услуги. Само слово «административное» для этого недостаточно."""
 NOT_ALLOWED_LLM_RERANK_MAX_ATTEMPTS = 3
 NOT_ALLOWED_LLM_RERANK_RETRY_DELAY_SEC = 0.35
 RETRYABLE_VLLM_ERROR_MARKERS = (
@@ -980,7 +1084,9 @@ def attach_not_allowed_llm_rerank_column(df: pd.DataFrame, cadastral_vri_col: st
         # Fast path: already cached from the main classification loop
         cached = llm_rerank_cache.get(query_key)
         if cached is not None:
-            return query_key, cached[:NOT_ALLOWED_CANDIDATES_TOP_N]
+            return query_key, enforce_classifier_candidate_policies(
+                query_text, cached, context,
+            )[:NOT_ALLOWED_CANDIDATES_TOP_N]
 
         recall_candidates = recall_candidates_cache.get(query_key)
         if recall_candidates is None:
@@ -997,6 +1103,9 @@ def attach_not_allowed_llm_rerank_column(df: pd.DataFrame, cadastral_vri_col: st
         if fast_candidates is None:
             fast_candidates = fast_rerank_not_allowed_candidates(
                 vri_text=query_text, candidates=recall_candidates or []
+            )
+            fast_candidates = enforce_classifier_candidate_policies(
+                query_text, fast_candidates, context,
             )
             with _write_lock:
                 fast_rerank_cache.setdefault(query_key, [dict(i) for i in fast_candidates])
@@ -1015,7 +1124,9 @@ def attach_not_allowed_llm_rerank_column(df: pd.DataFrame, cadastral_vri_col: st
                 logger.warning("Not-allowed LLM rerank failed for '%s': %s", normalize_text(query_text), exc)
                 result = llm_input_candidates[:NOT_ALLOWED_CANDIDATES_TOP_N]
 
-        result = result[:NOT_ALLOWED_CANDIDATES_TOP_N]
+        result = enforce_classifier_candidate_policies(
+            query_text, result + list(fast_candidates or []), context,
+        )[:NOT_ALLOWED_CANDIDATES_TOP_N]
         with _write_lock:
             llm_rerank_cache.setdefault(query_key, [dict(i) for i in result])
         return query_key, llm_rerank_cache[query_key]
@@ -1045,6 +1156,9 @@ def attach_not_allowed_llm_rerank_column(df: pd.DataFrame, cadastral_vri_col: st
         final_candidates = results.get(query_key, [])
         final_candidates = promote_generic_residential_first(
             vri_text=payload['query_text'], candidates=final_candidates, context=context,
+        )
+        final_candidates = enforce_classifier_candidate_policies(
+            payload['query_text'], final_candidates, context,
         )
         serialized = serialize_not_allowed_same_zone_candidates(final_candidates[:NOT_ALLOWED_CANDIDATES_TOP_N])
         for idx in payload['indexes']:

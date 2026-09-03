@@ -42,6 +42,7 @@ from .rerank_layer import (
     build_zone_section_code_cache,
     build_not_allowed_embed_query_text,
     build_not_allowed_same_zone_candidates,
+    enforce_classifier_candidate_policies,
     fast_rerank_not_allowed_candidates,
     get_not_allowed_query_key,
     promote_generic_residential_first,
@@ -317,6 +318,9 @@ def run_pipeline(
                 vri_text=vri_text,
                 candidates=(exact_candidates + (recall_candidates or [])),
             )
+            ranked_candidates = enforce_classifier_candidate_policies(
+                vri_text=vri_text, candidates=ranked_candidates, context=context,
+            )
             llm_input = ranked_candidates[:NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N]
             final_candidates = ranked_candidates[:5]
 
@@ -343,6 +347,11 @@ def run_pipeline(
                 final_candidates = promote_generic_residential_first(
                     vri_text=vri_text, candidates=ranked_candidates, context=context,
                 )[:5]
+            final_candidates = enforce_classifier_candidate_policies(
+                vri_text=vri_text,
+                candidates=final_candidates + ranked_candidates,
+                context=context,
+            )[:5]
 
             payload["CHECK_SCOPE"] = "classifier_only"
             payload["MATCH_METHOD"] = "classifier_top5_llm_or_fast"
