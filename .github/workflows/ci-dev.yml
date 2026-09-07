@@ -22,5 +22,22 @@ jobs:
           pytest==9.1.1
         cp .env.example .env.development
         export APP_ENV=development
+        export URBAN_API_BASE_URL=http://localhost:9999
+        export FILESERVER_ENDPOINT=localhost:9000
+        export FILESERVER_ACCESS_KEY=test
+        export FILESERVER_SECRET_KEY=test
+        export FILESERVER_BUCKET_NAME=test
+        export EMBED_MAX_PARALLEL_REQUESTS=1
+        export VLLM_MAX_PARALLEL_REQUESTS=1
+        export LLM_API_MODE=chat
+        export LLM_TEMPERATURE=0
+        export LLM_NUM_CTX=2048
+        export LLM_NUM_PREDICT=256
+        export LLM_THINK=false
+        export VLLM_ENABLE_THINK_PARAM=false
+        export VLLM_THINK_FIELD_NAME=think
+        export NOT_ALLOWED_LLM_RERANK_NUM_CTX=2048
+        export NOT_ALLOWED_LLM_RERANK_NUM_PREDICT=256
+        export NOT_ALLOWED_LLM_RERANK_THINK=false
         .venv/bin/python -m pytest --verbose tests
     secrets: inherit
