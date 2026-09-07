@@ -1,0 +1,26 @@
+name: Kubernetes dev release
+
+on:
+  push:
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    uses: IDUclub/urban-assistant-deploy/.github/workflows/reusable-application-release.yaml@main
+    with:
+      service: pzz-compare
+      test-command: |
+        python -m pip install --disable-pip-version-check uv==0.12.10
+        uv python install 3.11
+        uv venv --python 3.11
+        uv pip install --python .venv/bin/python \
+          --requirement requirements.txt \
+          pytest==9.1.1
+        cp .env.example .env.development
+        export APP_ENV=development
+        .venv/bin/python -m pytest --verbose tests
+    secrets: inherit
