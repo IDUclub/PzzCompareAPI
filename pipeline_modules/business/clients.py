@@ -394,12 +394,6 @@ class VLLMChatClient:
         return safe_json_loads(content)
 
 
-def parse_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
 def build_llm_client(*, backend: str, timeout: int, default_model: Optional[str], temperature: float, num_ctx: int, num_predict: int, think: Any, runtime_presets: Optional[dict[str, dict[str, Any]]] = None):
     _ = (num_ctx, runtime_presets)
     backend_norm = normalize_text(backend).lower()

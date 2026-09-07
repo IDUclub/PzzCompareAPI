@@ -20,8 +20,6 @@ class PipelineRuntimeContext:
     pzz_ref_df: pd.DataFrame = field(default_factory=pd.DataFrame)
     pzz_vri_items_df: pd.DataFrame = field(default_factory=pd.DataFrame)
 
-    zone_vectorizer: Any = None
-    zone_matrix: Any = None
     zone_item_embeddings: dict[str, np.ndarray] = field(default_factory=dict)
 
     rosreestr_classifier_by_code: dict[str, dict[str, Any]] = field(default_factory=dict)

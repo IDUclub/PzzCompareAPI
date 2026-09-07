@@ -331,10 +331,6 @@ ZONE_CHECK_SYSTEM_PROMPT = (
 
 ZONE_CHECK_SCHEMA = {'type': 'object', 'properties': {'verdict': {'type': 'string'}, 'matched_vri_name': {'type': ['string', 'null']}, 'matched_vri_code': {'type': ['string', 'null']}, 'reason': {'type': 'string'}}, 'required': ['verdict', 'matched_vri_name', 'matched_vri_code', 'reason']}
 
-FALLBACK_SCHEMA = {'type': 'object', 'properties': {'suggested_code': {'type': ['string', 'null']}, 'suggested_description': {'type': ['string', 'null']}, 'verdict': {'type': 'string'}, 'matched_vri_name': {'type': ['string', 'null']}, 'matched_vri_code': {'type': ['string', 'null']}, 'reason': {'type': 'string'}}, 'required': ['suggested_code', 'suggested_description', 'verdict', 'matched_vri_name', 'matched_vri_code', 'reason']}
-
-FALLBACK_SYSTEM_PROMPT = 'Ты подбираешь альтернативную зону ПЗЗ только если кадастровый ВРИ не подходит фактической зоне.\n\nПравила:\n1. Выбирай только из переданного списка кандидатов.\n2. Предпочитай явные совпадения ВРИ.\n3. Если в списке нет надежного кандидата, верни verdict=not_found и suggested_code=null.\n4. Если кандидат подходит как условно разрешенный или вспомогательный вид, это нужно указать соответствующим verdict.\n\nРазрешенные verdict:\n- allowed_main\n- allowed_conditional\n- allowed_auxiliary\n- not_found\n\nВерни строго JSON по схеме.\n'.strip()
-
 def build_zone_check_prompt(vri_text: str, zone_ref: dict[str, Any], exact_matches: list[dict[str, Any]], actual_zone_code: str, actual_zone_name: Any, actual_share: Any, intersect_codes: Any, context: Any=None) -> str:
     """Build a strict actual-zone prompt using retrieval_text of the factual zone."""
     raw_zone_lookup_map = context.raw_zone_lookup if context is not None else {}
@@ -369,37 +365,3 @@ def run_zone_check_with_llm(prompt: str, think_override: Any=None, context: Any=
     with llm_stats.record(branch):
         return llm.complete_json(user_prompt=prompt, system_prompt=ZONE_CHECK_SYSTEM_PROMPT, schema=ZONE_CHECK_SCHEMA, model=LLM_MODEL, think_override=think_override)
 
-def heuristic_zone_decision(zone_ref: Optional[dict[str, Any]], exact_matches: list[dict[str, Any]]) -> dict[str, Any]:
-    """Fallback heuristic for actual zone decision when LLM is unavailable."""
-    best_match = choose_best_exact_match(exact_matches)
-    if zone_ref is None:
-        return {'verdict': 'no_zone_metadata', 'matched_vri_name': None, 'matched_vri_code': None, 'reason': 'Для фактической зоны не найдено описание в шаблоне ПЗЗ.'}
-    if best_match is not None:
-        return {'verdict': SECTION_TO_VERDICT.get(best_match['section_name'], 'unclear'), 'matched_vri_name': best_match['matched_vri_name'], 'matched_vri_code': best_match['matched_vri_code'], 'reason': 'Решение принято по точному / почти точному совпадению внутри фактической зоны.'}
-    return {'verdict': 'unclear', 'matched_vri_name': None, 'matched_vri_code': None, 'reason': 'Точного совпадения внутри фактической зоны нет; без LLM требуется ручная проверка.'}
-
-def heuristic_fallback_decision(candidates: list[dict[str, Any]]) -> dict[str, Any]:
-    """Fallback heuristic for alternative zone search when LLM is unavailable."""
-    if not candidates:
-        return {'suggested_code': None, 'suggested_description': None, 'verdict': 'not_found', 'matched_vri_name': None, 'matched_vri_code': None, 'reason': 'Кандидаты для альтернативной зоны не найдены.'}
-    best_candidate = candidates[0]
-    best_exact = None
-    for item in best_candidate.get('matched_items', []):
-        if item.get('source') == 'exact_match':
-            best_exact = item
-            break
-    if best_exact is not None:
-        section_name = normalize_text(best_exact.get('section_name'))
-        verdict = SECTION_TO_VERDICT.get(section_name, 'not_found')
-        return {'suggested_code': best_candidate['code'], 'suggested_description': best_candidate['description'], 'verdict': verdict, 'matched_vri_name': best_exact.get('matched_vri_name'), 'matched_vri_code': best_exact.get('matched_vri_code'), 'reason': 'Альтернативная зона выбрана по точному совпадению в глобальном каталоге.'}
-    return {'suggested_code': None, 'suggested_description': None, 'verdict': 'not_found', 'matched_vri_name': None, 'matched_vri_code': None, 'reason': 'Надежная альтернативная зона не найдена без LLM.'}
-
-def build_fallback_prompt(vri_text: str, actual_zone_code: Any, actual_zone_name: Any, candidates: list[dict[str, Any]]) -> str:
-    """Build prompt for alternative zone suggestion."""
-    lines = [f'Кадастровый ВРИ: {normalize_text(vri_text)}', f'Фактическая зона, где участок расположен: {normalize_text(actual_zone_code)} | {normalize_text(actual_zone_name)}', '', 'Кандидаты для альтернативного поиска:']
-    for candidate in candidates:
-        lines.append(f"- code={candidate['code']}; base_code={candidate['base_code']}; name={candidate['description']}; group={candidate['group']}; score={float(candidate['score']):.4f}; main_vri_names={candidate['main_vri_names']}; conditional_vri_names={candidate['conditional_vri_names']}; auxiliary_vri_names={candidate['auxiliary_vri_names']}; summary={candidate['summary']}")
-        for item in candidate.get('matched_items', [])[:6]:
-            lines.append(f"  evidence: source={item['source']}; section={item['section_name']}; matched_vri_name={item['matched_vri_name']}; matched_vri_code={item['matched_vri_code']}; contribution={float(item['contribution']):.4f}; note={item['matched_vri_description']}")
-    lines += ['', 'Верни JSON: suggested_code, suggested_description, verdict, matched_vri_name, matched_vri_code, reason.']
-    return '\n'.join(lines)

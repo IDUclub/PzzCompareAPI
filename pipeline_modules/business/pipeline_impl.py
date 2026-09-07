@@ -10,7 +10,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
 
 from .runtime_settings import (
     ENABLE_EMBED_FAST_MATCH as _ENABLE_EMBED_FAST_MATCH,
@@ -136,15 +135,6 @@ def _init_runtime_context(
         for item in sanitized_templates
     }
 
-    if pzz_ref_df.empty:
-        zone_vectorizer = None
-        zone_matrix = None
-    else:
-        zone_vectorizer = TfidfVectorizer(min_df=1)
-        zone_matrix = zone_vectorizer.fit_transform(
-            pzz_ref_df["zone_search_text"].fillna("").tolist()
-        )
-
     zone_item_embeddings: dict[str, np.ndarray] = {}
     if _ENABLE_EMBED_FAST_MATCH and _ENABLE_ZONE_ITEM_EMBED_MATCH:
         for zone_code, zone_items in zone_items_lookup.items():
@@ -179,8 +169,6 @@ def _init_runtime_context(
         zone_fast_text_lookup=zone_fast_text_lookup,
         pzz_ref_df=pzz_ref_df,
         pzz_vri_items_df=pzz_vri_items_df,
-        zone_vectorizer=zone_vectorizer,
-        zone_matrix=zone_matrix,
         zone_item_embeddings=zone_item_embeddings,
         rosreestr_classifier_by_code=classifier_by_code,
         rosreestr_classifier_children_map=classifier_children_map,

@@ -109,7 +109,6 @@ class SubprocessPipelineRunner(PipelineRunner):
         env["EMBED_CACHE_DIR"] = settings.embed_cache_dir
         env["LLM_CACHE_DIR"] = settings.llm_cache_dir
         env["LLM_CACHE_TTL_DAYS"] = settings.llm_cache_ttl_days
-        env["PIPELINE_CALLABLE"] = settings.pipeline_callable
 
         result = subprocess.run(
             [sys.executable, "-m", settings.pipeline_module],
