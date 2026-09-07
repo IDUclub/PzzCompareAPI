@@ -75,7 +75,10 @@ INTERSECT_ZONE_PRIOR_BONUS = float(os.getenv("INTERSECT_ZONE_PRIOR_BONUS", "0.5"
 DOMINANT_PZZ_MIN_SHARE = float(os.getenv("DOMINANT_PZZ_MIN_SHARE", "0.5"))
 
 LLM_LONG_TEXT_HARD_CASE_MIN_LEN = int(os.getenv("LLM_LONG_TEXT_HARD_CASE_MIN_LEN", "70"))
-ENABLE_PROFILED_FAST_MATCH = _env_bool("ENABLE_PROFILED_FAST_MATCH", True)
+# Heritage-flavoured cases are asked again without ``reasoning_effort=low``, so
+# the backend falls back to its default effort. That path costs about five times
+# a normal call; turn it off to measure whether the extra effort changes verdicts.
+LLM_DEEP_REASONING_ENABLED = _env_bool("LLM_DEEP_REASONING_ENABLED", True)
 ALLOW_ZONE_NAME_SUMMARY_AUTOMATCH = _env_bool("ALLOW_ZONE_NAME_SUMMARY_AUTOMATCH", False)
 RESIDENTIAL_AUTO_REQUIRES_SUBTYPE = _env_bool("RESIDENTIAL_AUTO_REQUIRES_SUBTYPE", True)
 # Жилой объект без указания этажности/типа застройки относим к обобщенному ВРИ

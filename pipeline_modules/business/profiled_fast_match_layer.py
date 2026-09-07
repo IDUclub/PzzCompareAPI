@@ -158,6 +158,8 @@ def should_use_deeper_llm_reasoning(
     vri_text: Any, zone_ref: Optional[dict[str, Any]], context: Any = None
 ) -> bool:
     """Return True when the case should be sent to the LLM with deeper reasoning enabled."""
+    if not LLM_DEEP_REASONING_ENABLED:
+        return False
     raw_text = normalize_text(vri_text)
     if not raw_text:
         return False
