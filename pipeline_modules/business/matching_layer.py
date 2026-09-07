@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from . import llm_stats
 from .common import *
 
 SECTION_PRIORITY = {'main': 3, 'conditional': 2, 'auxiliary': 1}
@@ -336,7 +337,9 @@ def run_zone_check_with_llm(prompt: str, think_override: Any=None, context: Any=
     llm = context.llm_client if context is not None else None
     if llm is None:
         raise RuntimeError("LLM client not available: context.llm_client is None")
-    return llm.complete_json(user_prompt=prompt, system_prompt=ZONE_CHECK_SYSTEM_PROMPT, schema=ZONE_CHECK_SCHEMA, model=LLM_MODEL, think_override=think_override)
+    branch = llm_stats.ZONE_CHECK_DEEP if think_override else llm_stats.ZONE_CHECK
+    with llm_stats.record(branch):
+        return llm.complete_json(user_prompt=prompt, system_prompt=ZONE_CHECK_SYSTEM_PROMPT, schema=ZONE_CHECK_SCHEMA, model=LLM_MODEL, think_override=think_override)
 
 def heuristic_zone_decision(zone_ref: Optional[dict[str, Any]], exact_matches: list[dict[str, Any]]) -> dict[str, Any]:
     """Fallback heuristic for actual zone decision when LLM is unavailable."""

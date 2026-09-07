@@ -17,6 +17,7 @@ from .runtime_settings import (
     ENABLE_LLM as _ENABLE_LLM,
     ENABLE_ZONE_ITEM_EMBED_MATCH as _ENABLE_ZONE_ITEM_EMBED_MATCH,
 )
+from . import llm_cache, llm_stats
 from .classification_layer import ensure_classification_columns
 from .clients import vectorizer
 from .data_loading import InputDataLoader, ReferenceDataProvider
@@ -244,6 +245,8 @@ def run_pipeline(
     """Service-safe orchestrator that mirrors spatial-first notebook logic."""
     _ = (pzz_codes_path, base_url, embed_model, generate_model, top_k, batch_size)
     total_started = perf_counter()
+    llm_stats.reset()
+    llm_cache.reset_stats()
     _log_stage(
         "pipeline", "start", include_pzz_check=include_pzz_check, batch_size=batch_size
     )
@@ -781,6 +784,8 @@ def run_pipeline(
         unique_results_xlsx_path=Path(unique_results_xlsx_path).name,
         unique_results_json_path=Path(unique_results_json_path).name,
     )
+    _log_stage("llm_calls", "finished", summary=llm_stats.format_summary())
+    _log_stage("llm_cache", "finished", summary=llm_cache.format_summary())
     _log_stage(
         "pipeline", "finished", duration_ms=int((perf_counter() - total_started) * 1000)
     )

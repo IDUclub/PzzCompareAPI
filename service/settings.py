@@ -138,6 +138,16 @@ class Settings(BaseSettings):
     top_k: int = Field(default=10)
     embed_batch_size: int = Field(default=32)
     vectorizer_url: str = Field(default="")
+    # Directory the pipeline caches embedding vectors in. Mount it from a volume
+    # shared by every worker: each pipeline run is a fresh subprocess, so nothing
+    # is reused unless it survives on disk. Empty disables the cache.
+    embed_cache_dir: str = Field(default="")
+    # Directory the pipeline caches LLM answers in, keyed on the rendered
+    # question rather than on the input file. Share the volume across workers;
+    # empty disables the cache. TTL in days bounds how long an answer is reused;
+    # 0 keeps answers forever.
+    llm_cache_dir: str = Field(default="")
+    llm_cache_ttl_days: str = Field(default="0")
     # Building type/service semantic name matching (embedder). When a text
     # type/service name resolves neither as an id nor via the alias map, its
     # embedding is matched against the catalogue; a match must clear this cosine
@@ -213,6 +223,9 @@ def _build_settings_cached() -> Settings:
         embed_model=_get_required_env(config, "EMBED_MODEL"),
         generate_model=_get_required_env(config, "GENERATE_MODEL"),
         vectorizer_url=_get_optional_env(config, "VECTORIZER_URL"),
+        embed_cache_dir=_get_optional_env(config, "EMBED_CACHE_DIR"),
+        llm_cache_dir=_get_optional_env(config, "LLM_CACHE_DIR"),
+        llm_cache_ttl_days=_get_optional_env(config, "LLM_CACHE_TTL_DAYS", "0"),
         building_semantic_fallback=_get_optional_env(
             config, "BUILDING_SEMANTIC_FALLBACK", "true"
         ).lower()

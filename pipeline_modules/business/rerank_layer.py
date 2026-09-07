@@ -5,6 +5,7 @@ import time
 import numpy as np
 from tqdm import tqdm
 
+from . import llm_stats
 from .clients import not_allowed_rerank_ollama
 from .common import *
 from .matching_layer import build_catalog_embed_text, is_residential_unspecified_vri
@@ -1208,13 +1209,14 @@ def run_not_allowed_rerank_with_llm(
         think_override = False
 
         try:
-            response = not_allowed_rerank_ollama.complete_json(
-                user_prompt=prompt,
-                system_prompt=NOT_ALLOWED_RERANK_SYSTEM_PROMPT,
-                schema=NOT_ALLOWED_RERANK_SCHEMA,
-                model=LLM_MODEL,
-                think_override=think_override,
-            )
+            with llm_stats.record(llm_stats.NOT_ALLOWED_RERANK):
+                response = not_allowed_rerank_ollama.complete_json(
+                    user_prompt=prompt,
+                    system_prompt=NOT_ALLOWED_RERANK_SYSTEM_PROMPT,
+                    schema=NOT_ALLOWED_RERANK_SCHEMA,
+                    model=LLM_MODEL,
+                    think_override=think_override,
+                )
 
             ranked_codes_raw = response.get("ranked_codes") or []
             ranked_codes = [
