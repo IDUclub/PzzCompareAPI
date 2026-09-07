@@ -85,3 +85,7 @@ RESIDENTIAL_GENERIC_VRI_CODE = os.getenv("RESIDENTIAL_GENERIC_VRI_CODE", "2.0")
 PROFILED_EMBED_RESTRICTION = _env_bool("PROFILED_EMBED_RESTRICTION", True)
 LLM_BACKEND = os.getenv("LLM_BACKEND", "vllm")
 LLM_MODEL = os.getenv("LLM_MODEL", os.getenv("GENERATE_MODEL", "gpt-oss-20b" if LLM_BACKEND == "vllm" else "gpt-oss:20b"))
+# Put the per-zone part of the zone-check prompt first so every parcel in the
+# same zone shares a long token prefix, which the backend's prefix cache reuses
+# instead of prefilling the whole regulation text again.
+ZONE_CHECK_PROMPT_ZONE_FIRST = _env_bool("ZONE_CHECK_PROMPT_ZONE_FIRST", False)
