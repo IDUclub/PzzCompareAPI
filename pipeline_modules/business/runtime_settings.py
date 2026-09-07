@@ -84,4 +84,4 @@ RESIDENTIAL_UNSPECIFIED_TO_GENERIC = _env_bool("RESIDENTIAL_UNSPECIFIED_TO_GENER
 RESIDENTIAL_GENERIC_VRI_CODE = os.getenv("RESIDENTIAL_GENERIC_VRI_CODE", "2.0")
 PROFILED_EMBED_RESTRICTION = _env_bool("PROFILED_EMBED_RESTRICTION", True)
 LLM_BACKEND = os.getenv("LLM_BACKEND", "vllm")
-LLM_MODEL = os.getenv("LLM_MODEL", os.getenv("GENERATE_MODEL", "openai/gpt-oss-20b" if LLM_BACKEND == "vllm" else "gpt-oss:20b"))
+LLM_MODEL = os.getenv("LLM_MODEL", os.getenv("GENERATE_MODEL", "gpt-oss-20b" if LLM_BACKEND == "vllm" else "gpt-oss:20b"))
