@@ -195,3 +195,22 @@ def test_self_intersecting_polygon_survives_validation():
     result = _attach(parcels, zones)
 
     assert result.loc[0, "PZZ_ACTUAL_CODE"] == "Ж-1"
+
+
+def test_single_column_zone_layer_is_matched():
+    """A zones layer whose only usable column names both the code and the name."""
+    zones = gpd.GeoDataFrame(
+        {"PZZ": ["Ж-1"], "geometry": [box(0.0, 0.0, 0.02, 0.02)]},
+        crs="EPSG:4326",
+    )
+    parcels = _parcels([box(0.004, 0.004, 0.012, 0.012)])
+
+    result = attach_spatial_pzz_attributes(
+        parcels_gdf=parcels,
+        pzz_gdf=zones,
+        zone_code_col="PZZ",
+        zone_name_col="PZZ",
+    )
+
+    assert result.loc[0, "PZZ_ACTUAL_CODE"] == "Ж-1"
+    assert result.loc[0, "PZZ_INTERSECT_COUNT"] == 1

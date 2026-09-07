@@ -206,6 +206,11 @@ def attach_spatial_pzz_attributes(parcels_gdf: gpd.GeoDataFrame, pzz_gdf: gpd.Ge
     parcels_work = parcels_work.loc[parcels_work.geometry.notna() & ~parcels_work.geometry.is_empty].copy()
     if parcels_work.crs is None:
         raise ValueError('Parcels layer has no CRS.')
+    if zone_name_col == zone_code_col:
+        # A zones layer with a single usable column gets it selected as both code
+        # and name. Keeping it twice makes ``pzz_work[zone_code_col]`` a DataFrame,
+        # and every later selection fails; the name adds nothing here anyway.
+        zone_name_col = None
     keep_cols = [zone_code_col, 'geometry']
     if zone_name_col and zone_name_col in pzz_gdf.columns:
         keep_cols.append(zone_name_col)
