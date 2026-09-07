@@ -233,7 +233,7 @@ def _build_settings_cached() -> Settings:
         building_semantic_threshold=float(
             _get_optional_env(config, "BUILDING_SEMANTIC_THRESHOLD", "0.6")
         ),
-        urban_api_base_url=(config.get("URBAN_API_BASE_URL") or "").rstrip("/"),
+        urban_api_base_url=_get_optional_env(config, "URBAN_API_BASE_URL").rstrip("/"),
         urban_api_timeout_seconds=float("600"),
         chat_storage_base_url=_get_optional_env(config, "CHAT_STORAGE_BASE_URL").rstrip(
             "/"
@@ -268,11 +268,11 @@ def _build_settings_cached() -> Settings:
         geo_layer_url_ttl_seconds=int(
             _get_optional_env(config, "GEO_LAYER_URL_TTL_SECONDS", "3600")
         ),
-        fileserver_endpoint=config.get("FILESERVER_ENDPOINT") or "",
-        fileserver_access_key=config.get("FILESERVER_ACCESS_KEY") or "",
-        fileserver_secret_key=config.get("FILESERVER_SECRET_KEY") or "",
-        fileserver_bucket_name=config.get("FILESERVER_BUCKET_NAME") or "",
-        fileserver_secure=(config.get("FILESERVER_SECURE") or "").lower()
+        fileserver_endpoint=_get_optional_env(config, "FILESERVER_ENDPOINT"),
+        fileserver_access_key=_get_optional_env(config, "FILESERVER_ACCESS_KEY"),
+        fileserver_secret_key=_get_optional_env(config, "FILESERVER_SECRET_KEY"),
+        fileserver_bucket_name=_get_optional_env(config, "FILESERVER_BUCKET_NAME"),
+        fileserver_secure=_get_optional_env(config, "FILESERVER_SECURE").lower()
         in {"1", "true", "yes", "on"},
         admin_api_token=_get_optional_env(config, "ADMIN_API_TOKEN"),
     )
