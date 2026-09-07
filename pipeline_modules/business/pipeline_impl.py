@@ -72,6 +72,15 @@ from .runtime_context import PipelineRuntimeContext
 
 logger = logging.getLogger("pipeline.runtime")
 
+LLM_CHECK_FAILED_REASON = (
+    "Автоматическая проверка соответствия ВРИ не выполнена из-за сбоя сервиса. "
+    "Участок передан на ручную проверку."
+)
+CLASSIFICATION_FAILED_REASON = (
+    "Автоматическая классификация участка не выполнена из-за внутренней ошибки. "
+    "Участок передан на ручную проверку."
+)
+
 _PIPELINE_LLM_WORKERS = max(1, int(os.getenv("PIPELINE_LLM_WORKERS", "4")))
 
 
@@ -605,15 +614,19 @@ def run_pipeline(
                     "matched_vri_code": llm_response.get("matched_vri_code"),
                     "reason": llm_response.get("reason"),
                 }
-            except Exception as exc:
+            except Exception:
                 # A failed LLM call is missing evidence, not evidence of a
                 # violation: verdict stays "unclear" so an unreachable backend
                 # shows up as manual review instead of reported PZZ breaches.
+                # The exception text names internal hosts and token counts and
+                # is deduplicated onto every parcel sharing the key, so it goes
+                # to the log only, never into the delivered report.
+                logger.exception("Zone check via LLM failed; falling back to manual review")
                 computed = {
                     "verdict": "unclear",
                     "matched_vri_name": None,
                     "matched_vri_code": None,
-                    "reason": f"LLM-check завершился ошибкой: {exc}",
+                    "reason": LLM_CHECK_FAILED_REASON,
                 }
             with _llm_cache_lock:
                 if llm_cache_key not in llm_zone_check_cache:
@@ -691,7 +704,7 @@ def run_pipeline(
                     # it must not be reported as a PZZ violation.
                     "PZZ_VRI_VERDICT": "unclear",
                     "Статус": status_to_russian_label("unclear"),
-                    "PZZ_REASON": f"Внутренняя ошибка классификации: {exc}",
+                    "PZZ_REASON": CLASSIFICATION_FAILED_REASON,
                     "PZZ_NOT_ALLOWED_TOP5_CANDIDATES": pd.NA,
                 }
 
