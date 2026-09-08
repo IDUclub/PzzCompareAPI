@@ -183,15 +183,21 @@ def _json_upload(obj: Any, filename: str) -> UploadFile:
     return UploadFile(file=BytesIO(data), filename=filename)
 
 
-def _crs_http_error(field_name: str, exc: GeoCrsError) -> HTTPException:
+def _crs_http_error(
+    field_name: str, exc: GeoCrsError, filename: str | None = None
+) -> HTTPException:
     """422 for a layer that is not in WGS84 — the file is readable, just unusable.
 
     Raised before anything is persisted or queued: without it the layer passes
     ingestion silently and the pipeline dies minutes later on
     ``estimate_utm_crs``, which tells the user nothing about what to fix.
+
+    The slot title alone ("слой земельных участков") is ambiguous once several
+    layers are attached, so the uploaded file name is quoted when we have it.
     """
     title = _FIELD_TITLES.get(field_name, field_name)
-    return HTTPException(status_code=422, detail=f"{title}: {exc}")
+    where = f"{title} («{filename}»)" if filename else title
+    return HTTPException(status_code=422, detail=f"{where}: {exc}")
 
 
 # Field names are the multipart keys; the message goes to an end user, so name the
@@ -315,8 +321,8 @@ def _ingest_upload(
             ensure_wgs84(data)
         except GeoCrsError as exc:
             local_path.unlink(missing_ok=True)
-            api_log("create_task", "bad_crs", field=field_name)
-            raise _crs_http_error(field_name, exc) from exc
+            api_log("create_task", "bad_crs", field=field_name, file=upload.filename)
+            raise _crs_http_error(field_name, exc, upload.filename) from exc
     object_key = f"inputs/{external_id}/{filename}"
     stored = storage.upload_file(str(local_path.resolve()), object_key)
     if storage.is_remote():
@@ -364,8 +370,8 @@ def _ingest_geo_upload(
         feature_collection = geo_file_to_geojson_dict(raw_path)
     except GeoCrsError as exc:
         raw_path.unlink(missing_ok=True)
-        api_log("create_task", "bad_crs", field=field_name)
-        raise _crs_http_error(field_name, exc) from exc
+        api_log("create_task", "bad_crs", field=field_name, file=upload.filename)
+        raise _crs_http_error(field_name, exc, upload.filename) from exc
     except GeoIngestError as exc:
         raw_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"{field_name}: {exc}") from exc
@@ -411,7 +417,13 @@ def _upload_to_feature_collection(
             try:
                 ensure_wgs84(data)
             except GeoCrsError as exc:
-                raise _crs_http_error(field_name, exc) from exc
+                api_log(
+                    "detect_columns",
+                    "bad_crs",
+                    field=field_name,
+                    file=upload.filename,
+                )
+                raise _crs_http_error(field_name, exc, upload.filename) from exc
             return data
 
         suffix = Path(upload.filename or "").suffix.lower()
@@ -422,7 +434,8 @@ def _upload_to_feature_collection(
         try:
             return geo_file_to_geojson_dict(raw_path)
         except GeoCrsError as exc:
-            raise _crs_http_error(field_name, exc) from exc
+            api_log("detect_columns", "bad_crs", field=field_name, file=upload.filename)
+            raise _crs_http_error(field_name, exc, upload.filename) from exc
         except GeoIngestError as exc:
             raise HTTPException(status_code=400, detail=f"{field_name}: {exc}") from exc
         finally:
