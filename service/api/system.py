@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import redis
@@ -17,6 +18,12 @@ from ..log_sink import LOG_STREAM_KEY
 from ..settings import Settings
 
 router = APIRouter(tags=["system"])
+logger = logging.getLogger("service.api.system")
+
+# Connection errors carry the broker/Redis URL, credentials included, and
+# /readiness is unauthenticated.
+BROKER_UNAVAILABLE_MESSAGE = "broker unavailable"
+REDIS_UNAVAILABLE_MESSAGE = "Redis unavailable"
 
 
 @router.get("/", include_in_schema=False)
@@ -39,8 +46,9 @@ def readiness(app_settings: Settings = Depends(get_app_settings)) -> dict[str, s
         broker.ping()
         broker.close()
     except Exception as exc:  # noqa: BLE001
+        logger.exception("Broker ping failed")
         raise HTTPException(
-            status_code=503, detail=f"broker unavailable: {exc}"
+            status_code=503, detail=BROKER_UNAVAILABLE_MESSAGE
         ) from exc
     return {"status": "ready"}
 
@@ -75,8 +83,9 @@ def get_logs(
     try:
         raw_entries = r.lrange(LOG_STREAM_KEY, 0, fetch_n - 1)
     except Exception as exc:  # noqa: BLE001
+        logger.exception("Reading the aggregated log stream from Redis failed")
         raise HTTPException(
-            status_code=503, detail=f"Redis unavailable: {exc}"
+            status_code=503, detail=REDIS_UNAVAILABLE_MESSAGE
         ) from exc
 
     result: list[dict[str, Any]] = []

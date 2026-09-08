@@ -45,6 +45,13 @@ from .utils import api_log, durable_url
 
 router = APIRouter(tags=["tasks"])
 logger = logging.getLogger("service.api.tasks")
+# Infrastructure error text (broker URLs with credentials, storage endpoints,
+# absolute paths) must not leave the service: `error_text` and event `details`
+# are returned by the task API just like the HTTP `detail`.
+ENQUEUE_FAILED_MESSAGE = "Failed to enqueue the task: queue backend unavailable"
+STORAGE_FETCH_FAILED_MESSAGE = "Failed to fetch the task result from object storage"
+RESULT_LOAD_FAILED_MESSAGE = "Failed to load the task result"
+
 _SCENARIO_IDEMPOTENCY_PREFIX = "sc:"
 _BUILDING_IDEMPOTENCY_PREFIX = "bld:"
 
@@ -159,17 +166,16 @@ def build_recompute_task_response(
             is_building_upload=_is_building_upload_task(task.external_id, task_repo),
         )
     except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to enqueue Celery task for %s", task.external_id)
         task_repo.update_status(task.id, TaskStatus.failed, finished_at=utc_now())
-        task_repo.set_error(task.id, f"Failed to enqueue Celery task: {exc}")
+        task_repo.set_error(task.id, ENQUEUE_FAILED_MESSAGE)
         event_repo.append_event(
             task_id=task.id,
             stage="queue",
             status="recompute_enqueue_error",
-            details=str(exc),
+            details=ENQUEUE_FAILED_MESSAGE,
         )
-        raise HTTPException(
-            status_code=503, detail=f"Failed to enqueue: {exc}"
-        ) from exc
+        raise HTTPException(status_code=503, detail=ENQUEUE_FAILED_MESSAGE) from exc
 
     celery_task_id = getattr(celery_result, "id", None)
     task_repo.update_status(task.id, TaskStatus.queued, celery_task_id=celery_task_id)
@@ -974,9 +980,11 @@ def build_task_result_response(
             try:
                 get_object_storage().download_file(task.result_path, str(cache_path))
             except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Failed to fetch result %s from object storage", task.result_path
+                )
                 raise HTTPException(
-                    status_code=503,
-                    detail=f"Failed to fetch result from object storage: {exc}",
+                    status_code=503, detail=STORAGE_FETCH_FAILED_MESSAGE
                 ) from exc
         return FileResponse(
             path=str(cache_path),
@@ -1519,9 +1527,9 @@ def build_object_zone_fit_response(
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to load result GeoJSON for task %s", task.external_id)
         raise HTTPException(
-            status_code=503,
-            detail=f"Failed to load result GeoJSON: {exc}",
+            status_code=503, detail=RESULT_LOAD_FAILED_MESSAGE
         ) from exc
 
     rows: list[dict[str, Any]] = []
@@ -1680,9 +1688,9 @@ def build_classify_summary_response(
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to load result GeoJSON for task %s", task.external_id)
         raise HTTPException(
-            status_code=503,
-            detail=f"Failed to load result GeoJSON: {exc}",
+            status_code=503, detail=RESULT_LOAD_FAILED_MESSAGE
         ) from exc
 
     rows: list[dict[str, Any]] = []

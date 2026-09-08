@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from . import llm_stats
 from .common import *
 
 SECTION_PRIORITY = {'main': 3, 'conditional': 2, 'auxiliary': 1}
@@ -185,7 +186,7 @@ def fast_string_match_in_zone(vri_text: str, actual_zone_code: Optional[str], co
 def fast_embed_match_in_zone(vri_text: str, actual_zone_code: Optional[str], query_vector: Optional[np.ndarray]=None, context: Any=None) -> Optional[dict[str, Any]]:
     """Run a fast local semantic comparison only inside the actual zone."""
     zone_code = normalize_text(actual_zone_code)
-    if not ENABLE_EMBED_FAST_MATCH or not zone_code:
+    if not ENABLE_EMBED_FAST_MATCH or not ENABLE_ZONE_ITEM_EMBED_MATCH or not zone_code:
         return None
     zone_items_lookup_map = context.zone_items_lookup if context is not None else {}
     zone_item_embeddings_map = context.zone_item_embeddings if context is not None else {}
@@ -238,23 +239,40 @@ ZONE_CHECK_SYSTEM_PROMPT = (
     '   сразу верни unclear и на этом остановись. Отсутствие сведений о ВРИ — это пробел\n'
     '   в исходных данных, а не нарушение ПЗЗ, поэтому not_allowed по такому участку\n'
     '   возвращать нельзя ни при каких условиях.\n'
-    '1. Сначала определи функциональную категорию кадастрового ВРИ.\n'
-    '2. Затем проверь, есть ли для него основание в retrieval_text одним из двух способов:\n'
+    '1. Определи, перечисляет ли кадастровый ВРИ несколько самостоятельных видов\n'
+    '   использования (через ";" или запятые: "магазины, общественное питание, деловое управление").\n'
+    '   Описательные уточнения одного объекта перечислением не считаются:\n'
+    '   "жилой дом, бревенчатый, одноэтажный, с мансардой" — это один вид использования.\n'
+    '   Если видов несколько, разбирай КАЖДЫЙ отдельно и не останавливайся на первом,\n'
+    '   который подходит зоне.\n'
+    '2. Определи функциональную категорию кадастрового ВРИ (для перечисления — каждого вида).\n'
+    '3. Затем проверь, есть ли для него основание в retrieval_text одним из двух способов:\n'
     '   A) прямое или действительно близкое смысловое покрытие через перечисленные ВРИ и их описания;\n'
     '   B) прямое покрытие через наименование зоны или описание / целевое назначение зоны,\n'
     '      если из retrieval_text явно следует, что зона предназначена именно для таких объектов или территорий.\n'
-    '3. Подтип считается прямым покрытием, если кадастровая формулировка прямо перечислена\n'
+    '4. Подтип считается прямым покрытием, если кадастровая формулировка прямо перечислена\n'
     '   или надежно охватывается описанием разрешенного ВРИ внутри retrieval_text,\n'
     '   даже когда название самого VRI шире, чем кадастровая формулировка.\n'
-    '4. Если найдено основание по A или по B и оно не противоречит ограничениям зоны, разрешай использование.\n'
-    '5. Если такого основания нет, возвращай not_allowed.\n\n'
+    '5. Если найдено основание по A или по B и оно не противоречит ограничениям зоны, разрешай использование.\n'
+    '6. Если такого основания нет, возвращай not_allowed.\n'
+    '7. Когда видов использования несколько, сведи результаты по всему перечислению:\n'
+    '   - основание есть у всех видов -> allowed_*, причем по самому слабому из оснований:\n'
+    '     если хотя бы один вид разрешен только условно -> allowed_conditional,\n'
+    '     если только как вспомогательный -> allowed_auxiliary;\n'
+    '   - основание есть у части видов -> unclear, и в reason перечисли именно те виды,\n'
+    '     для которых основания в retrieval_text нет;\n'
+    '   - основания нет ни у одного вида -> not_allowed.\n'
+    '   Совпадение одного вида из перечисления с назначением зоны не разрешает остальные:\n'
+    '   "бульвары, парки, скверы" в зоне озеленения не делают разрешенными перечисленные\n'
+    '   рядом многоквартирные дома, школы и торговлю.\n\n'
     'Строгие правила:\n'
     '1. Main важнее conditional, conditional важнее auxiliary.\n'
     '2. Официальные коды и наименования ВРИ считай каноническими.\n'
     '3. Не делай широких аналогий между разными функциональными категориями.\n'
     '4. Поверхностное сходство слов не является основанием для allowed_*.\n'
     '5. Если у тебя нет явного основания из retrieval_text, выбирай not_allowed.\n'
-    '   Исключение — незаполненный кадастровый ВРИ: там всегда unclear (см. пункт 0).\n'
+    '   Исключение — незаполненный кадастровый ВРИ: там всегда unclear (см. пункт 0),\n'
+    '   и перечисление, где основание есть у части видов: там unclear (см. пункт 7).\n'
     '6. Нельзя отказывать только потому, что фраза отсутствует как буквальное название ВРИ,\n'
     '   если она прямо покрывается описанием разрешенного VRI, назначением самой зоны\n'
     '   или ее наименованием / описанием.\n'
@@ -303,6 +321,8 @@ ZONE_CHECK_SYSTEM_PROMPT = (
     '  Это не относится к незаполненному кадастровому ВРИ — там по пункту 0 всегда unclear.\n'
     '- Не предлагай альтернативные зоны.\n'
     '- Если основание двусмысленное и недостаточно надежное, верни unclear.\n'
+    '- Для unclear по неполному покрытию перечисления обязательно перечисли в reason виды\n'
+    '  использования, для которых основания нет: по этому списку человек проверяет участок.\n'
     '- Поле reason всегда пиши на русском языке, даже если рассуждал про себя на другом.\n\n'
     'Разрешенные verdict:\n'
     '- allowed_main\n- allowed_conditional\n- allowed_auxiliary\n- not_allowed\n- unclear\n\n'
@@ -310,10 +330,6 @@ ZONE_CHECK_SYSTEM_PROMPT = (
 )
 
 ZONE_CHECK_SCHEMA = {'type': 'object', 'properties': {'verdict': {'type': 'string'}, 'matched_vri_name': {'type': ['string', 'null']}, 'matched_vri_code': {'type': ['string', 'null']}, 'reason': {'type': 'string'}}, 'required': ['verdict', 'matched_vri_name', 'matched_vri_code', 'reason']}
-
-FALLBACK_SCHEMA = {'type': 'object', 'properties': {'suggested_code': {'type': ['string', 'null']}, 'suggested_description': {'type': ['string', 'null']}, 'verdict': {'type': 'string'}, 'matched_vri_name': {'type': ['string', 'null']}, 'matched_vri_code': {'type': ['string', 'null']}, 'reason': {'type': 'string'}}, 'required': ['suggested_code', 'suggested_description', 'verdict', 'matched_vri_name', 'matched_vri_code', 'reason']}
-
-FALLBACK_SYSTEM_PROMPT = 'Ты подбираешь альтернативную зону ПЗЗ только если кадастровый ВРИ не подходит фактической зоне.\n\nПравила:\n1. Выбирай только из переданного списка кандидатов.\n2. Предпочитай явные совпадения ВРИ.\n3. Если в списке нет надежного кандидата, верни verdict=not_found и suggested_code=null.\n4. Если кандидат подходит как условно разрешенный или вспомогательный вид, это нужно указать соответствующим verdict.\n\nРазрешенные verdict:\n- allowed_main\n- allowed_conditional\n- allowed_auxiliary\n- not_found\n\nВерни строго JSON по схеме.\n'.strip()
 
 def build_zone_check_prompt(vri_text: str, zone_ref: dict[str, Any], exact_matches: list[dict[str, Any]], actual_zone_code: str, actual_zone_name: Any, actual_share: Any, intersect_codes: Any, context: Any=None) -> str:
     """Build a strict actual-zone prompt using retrieval_text of the factual zone."""
@@ -328,7 +344,16 @@ def build_zone_check_prompt(vri_text: str, zone_ref: dict[str, Any], exact_match
         exact_lines.append(f"- section={normalize_text(match.get('section_name'))}; code={normalize_text(match.get('matched_vri_code'))}; name={normalize_text(match.get('matched_vri_name'))}\n")
     if not exact_lines:
         exact_lines = ['- нет\n']
-    lines = [f'Кадастровый ВРИ: {normalize_text(vri_text)}\n', f'Код фактической зоны ПЗЗ: {normalize_text(actual_zone_code)}\n', f'Базовый код зоны: {base_zone_code}\n', f'Наименование фактической зоны: {zone_heading}\n', '\n', 'Инструкция по принятию решения:\n', '- Сначала определи функциональную категорию кадастрового ВРИ.\n', '- Затем ищи только прямое совпадение, прямое покрытие подтипа через описание разрешенного ВРИ\n', '  или действительно близкую более широкую категорию в retrieval_text.\n', '- Если кадастровая формулировка прямо перечислена в описании разрешенного VRI,\n', '  это считается надежным прямым покрытием, даже если название VRI шире.\n', '- Если надежного текстового покрытия нет, верни not_allowed.\n', '- Не делай широких аналогий между разными функциональными категориями.\n', '- Не предлагай альтернативные зоны.\n', '\n', 'Универсальные ограничения:\n', '- Производство / промышленность / цех / завод / склад / логистика не равны торговле,\n', '  магазинам, общепиту, бытовому обслуживанию, деловому управлению,\n', '  социальной или жилой функции, если это прямо не указано.\n', '- Пожарная охрана / спасательные службы / МЧС / ГО и ЧС не равны торговле или жилью;\n', '  их можно разрешать только если retrieval_text реально покрывает публичные / общественные /\n', '  управленческие / социальные объекты такого типа.\n', '- Не путай ИЖС, малоэтажную, среднеэтажную и многоэтажную жилую застройку.\n', '- Для verdict=allowed_* в reason обязательно укажи,\n', '  какая категория, описание VRI или формулировка зоны из retrieval_text покрывает кадастровый ВРИ.\n', '\n', 'Точные / почти точные совпадения в этой зоне:\n', *exact_lines, '\n', 'Короткое summary зоны:\n', (zone_summary or '- нет данных') + '\n', '\n', 'Полное описание фактической зоны (retrieval_text):\n', (retrieval_text or '- нет данных') + '\n', '\n', 'Верни строго JSON вида: {"verdict":"...","matched_vri_name":"...","matched_vri_code":"...","reason":"..."}\n']
+    parcel_lines = [f'Кадастровый ВРИ: {normalize_text(vri_text)}\n']
+    zone_header_lines = [f'Код фактической зоны ПЗЗ: {normalize_text(actual_zone_code)}\n', f'Базовый код зоны: {base_zone_code}\n', f'Наименование фактической зоны: {zone_heading}\n', '\n']
+    instruction_lines = ['Инструкция по принятию решения:\n', '- Сначала определи функциональную категорию кадастрового ВРИ.\n', '- Затем ищи только прямое совпадение, прямое покрытие подтипа через описание разрешенного ВРИ\n', '  или действительно близкую более широкую категорию в retrieval_text.\n', '- Если кадастровая формулировка прямо перечислена в описании разрешенного VRI,\n', '  это считается надежным прямым покрытием, даже если название VRI шире.\n', '- Если надежного текстового покрытия нет, верни not_allowed.\n', '- Не делай широких аналогий между разными функциональными категориями.\n', '- Не предлагай альтернативные зоны.\n', '\n', 'Универсальные ограничения:\n', '- Производство / промышленность / цех / завод / склад / логистика не равны торговле,\n', '  магазинам, общепиту, бытовому обслуживанию, деловому управлению,\n', '  социальной или жилой функции, если это прямо не указано.\n', '- Пожарная охрана / спасательные службы / МЧС / ГО и ЧС не равны торговле или жилью;\n', '  их можно разрешать только если retrieval_text реально покрывает публичные / общественные /\n', '  управленческие / социальные объекты такого типа.\n', '- Не путай ИЖС, малоэтажную, среднеэтажную и многоэтажную жилую застройку.\n', '- Для verdict=allowed_* в reason обязательно укажи,\n', '  какая категория, описание VRI или формулировка зоны из retrieval_text покрывает кадастровый ВРИ.\n', '\n']
+    exact_block_lines = ['Точные / почти точные совпадения в этой зоне:\n', *exact_lines, '\n']
+    zone_body_lines = ['Короткое summary зоны:\n', (zone_summary or '- нет данных') + '\n', '\n', 'Полное описание фактической зоны (retrieval_text):\n', (retrieval_text or '- нет данных') + '\n', '\n']
+    answer_lines = ['Верни строго JSON вида: {"verdict":"...","matched_vri_name":"...","matched_vri_code":"...","reason":"..."}\n']
+    if ZONE_CHECK_PROMPT_ZONE_FIRST:
+        lines = [*zone_header_lines, *instruction_lines, *zone_body_lines, *exact_block_lines, *parcel_lines, '\n', *answer_lines]
+    else:
+        lines = [*parcel_lines, *zone_header_lines, *instruction_lines, *exact_block_lines, *zone_body_lines, *answer_lines]
     return ''.join(lines)
 
 def run_zone_check_with_llm(prompt: str, think_override: Any=None, context: Any=None) -> dict[str, Any]:
@@ -336,39 +361,7 @@ def run_zone_check_with_llm(prompt: str, think_override: Any=None, context: Any=
     llm = context.llm_client if context is not None else None
     if llm is None:
         raise RuntimeError("LLM client not available: context.llm_client is None")
-    return llm.complete_json(user_prompt=prompt, system_prompt=ZONE_CHECK_SYSTEM_PROMPT, schema=ZONE_CHECK_SCHEMA, model=LLM_MODEL, think_override=think_override)
+    branch = llm_stats.ZONE_CHECK_DEEP if think_override else llm_stats.ZONE_CHECK
+    with llm_stats.record(branch):
+        return llm.complete_json(user_prompt=prompt, system_prompt=ZONE_CHECK_SYSTEM_PROMPT, schema=ZONE_CHECK_SCHEMA, model=LLM_MODEL, think_override=think_override)
 
-def heuristic_zone_decision(zone_ref: Optional[dict[str, Any]], exact_matches: list[dict[str, Any]]) -> dict[str, Any]:
-    """Fallback heuristic for actual zone decision when LLM is unavailable."""
-    best_match = choose_best_exact_match(exact_matches)
-    if zone_ref is None:
-        return {'verdict': 'no_zone_metadata', 'matched_vri_name': None, 'matched_vri_code': None, 'reason': 'Для фактической зоны не найдено описание в шаблоне ПЗЗ.'}
-    if best_match is not None:
-        return {'verdict': SECTION_TO_VERDICT.get(best_match['section_name'], 'unclear'), 'matched_vri_name': best_match['matched_vri_name'], 'matched_vri_code': best_match['matched_vri_code'], 'reason': 'Решение принято по точному / почти точному совпадению внутри фактической зоны.'}
-    return {'verdict': 'unclear', 'matched_vri_name': None, 'matched_vri_code': None, 'reason': 'Точного совпадения внутри фактической зоны нет; без LLM требуется ручная проверка.'}
-
-def heuristic_fallback_decision(candidates: list[dict[str, Any]]) -> dict[str, Any]:
-    """Fallback heuristic for alternative zone search when LLM is unavailable."""
-    if not candidates:
-        return {'suggested_code': None, 'suggested_description': None, 'verdict': 'not_found', 'matched_vri_name': None, 'matched_vri_code': None, 'reason': 'Кандидаты для альтернативной зоны не найдены.'}
-    best_candidate = candidates[0]
-    best_exact = None
-    for item in best_candidate.get('matched_items', []):
-        if item.get('source') == 'exact_match':
-            best_exact = item
-            break
-    if best_exact is not None:
-        section_name = normalize_text(best_exact.get('section_name'))
-        verdict = SECTION_TO_VERDICT.get(section_name, 'not_found')
-        return {'suggested_code': best_candidate['code'], 'suggested_description': best_candidate['description'], 'verdict': verdict, 'matched_vri_name': best_exact.get('matched_vri_name'), 'matched_vri_code': best_exact.get('matched_vri_code'), 'reason': 'Альтернативная зона выбрана по точному совпадению в глобальном каталоге.'}
-    return {'suggested_code': None, 'suggested_description': None, 'verdict': 'not_found', 'matched_vri_name': None, 'matched_vri_code': None, 'reason': 'Надежная альтернативная зона не найдена без LLM.'}
-
-def build_fallback_prompt(vri_text: str, actual_zone_code: Any, actual_zone_name: Any, candidates: list[dict[str, Any]]) -> str:
-    """Build prompt for alternative zone suggestion."""
-    lines = [f'Кадастровый ВРИ: {normalize_text(vri_text)}', f'Фактическая зона, где участок расположен: {normalize_text(actual_zone_code)} | {normalize_text(actual_zone_name)}', '', 'Кандидаты для альтернативного поиска:']
-    for candidate in candidates:
-        lines.append(f"- code={candidate['code']}; base_code={candidate['base_code']}; name={candidate['description']}; group={candidate['group']}; score={float(candidate['score']):.4f}; main_vri_names={candidate['main_vri_names']}; conditional_vri_names={candidate['conditional_vri_names']}; auxiliary_vri_names={candidate['auxiliary_vri_names']}; summary={candidate['summary']}")
-        for item in candidate.get('matched_items', [])[:6]:
-            lines.append(f"  evidence: source={item['source']}; section={item['section_name']}; matched_vri_name={item['matched_vri_name']}; matched_vri_code={item['matched_vri_code']}; contribution={float(item['contribution']):.4f}; note={item['matched_vri_description']}")
-    lines += ['', 'Верни JSON: suggested_code, suggested_description, verdict, matched_vri_name, matched_vri_code, reason.']
-    return '\n'.join(lines)

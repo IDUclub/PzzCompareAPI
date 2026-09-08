@@ -78,6 +78,13 @@ services:
 #      - /PzzCompareData:/app
       - /PzzCompareData/outputs:/app/outputs
       - /PzzCompareData/task_inputs:/app/task_inputs
+      # Embedding vectors (EMBED_CACHE_DIR). Shared with worker_llm on purpose:
+      # both queues embed the same static VRI catalogue, and each pipeline run is
+      # a fresh subprocess that would otherwise recompute it.
+      - /PzzCompareData/embed_cache:/app/embed_cache
+      # LLM answers (LLM_CACHE_DIR). Shared for the same reason, and because a
+      # repeated question must get the same verdict whichever queue runs it.
+      - /PzzCompareData/llm_cache:/app/llm_cache
 #      - ./data:/app/data
 
   worker_llm:
@@ -107,6 +114,8 @@ services:
 #      - /PzzCompareData:/app
       - /PzzCompareData/outputs:/app/outputs
       - /PzzCompareData/task_inputs:/app/task_inputs
+      - /PzzCompareData/embed_cache:/app/embed_cache
+      - /PzzCompareData/llm_cache:/app/llm_cache
 #      - ./data:/app/data
 
   beat:

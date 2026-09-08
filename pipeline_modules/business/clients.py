@@ -7,6 +7,8 @@ import requests
 from iduconfig import Config
 
 from .common import *
+from .embed_cache import get_embedding_cache
+from .llm_cache import CachingLLMClient
 from .text_utils import normalize_text, safe_json_loads
 
 config = Config()
@@ -86,23 +88,10 @@ class VectorizerClient:
         vectors = [item["embedding"] for item in ordered]
         return (batch_index, vectors)
 
-    def embed_many(self, texts: list[str], batch_size: int = 64) -> np.ndarray:
-        """Compute normalized embeddings for a list of texts in batches."""
-        cleaned = [normalize_text(text) for text in texts]
-        if not cleaned:
-            return np.zeros((0, 0), dtype=np.float32)
-        # Embedding servers reject empty strings and fail the WHOLE batch
-        # ("every input item must be a non-empty string"), so one junk cadastral
-        # VRI like "-" — which normalizes down to "" — would otherwise abort the
-        # entire run. Send only the non-empty texts and leave zero vectors in
-        # place of the rest: they match nothing, which is the intended meaning.
-        keep_indices = [index for index, text in enumerate(cleaned) if text]
-        if not keep_indices:
-            return np.zeros((0, 0), dtype=np.float32)
-        payload_texts = [cleaned[index] for index in keep_indices]
+    def _embed_in_batches(self, texts: list[str], batch_size: int) -> list[list[float]]:
         batches: list[list[str]] = [
-            payload_texts[start:start + batch_size]
-            for start in range(0, len(payload_texts), batch_size)
+            texts[start:start + batch_size]
+            for start in range(0, len(texts), batch_size)
         ]
         all_vectors: list[list[float]] = []
         if self.max_parallel_requests == 1 or len(batches) == 1:
@@ -120,6 +109,30 @@ class VectorizerClient:
                 ]
             for _, vectors in sorted(completed, key=lambda item: item[0]):
                 all_vectors.extend(vectors)
+        return all_vectors
+
+    def embed_many(self, texts: list[str], batch_size: int = 64) -> np.ndarray:
+        """Compute normalized embeddings for a list of texts in batches."""
+        cleaned = [normalize_text(text) for text in texts]
+        if not cleaned:
+            return np.zeros((0, 0), dtype=np.float32)
+        # Embedding servers reject empty strings and fail the WHOLE batch
+        # ("every input item must be a non-empty string"), so one junk cadastral
+        # VRI like "-" — which normalizes down to "" — would otherwise abort the
+        # entire run. Send only the non-empty texts and leave zero vectors in
+        # place of the rest: they match nothing, which is the intended meaning.
+        keep_indices = [index for index, text in enumerate(cleaned) if text]
+        if not keep_indices:
+            return np.zeros((0, 0), dtype=np.float32)
+        payload_texts = [cleaned[index] for index in keep_indices]
+        cache = get_embedding_cache(self.model)
+        if cache is None:
+            all_vectors = self._embed_in_batches(payload_texts, batch_size)
+        else:
+            all_vectors = cache.resolve(
+                payload_texts,
+                lambda missing: self._embed_in_batches(missing, batch_size),
+            )
         matrix = np.asarray(all_vectors, dtype=np.float32)
         if matrix.size == 0:
             return np.zeros((0, 0), dtype=np.float32)
@@ -381,17 +394,11 @@ class VLLMChatClient:
         return safe_json_loads(content)
 
 
-def parse_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
 def build_llm_client(*, backend: str, timeout: int, default_model: Optional[str], temperature: float, num_ctx: int, num_predict: int, think: Any, runtime_presets: Optional[dict[str, dict[str, Any]]] = None):
     _ = (num_ctx, runtime_presets)
     backend_norm = normalize_text(backend).lower()
     if backend_norm == "vllm":
-        return VLLMChatClient(
+        return CachingLLMClient(VLLMChatClient(
             base_url=config.get("VLLM_BASE_URL"),
             api_key=config.get("VLLM_API_KEY"),
             timeout=timeout,
@@ -399,8 +406,8 @@ def build_llm_client(*, backend: str, timeout: int, default_model: Optional[str]
             temperature=temperature,
             max_tokens=num_predict,
             think=think,
-        )
-    return OllamaLLMClient(
+        ))
+    return CachingLLMClient(OllamaLLMClient(
         base_url=config.get("OLLAMA_BASE_URL"),
         mode=config.get("LLM_API_MODE"),
         timeout=timeout,
@@ -412,7 +419,7 @@ def build_llm_client(*, backend: str, timeout: int, default_model: Optional[str]
         think=think,
         runtime_presets=json.loads('{"gpt-oss":{"mode":"chat","think":"low"},"qwen3":{"mode":"chat",'
                                               '"think":false},"llama3.1":{"mode":"chat","think":false}}'),
-    )
+    ))
 
 
 vectorizer = VectorizerClient(

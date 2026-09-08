@@ -4,6 +4,7 @@ import json
 import os
 import re
 from collections import defaultdict, Counter
+from functools import lru_cache
 from difflib import SequenceMatcher
 from typing import Any, Optional
 
@@ -31,22 +32,13 @@ def normalize_text(value: Any) -> str:
         return ''
     return text
 
-def is_placeholder_value(value: Any) -> bool:
-    """Return True when the value should be treated as empty."""
-    return normalize_text(value).lower() in {'', '-', '—', '–', 'nan', 'none', 'null'}
-
-def resolve_first_existing_path(path_candidates: list[str]) -> str:
-    """Return the first existing file path from candidates."""
-    for path in path_candidates:
-        if path and os.path.exists(path):
-            return path
-    raise FileNotFoundError(f'No existing file found in candidates: {path_candidates}')
-
 VRI_CODE_PATTERN = re.compile('^\\d+(?:\\.\\d+)*$')
 
 TOKEN_PATTERN = re.compile('[0-9a-zа-яё]+', flags=re.IGNORECASE)
 
 _TOKEN_CANONICAL_MAP = {'ижс': 'индивидуальный'}
+
+_CANONICAL_REPLACEMENTS = [('^для\\s+', ''), ('^ведение\\s+', 'ведение '), ('\\bижс\\b', 'индивидуальное жилищное строительство'), ('\\bдля индивидуального жилищного строительства\\b', 'индивидуальное жилищное строительство'), ('\\bиндивидуальной жилой застройки\\b', 'индивидуальное жилищное строительство'), ('\\bиндивидуальной жилищной застройки\\b', 'индивидуальное жилищное строительство'), ('\\bдля размещения индивидуального жилого дома\\b', 'размещение индивидуального жилого дома'), ('\\bдля размещения жилого дома\\b', 'размещение жилого дома'), ('\\bразмещения\\b', 'размещение'), ('\\bсадоводства\\b', 'садоводство'), ('\\bведения садоводства\\b', 'садоводство'), ('\\bдля ведения садоводства\\b', 'садоводство')]
 
 _STEMMER = RussianStemmer()
 
@@ -70,7 +62,12 @@ def is_valid_vri_code(value: Any) -> bool:
 
 def normalize_russian_text(text: Any) -> str:
     """Normalize Russian text for matching."""
-    value = normalize_text(text).lower().replace('ё', 'е')
+    return _normalize_russian_text_cached(normalize_text(text))
+
+
+@lru_cache(maxsize=200_000)
+def _normalize_russian_text_cached(value: str) -> str:
+    value = value.lower().replace('ё', 'е')
     value = re.sub('["\\\'`«»]', ' ', value)
     value = re.sub('[\\(\\)\\[\\]\\{\\}:;,.!?]', ' ', value)
     value = re.sub('[\\\\/]', ' ', value)
@@ -78,6 +75,7 @@ def normalize_russian_text(text: Any) -> str:
     value = re.sub('\\s+', ' ', value).strip()
     return value
 
+@lru_cache(maxsize=200_000)
 def normalize_match_token(token: str) -> str:
     """Normalize one token with lemmatization when available and stemming fallback."""
     token_norm = normalize_russian_text(token)
@@ -98,24 +96,30 @@ def normalize_match_token(token: str) -> str:
 
 def normalize_match_tokens(text: Any) -> list[str]:
     """Tokenize text and normalize tokens for robust Russian matching."""
-    value = normalize_russian_text(text)
+    return list(_normalize_match_tokens_cached(normalize_russian_text(text)))
+
+
+@lru_cache(maxsize=100_000)
+def _normalize_match_tokens_cached(value: str) -> tuple[str, ...]:
     if not value:
-        return []
+        return ()
     tokens: list[str] = []
     for raw_token in TOKEN_PATTERN.findall(value):
         token = normalize_match_token(raw_token)
         if token:
             tokens.append(token)
-    return tokens
+    return tuple(tokens)
 
 def canonicalize_vri_name(value: Any) -> str:
     """Canonicalize VRI text for robust matching."""
-    text = normalize_russian_text(value)
-    replacements = [('^для\\s+', ''), ('^ведение\\s+', 'ведение '), ('\\bижс\\b', 'индивидуальное жилищное строительство'), ('\\bдля индивидуального жилищного строительства\\b', 'индивидуальное жилищное строительство'), ('\\bиндивидуальной жилой застройки\\b', 'индивидуальное жилищное строительство'), ('\\bиндивидуальной жилищной застройки\\b', 'индивидуальное жилищное строительство'), ('\\bдля размещения индивидуального жилого дома\\b', 'размещение индивидуального жилого дома'), ('\\bдля размещения жилого дома\\b', 'размещение жилого дома'), ('\\bразмещения\\b', 'размещение'), ('\\bсадоводства\\b', 'садоводство'), ('\\bведения садоводства\\b', 'садоводство'), ('\\bдля ведения садоводства\\b', 'садоводство')]
-    for pattern, replacement in replacements:
+    return _canonicalize_vri_name_cached(normalize_russian_text(value))
+
+
+@lru_cache(maxsize=100_000)
+def _canonicalize_vri_name_cached(text: str) -> str:
+    for pattern, replacement in _CANONICAL_REPLACEMENTS:
         text = re.sub(pattern, replacement, text).strip()
-    tokens = normalize_match_tokens(text)
-    return ' '.join(tokens)
+    return ' '.join(normalize_match_tokens(text))
 
 def tokenize_canonical(text: Any) -> list[str]:
     """Split canonicalized text into tokens."""
@@ -205,14 +209,6 @@ def collect_unique_codes(values: list[Any]) -> list[str]:
             result.append(code)
     return result
 
-def split_codes(value: Any) -> list[str]:
-    """Split joined code strings into a list of codes."""
-    text = normalize_text(value)
-    if not text:
-        return []
-    parts = re.split('\\s*\\|\\s*|;\\s*|,\\s*', text)
-    return [part for part in [normalize_text(item) for item in parts] if part]
-
 def build_actual_zone_key(vri_text: Any, actual_code: Any) -> str:
     """Build stable key for actual-zone checks only."""
     return ' || '.join([canonicalize_vri_name(vri_text), normalize_text(actual_code)])
@@ -220,10 +216,6 @@ def build_actual_zone_key(vri_text: Any, actual_code: Any) -> str:
 def build_fallback_key(vri_text: Any, actual_code: Any, intersect_codes: Any) -> str:
     """Build stable key for fallback/global-search checks."""
     return ' || '.join([canonicalize_vri_name(vri_text), normalize_text(actual_code), normalize_text(intersect_codes)])
-
-def build_comparison_key(vri_text: Any, actual_code: Any, intersect_codes: Any) -> str:
-    """Backward-compatible alias for the final merge key."""
-    return build_fallback_key(vri_text=vri_text, actual_code=actual_code, intersect_codes=intersect_codes)
 
 CANONICAL_VERDICTS = {'allowed_main', 'allowed_conditional', 'allowed_auxiliary', 'not_allowed', 'unclear', 'no_actual_zone', 'no_zone_metadata'}
 
@@ -273,67 +265,6 @@ def build_short_retrieval_text_from_zone_dict(zone: dict[str, Any]) -> str:
     parts = [f'Код зоны: {zone_code}.', f'Наименование зоны: {zone_name}.', summary, f'Основные ВРИ: {main_names}.', f'Условно разрешенные ВРИ: {conditional_names}.', f'Вспомогательные ВРИ: {auxiliary_names}.']
     return ' '.join([normalize_text(part) for part in parts if normalize_text(part)])
 
-def build_zone_section_text(zone: dict[str, Any], section_name: str) -> str:
-    """Render one zone section as text for prompts."""
-    lines: list[str] = []
-    for item in zone.get(section_name, []) or []:
-        vri_code = normalize_text(item.get('vri_code'))
-        vri_name = normalize_text(item.get('vri_name'))
-        vri_description = normalize_text(item.get('vri_description'))
-        lines.append(f'- {vri_code} | {vri_name} | {vri_description}')
-    return '\n'.join(lines) if lines else '- нет данных'
-
-def render_zone_retrieval_text(zone: dict[str, Any]) -> str:
-    """Rebuild retrieval_text from structured zone fields after sanitation."""
-    parts: list[str] = []
-    field_specs = [('zone_code', 'Код зоны'), ('base_zone_code', 'Базовый код зоны'), ('article_code', 'Раздел ПЗЗ'), ('zone_group_name', 'Группа зон'), ('zone_name', 'Наименование зоны')]
-    for field_name, label in field_specs:
-        value = normalize_text(zone.get(field_name))
-        if value:
-            parts.append(f'{label}: {value}.')
-    zone_notes = [normalize_text(item) for item in zone.get('zone_notes', []) if normalize_text(item)]
-    if zone_notes:
-        parts.append(f"Описание и примечания зоны: {' '.join(zone_notes)}.")
-    section_labels = {'main': 'Основные виды разрешенного использования', 'conditional': 'Условно разрешенные виды использования', 'auxiliary': 'Вспомогательные виды использования'}
-    for section_name, label in section_labels.items():
-        items = zone.get(section_name, []) or []
-        section_chunks: list[str] = []
-        for item in items:
-            vri_code = normalize_text(item.get('vri_code'))
-            vri_name = normalize_text(item.get('vri_name'))
-            vri_description = normalize_text(item.get('vri_description'))
-            if vri_code and vri_name and vri_description:
-                section_chunks.append(f'код {vri_code} — {vri_name} — {vri_description}')
-            elif vri_code and vri_name:
-                section_chunks.append(f'код {vri_code} — {vri_name}')
-            elif vri_name:
-                section_chunks.append(vri_name)
-        if section_chunks:
-            parts.append(f"{label}: {' ; '.join(section_chunks)}.")
-            continue
-        section_note = normalize_text((zone.get('section_notes') or {}).get(section_name))
-        if section_note:
-            parts.append(f'{label}: {section_note}.')
-    return ' '.join((part for part in parts if normalize_text(part)))
-
-def render_zone_summary(zone: dict[str, Any]) -> str:
-    """Rebuild zone summary from structured zone fields after sanitation."""
-    zone_name = normalize_text(zone.get('zone_name'))
-    zone_notes = ' '.join([normalize_text(item) for item in zone.get('zone_notes', []) if normalize_text(item)]).strip()
-    main_names = ', '.join([normalize_text(item.get('vri_name')) for item in zone.get('main', [])[:5] if normalize_text(item.get('vri_name'))])
-    conditional_names = ', '.join([normalize_text(item.get('vri_name')) for item in zone.get('conditional', [])[:5] if normalize_text(item.get('vri_name'))])
-    auxiliary_names = ', '.join([normalize_text(item.get('vri_name')) for item in zone.get('auxiliary', [])[:5] if normalize_text(item.get('vri_name'))])
-    parts = [zone_name]
-    if zone_notes:
-        parts.append(zone_notes)
-    if main_names:
-        parts.append(f'Основные ВРИ: {main_names}.')
-    if conditional_names:
-        parts.append(f'Условно разрешенные ВРИ: {conditional_names}.')
-    if auxiliary_names:
-        parts.append(f'Вспомогательные ВРИ: {auxiliary_names}.')
-    return ' '.join((part for part in parts if normalize_text(part))).strip()
-
 def flatten_zone_catalog(raw_catalog: list[dict[str, Any]]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Flatten structured zone catalog into zone and VRI dataframes with classifier metadata."""
     zone_rows: list[dict[str, Any]] = []
@@ -377,13 +308,12 @@ def flatten_zone_catalog(raw_catalog: list[dict[str, Any]]) -> tuple[pd.DataFram
     if not zone_rows:
         # Empty catalog (e.g. classification-only mode) — return typed empty DataFrames
         # so callers that check .empty or iterate columns don't crash.
-        zone_df = pd.DataFrame(columns=['zone_code', 'base_zone_code', 'zone_name', 'zone_group_name', 'zone_summary', 'retrieval_text', 'retrieval_text_short', 'main_vri_names', 'conditional_vri_names', 'auxiliary_vri_names', 'main_vri_codes', 'conditional_vri_codes', 'auxiliary_vri_codes', 'main_vri_full', 'conditional_vri_full', 'auxiliary_vri_full', 'zone_search_text'])
+        zone_df = pd.DataFrame(columns=['zone_code', 'base_zone_code', 'zone_name', 'zone_group_name', 'zone_summary', 'retrieval_text', 'retrieval_text_short', 'main_vri_names', 'conditional_vri_names', 'auxiliary_vri_names', 'main_vri_codes', 'conditional_vri_codes', 'auxiliary_vri_codes', 'main_vri_full', 'conditional_vri_full', 'auxiliary_vri_full'])
         item_df = pd.DataFrame(columns=['zone_code', 'base_zone_code', 'zone_name', 'zone_group_name', 'zone_summary', 'section_name', 'catalog_vri_code', 'catalog_vri_name', 'catalog_vri_description', 'catalog_vri_name_norm', 'catalog_vri_name_plain', 'catalog_original_vri_name', 'catalog_original_vri_description', 'catalog_vri_parent_code', 'catalog_vri_top_level_code', 'catalog_normalized_by_rosreestr_classifier', 'item_search_text'])
         return (zone_df, item_df)
 
     zone_df = pd.DataFrame(zone_rows)
     item_df = pd.DataFrame(item_rows)
-    zone_df['zone_search_text'] = (zone_df['zone_code'].fillna('') + ' ' + zone_df['zone_name'].fillna('') + ' ' + zone_df['zone_summary'].fillna('') + ' ' + zone_df['main_vri_names'].fillna('') + ' ' + zone_df['conditional_vri_names'].fillna('') + ' ' + zone_df['auxiliary_vri_names'].fillna('')).map(canonicalize_vri_name)
     item_df['item_search_text'] = (item_df['catalog_vri_name'].fillna('') + ' ' + item_df['catalog_vri_description'].fillna('') + ' ' + item_df['catalog_original_vri_name'].fillna('') + ' ' + item_df['catalog_original_vri_description'].fillna('') + ' ' + item_df['zone_name'].fillna('') + ' ' + item_df['zone_summary'].fillna('')).map(canonicalize_vri_name)
     return (zone_df, item_df)
 
