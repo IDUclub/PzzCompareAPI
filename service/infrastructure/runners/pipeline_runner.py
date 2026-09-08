@@ -106,7 +106,9 @@ class SubprocessPipelineRunner(PipelineRunner):
         env["GENERATE_MODEL"] = settings.generate_model
         env["TOP_K"] = str(settings.top_k)
         env["EMBED_BATCH_SIZE"] = str(settings.embed_batch_size)
-        env["PIPELINE_CALLABLE"] = settings.pipeline_callable
+        env["EMBED_CACHE_DIR"] = settings.embed_cache_dir
+        env["LLM_CACHE_DIR"] = settings.llm_cache_dir
+        env["LLM_CACHE_TTL_DAYS"] = settings.llm_cache_ttl_days
 
         result = subprocess.run(
             [sys.executable, "-m", settings.pipeline_module],

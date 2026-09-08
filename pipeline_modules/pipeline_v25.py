@@ -7,7 +7,9 @@ InProcessPipelineRunner bypasses this file and calls pipeline_impl:run_pipeline 
 
 from __future__ import annotations
 
+import logging
 import os
+import sys
 
 from pipeline_modules.business import PipelineArtifacts, run_for_task
 from pipeline_modules.business.types import PipelineSettings
@@ -100,4 +102,11 @@ def run_pipeline() -> PipelineArtifacts:
 
 
 if __name__ == "__main__":
+    # SubprocessPipelineRunner pipes stderr away and only reads it when the run
+    # fails, so stage logs have to go to stdout to reach the worker's log.
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stdout,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
     run_pipeline()

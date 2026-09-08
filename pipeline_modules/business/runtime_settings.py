@@ -11,8 +11,24 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 ENABLE_EMBED_FAST_MATCH = _env_bool("ENABLE_EMBED_FAST_MATCH", True)
+# Per-zone VRI embeddings feed only ``fast_embed_match_in_zone``. Building them
+# costs one embedder call per zone up front, which on the current backends is
+# far more expensive than the LLM zone check they are meant to avoid.
+ENABLE_ZONE_ITEM_EMBED_MATCH = _env_bool("ENABLE_ZONE_ITEM_EMBED_MATCH", False)
 ENABLE_FAST_STRING_MATCH = _env_bool("ENABLE_FAST_STRING_MATCH", True)
 ENABLE_LLM = _env_bool("ENABLE_LLM", True)
+SPATIAL_MIN_POLYGON_INTERSECTION_AREA_M2 = max(
+    0.0,
+    float(os.getenv("SPATIAL_MIN_POLYGON_INTERSECTION_AREA_M2", "1.0")),
+)
+SPATIAL_MIN_LINE_INTERSECTION_LENGTH_M = max(
+    0.0,
+    float(os.getenv("SPATIAL_MIN_LINE_INTERSECTION_LENGTH_M", "0.01")),
+)
+SPATIAL_MIN_INTERSECTION_SHARE = max(
+    0.0,
+    float(os.getenv("SPATIAL_MIN_INTERSECTION_SHARE", "0.000001")),
+)
 NOT_ALLOWED_LLM_RERANK_ENABLED = _env_bool("NOT_ALLOWED_LLM_RERANK_ENABLED", True)
 NOT_ALLOWED_LLM_RERANK_THINK = os.getenv("NOT_ALLOWED_LLM_RERANK_THINK", "false").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -59,7 +75,10 @@ INTERSECT_ZONE_PRIOR_BONUS = float(os.getenv("INTERSECT_ZONE_PRIOR_BONUS", "0.5"
 DOMINANT_PZZ_MIN_SHARE = float(os.getenv("DOMINANT_PZZ_MIN_SHARE", "0.5"))
 
 LLM_LONG_TEXT_HARD_CASE_MIN_LEN = int(os.getenv("LLM_LONG_TEXT_HARD_CASE_MIN_LEN", "70"))
-ENABLE_PROFILED_FAST_MATCH = _env_bool("ENABLE_PROFILED_FAST_MATCH", True)
+# Heritage-flavoured cases are asked again without ``reasoning_effort=low``, so
+# the backend falls back to its default effort. That path costs about five times
+# a normal call; turn it off to measure whether the extra effort changes verdicts.
+LLM_DEEP_REASONING_ENABLED = _env_bool("LLM_DEEP_REASONING_ENABLED", True)
 ALLOW_ZONE_NAME_SUMMARY_AUTOMATCH = _env_bool("ALLOW_ZONE_NAME_SUMMARY_AUTOMATCH", False)
 RESIDENTIAL_AUTO_REQUIRES_SUBTYPE = _env_bool("RESIDENTIAL_AUTO_REQUIRES_SUBTYPE", True)
 # Жилой объект без указания этажности/типа застройки относим к обобщенному ВРИ
@@ -68,4 +87,8 @@ RESIDENTIAL_UNSPECIFIED_TO_GENERIC = _env_bool("RESIDENTIAL_UNSPECIFIED_TO_GENER
 RESIDENTIAL_GENERIC_VRI_CODE = os.getenv("RESIDENTIAL_GENERIC_VRI_CODE", "2.0")
 PROFILED_EMBED_RESTRICTION = _env_bool("PROFILED_EMBED_RESTRICTION", True)
 LLM_BACKEND = os.getenv("LLM_BACKEND", "vllm")
-LLM_MODEL = os.getenv("LLM_MODEL", os.getenv("GENERATE_MODEL", "openai/gpt-oss-20b" if LLM_BACKEND == "vllm" else "gpt-oss:20b"))
+LLM_MODEL = os.getenv("LLM_MODEL", os.getenv("GENERATE_MODEL", "gpt-oss-20b" if LLM_BACKEND == "vllm" else "gpt-oss:20b"))
+# Put the per-zone part of the zone-check prompt first so every parcel in the
+# same zone shares a long token prefix, which the backend's prefix cache reuses
+# instead of prefilling the whole regulation text again.
+ZONE_CHECK_PROMPT_ZONE_FIRST = _env_bool("ZONE_CHECK_PROMPT_ZONE_FIRST", False)

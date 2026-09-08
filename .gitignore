@@ -252,3 +252,6 @@ docker-compose.localtest.override.yml
 scripts/_*.json
 scripts/_*.txt
 _host_upload*.txt
+
+# Pipeline run artefacts (20 MB+ of GeoJSON per benchmark sweep)
+outputs/
