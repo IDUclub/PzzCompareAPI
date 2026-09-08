@@ -103,6 +103,25 @@ def test_projected_metres_are_rejected() -> None:
     assert "1284377.58" in str(exc.value)
 
 
+def test_refusal_says_what_to_do_about_it() -> None:
+    """The message is read by a non-developer, and the obvious fix is the wrong one.
+
+    Assigning EPSG:4326 to a NonEarth layer (rather than reprojecting from its real
+    CRS) silently moves every parcel to null island, so the refusal has to name both
+    the target CRS and the step that gets there.
+    """
+    with pytest.raises(GeoCrsError) as exc:
+        ensure_wgs84(_fc([1284377.58, 709961.18]))
+    message = str(exc.value)
+    assert "EPSG:4326" in message
+    assert "QGIS" in message
+    assert "переподписать" in message
+
+    with pytest.raises(GeoCrsError) as declared:
+        ensure_wgs84(_fc([10.0, 20.0], crs_name="urn:ogc:def:crs:EPSG::3857"))
+    assert "EPSG:4326" in str(declared.value)
+
+
 def test_declared_non_wgs84_crs_is_rejected_even_when_values_are_in_range() -> None:
     with pytest.raises(GeoCrsError) as exc:
         ensure_wgs84(_fc([10.0, 20.0], crs_name="urn:ogc:def:crs:EPSG::3857"))
