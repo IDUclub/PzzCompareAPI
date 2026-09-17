@@ -198,8 +198,7 @@ def test_input_layers_use_building_label_for_building_mode(monkeypatch) -> None:
     by_name = {layer["name"]: layer for layer in layers}
     assert by_name["input_cadastral"]["title"] == "Исходные здания и сервисы"
     assert (
-        by_name["input_cadastral"]["filename"]
-        == "input_buildings_and_services.geojson"
+        by_name["input_cadastral"]["filename"] == "input_buildings_and_services.geojson"
     )
     assert by_name["input_zones"]["title"] == "Зоны ПЗЗ"
 

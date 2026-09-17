@@ -1454,8 +1454,7 @@ def _reconciled_intro(
         intro = f"Проверено земельных участков: {total}."
         item_dative = "земельного участка"
         definition = (
-            "ВРИ — вид разрешённого использования земельного участка; "
-            "ПЗЗ — правила "
+            "ВРИ — вид разрешённого использования земельного участка; " "ПЗЗ — правила "
         )
     if not_in_zone:
         intro += (
@@ -1511,8 +1510,7 @@ def _build_chat_message_objects(
         if len(wrong) > 10:
             noun = "объектов" if building_mode else "земельных участков"
             lines.append(
-                f"...и ещё {len(wrong) - 10} {noun} с недопустимым "
-                "в их зоне ВРИ."
+                f"...и ещё {len(wrong) - 10} {noun} с недопустимым " "в их зоне ВРИ."
             )
     elif not summary["unclear"]:
         lines += [
@@ -1598,17 +1596,14 @@ def build_object_zone_fit_response(
         raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to load result GeoJSON for task %s", task.external_id)
-        raise HTTPException(
-            status_code=503, detail=RESULT_LOAD_FAILED_MESSAGE
-        ) from exc
+        raise HTTPException(status_code=503, detail=RESULT_LOAD_FAILED_MESSAGE) from exc
 
     # Building checks mark every result feature explicitly. Prefer that artifact
     # marker over task metadata so reports for older/reloaded task objects still
     # use the right terminology.
     result_features = geojson.get("features") or []
     building_mode = _is_building_task(task) or any(
-        (feature.get("properties") or {}).get(_COL_CATEGORY)
-        in {"Здание", "Сервис"}
+        (feature.get("properties") or {}).get(_COL_CATEGORY) in {"Здание", "Сервис"}
         for feature in result_features
     )
 
@@ -1781,9 +1776,7 @@ def build_classify_summary_response(
         raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to load result GeoJSON for task %s", task.external_id)
-        raise HTTPException(
-            status_code=503, detail=RESULT_LOAD_FAILED_MESSAGE
-        ) from exc
+        raise HTTPException(status_code=503, detail=RESULT_LOAD_FAILED_MESSAGE) from exc
 
     rows: list[dict[str, Any]] = []
     for idx, feature in enumerate(geojson.get("features") or []):
