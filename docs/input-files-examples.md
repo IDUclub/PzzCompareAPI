@@ -12,7 +12,7 @@
 | `POST /scenarios/{id}/classify` | — данные тянутся из urban_api по `scenario_id`, файлы не грузятся | | | |
 | `auto/chat/stream` `mode=pzz_check` | `cadastral_…` — **участки** (§1) | `pzz_zones_…` (§3) | `pzz_zone_vri_labels_file` (§4.1) | `vri_classifier_file` (§5) |
 | `auto/chat/stream` `mode=classify_only` | `cadastral_…` — **участки** (§1) | — | — | `vri_classifier_file` (§5) |
-| `auto/chat/stream` `mode=building_pzz_check` | `cadastral_…` — **здания** (§2) | `pzz_zones_…` (§3) | `pzz_descriptions_file` (§4.2) | — |
+| `auto/chat/stream` `mode=building_pzz_check` | `cadastral_…` — **здания и сервисы** (§2) | `pzz_zones_…` (§3) | `pzz_descriptions_file` (§4.2) | — |
 | `POST /pzz/zone-descriptions/convert` | `file` — таблица описаний зон CSV/XLSX (§4.3) → JSON §4.2-B | — | — | — |
 
 **Общее для всех гео-файлов:**

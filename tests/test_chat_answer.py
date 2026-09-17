@@ -252,6 +252,37 @@ def test_large_report_falls_back_to_problem_objects() -> None:
     assert len(ctx) < 40000
 
 
+def test_building_report_context_uses_objects_and_keeps_category() -> None:
+    report = {
+        "mode": "building_pzz_check",
+        "summary": {"total": 2, "in_wrong_zone": 1, "unclear": 1},
+        "objects": [
+            {
+                "category": "Здание",
+                "vri_text": "Жилой дом",
+                "verdict": "Не разрешен",
+                "fit": "wrong",
+                "reason": "ВРИ не разрешён",
+            },
+            {
+                "category": "Сервис",
+                "vri_text": "Школа",
+                "verdict": "Требуется ручная проверка",
+                "fit": "unclear",
+                "reason": "Не удалось подобрать ВРИ",
+            },
+        ],
+    }
+
+    ctx = build_classification_context(object_zone_fit=report, max_report_chars=1)
+
+    assert "Причины по проблемным объектов" not in ctx
+    assert "Причины по проблемным объектам" in ctx
+    assert "Проблемные объекты (здания и сервисы)" in ctx
+    assert '"Категория_объекта": "Сервис"' in ctx
+    assert "земельные участки" not in ctx
+
+
 def test_build_messages_and_context() -> None:
     ctx = build_classification_context(chat_message="РЕЗЮМЕ", object_zone_fit={"a": 1})
     assert "РЕЗЮМЕ" in ctx and "JSON" in ctx
