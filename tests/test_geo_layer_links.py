@@ -84,6 +84,17 @@ def test_result_layers_two_for_building() -> None:
     assert all(layer["role"] == "result" for layer in layers)
 
 
+def test_result_layers_include_services_for_service_only_input() -> None:
+    task = _task(building_service_col="service_type_id")
+
+    layers = build_result_geo_layers(task, "abc123", get_settings())
+
+    assert {layer["name"] for layer in layers} == {
+        "buildings_result",
+        "services_result",
+    }
+
+
 def test_files_result_split_filters_by_category(tmp_path) -> None:
     from fastapi.testclient import TestClient
 
@@ -101,7 +112,12 @@ def test_files_result_split_filters_by_category(tmp_path) -> None:
             {
                 "type": "Feature",
                 "geometry": None,
-                "properties": {"Категория_объекта": "Сервис", "id": 2},
+                # Compatibility with cached results created before the explicit
+                # category column: the service split is recovered from its basis.
+                "properties": {
+                    "Основание_подбора_ВРИ": "сервис — ВРИ подобран по типу сервиса",
+                    "id": 2,
+                },
             },
             {
                 "type": "Feature",
@@ -171,6 +187,21 @@ def test_input_layers_for_uploaded_files(monkeypatch) -> None:
     assert all(layer["role"] == "input" for layer in layers)
     # Remote (minio://) inputs also carry a presigned download link.
     assert all(layer["download_url"] is not None for layer in layers)
+
+
+def test_input_layers_use_building_label_for_building_mode(monkeypatch) -> None:
+    monkeypatch.setattr(tasks_mod, "get_object_storage", lambda: _StubStorage())
+    task = _task(building_type_col="physical_object_type_id")
+
+    layers = build_input_geo_layers(task, "abc123", get_settings())
+
+    by_name = {layer["name"]: layer for layer in layers}
+    assert by_name["input_cadastral"]["title"] == "Исходные здания и сервисы"
+    assert (
+        by_name["input_cadastral"]["filename"]
+        == "input_buildings_and_services.geojson"
+    )
+    assert by_name["input_zones"]["title"] == "Зоны ПЗЗ"
 
 
 def test_input_layers_skip_missing_zones(monkeypatch) -> None:

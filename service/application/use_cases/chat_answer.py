@@ -128,19 +128,18 @@ def _extract_problem_objects(
         name = obj.get("matched_vri_name") or ""
         if not name and code and vri_names:
             name = vri_names.get(code, "")
-        trimmed.append(
-            {
-                "ВРИ_ЕГРН": obj.get("vri_text"),
-                "Название_зоны_ПЗЗ": obj.get("zone_name"),
-                "Вердикт_ПЗЗ": obj.get("verdict"),
-                "Код_подобранного_ВРИ": code or None,
-                "Подобранный_ВРИ": name or None,
-                "Основание_подбора_ВРИ": obj.get("resolution_basis") or None,
-                "Причина": (
-                    reason[:reason_chars] if isinstance(reason, str) else reason
-                ),
-            }
-        )
+        item = {
+            "ВРИ_ЕГРН": obj.get("vri_text"),
+            "Название_зоны_ПЗЗ": obj.get("zone_name"),
+            "Вердикт_ПЗЗ": obj.get("verdict"),
+            "Код_подобранного_ВРИ": code or None,
+            "Подобранный_ВРИ": name or None,
+            "Основание_подбора_ВРИ": obj.get("resolution_basis") or None,
+            "Причина": reason[:reason_chars] if isinstance(reason, str) else reason,
+        }
+        if obj.get("category"):
+            item["Категория_объекта"] = obj["category"]
+        trimmed.append(item)
     return trimmed
 
 
@@ -177,6 +176,14 @@ def build_classification_context(
         )
         parts.append(summary_label + "\n" + chat_message)
     if object_zone_fit:
+        building_mode = object_zone_fit.get("mode") == "building_pzz_check"
+        item_count_key = "объектов" if building_mode else "участков"
+        problem_dative = "объектам" if building_mode else "участкам"
+        problem_label = (
+            "Проблемные объекты (здания и сервисы)"
+            if building_mode
+            else "Проблемные земельные участки"
+        )
         summary = object_zone_fit.get("summary")
         if summary:
             parts.append(
@@ -218,11 +225,11 @@ def build_classification_context(
                 reason_counts[key] = reason_counts.get(key, 0) + 1
         if reason_counts:
             reasons = [
-                {"вердикт": v, "причина": r, "участков": n}
+                {"вердикт": v, "причина": r, item_count_key: n}
                 for (v, r), n in sorted(reason_counts.items(), key=lambda kv: -kv[1])
             ]
             parts.append(
-                "Причины по проблемным участкам (агрегировано):\n"
+                f"Причины по проблемным {problem_dative} (агрегировано):\n"
                 + json.dumps(reasons, ensure_ascii=False, default=str)
             )
         report_json = json.dumps(object_zone_fit, ensure_ascii=False, default=str)
@@ -234,7 +241,7 @@ def build_classification_context(
             )
             if problems:
                 parts.append(
-                    "Проблемные земельные участки (потенциальные нарушения и "
+                    f"{problem_label} (потенциальные нарушения и "
                     f"требующие ручной проверки; показаны первые {len(problems)}, "
                     "точные итоги — в «Сводка»; для каждого: присвоенный ВРИ и "
                     "причина вердикта):\n"
