@@ -154,6 +154,101 @@ def test_files_result_split_filters_by_category(tmp_path) -> None:
         app_module.app.dependency_overrides.clear()
 
 
+def _scenario_zones_fc() -> dict:
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [30.0, 59.0]},
+                "properties": {
+                    "functional_zone_id": 7544530,
+                    "functional_zone_type": {
+                        "id": 2,
+                        "name": "recreation",
+                        "nickname": "Рекреационная зона",
+                    },
+                    "year": 2026,
+                    "source": "User",
+                    "properties": {},
+                    "zone_code": "2",
+                    "zone_name": "Рекреационная зона",
+                },
+            }
+        ],
+    }
+
+
+def _get_scenario_zones(task):
+    from fastapi.testclient import TestClient
+
+    from service import app as app_module
+    from service.dependencies import get_app_settings, get_task_repo
+
+    class StubRepo:
+        def get_by_external_id(self, external_id):
+            return task
+
+    app_module.app.dependency_overrides[get_task_repo] = lambda: StubRepo()
+    app_module.app.dependency_overrides[get_app_settings] = get_settings
+    try:
+        return TestClient(app_module.app).get(
+            "/files/functional_zones/abc", follow_redirects=False
+        )
+    finally:
+        app_module.app.dependency_overrides.clear()
+
+
+def test_files_functional_zones_keep_only_russian_zone_type(tmp_path) -> None:
+    import json
+
+    zones_file = tmp_path / "pzz_zones_feature_collection.geojson"
+    zones_file.write_text(
+        json.dumps(_scenario_zones_fc(), ensure_ascii=False), encoding="utf-8"
+    )
+
+    resp = _get_scenario_zones(
+        _task(status="running", pzz_zones_data_path=str(zones_file))
+    )
+
+    assert resp.status_code == 200
+    assert "functional_zones.geojson" in resp.headers["content-disposition"]
+    assert resp.json()["features"] == [
+        {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [30.0, 59.0]},
+            "properties": {"Тип зоны": "Рекреационная зона"},
+        }
+    ]
+
+
+def test_files_functional_zones_read_from_object_storage(monkeypatch) -> None:
+    import json
+
+    class FakeStorage:
+        def download_file(self, stored_path, local_path):
+            assert stored_path == "minio://inputs/abc/pzz_zones.geojson"
+            with open(local_path, "w", encoding="utf-8") as fh:
+                json.dump(_scenario_zones_fc(), fh, ensure_ascii=False)
+            return local_path
+
+    monkeypatch.setattr(tasks_mod, "get_object_storage", lambda: FakeStorage())
+
+    resp = _get_scenario_zones(
+        _task(pzz_zones_data_path="minio://inputs/abc/pzz_zones.geojson")
+    )
+
+    assert resp.status_code == 200
+    assert [f["properties"] for f in resp.json()["features"]] == [
+        {"Тип зоны": "Рекреационная зона"}
+    ]
+
+
+def test_files_functional_zones_404_without_zones() -> None:
+    resp = _get_scenario_zones(_task(pzz_zones_data_path=""))
+    assert resp.status_code == 404
+
+
 def test_layer_descriptor_none_when_no_result() -> None:
     settings = get_settings()
     assert build_result_geo_layer(_task(status="running"), "x", settings) is None

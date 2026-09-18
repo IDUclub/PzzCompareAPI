@@ -405,7 +405,7 @@ def test_build_scenario_zone_geo_layers_exposes_functional_zones_only() -> None:
             "name": "functional_zones",
             "title": "Функциональные зоны",
             "role": "input",
-            "url": "https://pzz.example/files/zones/ext-1",
+            "url": "https://pzz.example/files/functional_zones/ext-1",
             "download_url": None,
             "filename": "functional_zones.geojson",
             "mime_type": "application/geo+json",

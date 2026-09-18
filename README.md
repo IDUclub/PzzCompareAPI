@@ -116,7 +116,7 @@ docker compose -f docker-compose.yml up -d --build
 - `POST /tasks/pzz-check/chat/stream` — проверка ПЗЗ + стрим разговорного ответа LLM (SSE, требует Bearer)
 - `POST /tasks/classify-only/chat/stream` — классификация ВРИ + стрим разговорного ответа LLM (SSE, требует Bearer)
 - `GET /tasks/{id}` · `GET /tasks_list` · `GET /tasks/{id}/result`
-- `GET /files/{slot}/{id}` — долговечная ссылка на геослой (`slot`: `result`/`cadastral`/`zones`; 307 → presigned MinIO)
+- `GET /files/{slot}/{id}` — долговечная ссылка на геослой (`slot`: `result`/`cadastral`/`zones` — 307 → presigned MinIO; `result_buildings`/`result_services`/`functional_zones` — собираются на лету)
 - `GET /tasks/{id}/object-zone-fit?group_by=zone|object` — структурированный отчёт + `chat_message`
 - `GET /tasks/{id}/events` · `DELETE /tasks/{id}` · `POST /tasks/{id}/recompute`
 
