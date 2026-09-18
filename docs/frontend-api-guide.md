@@ -170,13 +170,15 @@ multipart не хочется. Ручки создания задач прини
 Работают одинаково в B1, B2, B5 и в `*/stream` / `*/chat/stream`. Все проверки — **на входе**,
 до постановки задачи в очередь: непригодный файл отбивается сразу, а не падает через 20 минут
 в пайплайне. `detail` приходит **по-русски и называет слой** («слой земельных участков»,
-«слой зон ПЗЗ», «описания зон ПЗЗ», «классификатор ВРИ») — его можно показывать пользователю как есть.
+«слой зон ПЗЗ», «описания зон ПЗЗ», «классификатор ВРИ»), а для отказов по системе координат —
+ещё и имя загруженного файла: `слой земельных участков («holmsk.geojson»): …`. Текст рассчитан
+на конечного пользователя, показывайте его как есть.
 
 | Код | Когда | Что показать / что делать |
 |-----|-------|---------------------------|
 | `413` | Файл больше 200 МБ | «файл слишком большой» |
 | `415` | Расширение слот не читает | Гео-слоты: только `.geojson`/`.json`, `.gpkg`, `.gml`, `.kml`, `.geoparquet`/`.parquet`. Слоты описаний и классификатора в B1/B2 (`pzz_zone_vri_labels_file`, `vri_classifier_file`) — только `.json`, в тексте ошибки есть подсказка про `POST /pzz/zone-descriptions/convert`. Исключение: там, где таблица конвертируется на месте (`pzz_descriptions_file` в B5 и `/tasks/auto/chat/stream`, `pzz_zone_vri_labels_file` в `/tasks/auto/chat/stream`), `.csv`/`.xlsx` принимаются |
-| `422` | Слой **не в WGS 84 (EPSG:4326)** | Предложить перевыгрузить слой в EPSG:4326. Ловится двумя способами: по объявленному `crs` и по значениям координат (долгота >180° / широта >90° — типичная выгрузка в метрах местной проекции, где `crs` вообще не записан) |
+| `422` | Слой **не в WGS 84 (EPSG:4326)** | Показать `detail` целиком: он называет файл, найденную «плохую» координату и порядок перепроецирования в QGIS. Ловится двумя способами: по объявленному `crs` и по значениям координат (долгота >180° / широта >90° — типичная выгрузка в метрах местной проекции, где `crs` вообще не записан). В `/logs` такой отказ виден как `"status": "bad_crs"` со `stage` `create_task` (сабмит) или `detect_columns` (автодетект в `/tasks/auto/chat/stream`) |
 | `400` | Файл читается, но содержимое не то: битый JSON, бинарник в JSON-слоте, гео-формат не конвертируется | Показать `detail` |
 | `422` | Для обязательного слота не передан ни файл, ни `*_upload_id` | Ошибка вызова API |
 
@@ -989,7 +991,10 @@ data: {"type":"zone_review","content":{
 |--------------|--------|---------|------------|
 | Результат, проверка ПЗЗ | `classified_result` | Результат проверки ПЗЗ | `pzz_check_result.geojson` |
 | Результат, только классификация | `classified_result` | Результат классификации ВРИ | `classification_result.geojson` |
-| Входной кадастр | `input_cadastral` | Исходные участки | `input_parcels.geojson` |
+| Результат `building_pzz_check`, здания | `buildings_result` | Результат — здания | `buildings_result.geojson` |
+| Результат `building_pzz_check`, сервисы | `services_result` | Результат — сервисы | `services_result.geojson` |
+| Входной кадастр (`pzz_check` / `classify_only`) | `input_cadastral` | Исходные участки | `input_parcels.geojson` |
+| Входные объекты (`building_pzz_check`) | `input_cadastral` | Исходные здания и сервисы | `input_buildings_and_services.geojson` |
 | Входные зоны | `input_zones` | Зоны ПЗЗ | `pzz_zones.geojson` |
 
 > Раньше `filename` был опаковым хешем (`<external_id>.geojson`). Теперь он человекочитаемый и
@@ -1002,10 +1007,28 @@ data: {"type":"zone_review","content":{
 - `role: "result"` — итоговый классифицированный слой (когда задача `finished`). Приходит во всех
   стримах (чат и обычные `*/classify/stream`, `*/pzz-check/stream`).
 - `role: "input"` — **загруженные** входные слои (`input_cadastral`, `input_zones`). Приходят
-  **только в upload-флоу** (`/tasks/pzz-check/chat/stream`, `/tasks/classify-only/chat/stream`,
-  `/tasks/pzz-check/stream`, `/tasks/classify-only/stream`), сразу в начале (можно качать, не
-  дожидаясь завершения).
-  В сценарном флоу их нет (входные данные тянутся из urban_api).
+  **только в upload-флоу** (`/tasks/auto/chat/stream`, `/tasks/pzz-check/chat/stream`,
+  `/tasks/classify-only/chat/stream`, `/tasks/pzz-check/stream`, `/tasks/classify-only/stream`),
+  сразу в начале (можно качать, не дожидаясь завершения).
+- В сценарном флоу (`/scenarios/{id}/chat/stream`, `/scenarios/{id}/classify/stream`) входной
+  слой один — `functional_zones` («Функциональные зоны», `role: "input"`, `url` =
+  `/files/functional_zones/{external_id}`, `download_url: null`): функциональные зоны сценария
+  из urban_api. У каждой зоны один атрибут — `Тип зоны` (например, «Рекреационная зона»);
+  технические поля urban_api в слой не попадают. Физические объекты отдельным слоем не
+  приходят — все они уже есть в слое результата вместе с вердиктом.
+
+Полный набор `file`-событий (`content.name`) по режимам (`mode` в `/tasks/auto/chat/stream` и
+сценарный чат) — фронт должен показать **все** эти слои, а не только результат:
+
+| Режим | `content.name` |
+|---|---|
+| `classify_only` | `input_cadastral`, `classified_result` |
+| `pzz_check` | `input_cadastral`, `input_zones`, `classified_result` |
+| `building_pzz_check` | `input_cadastral`, `input_zones`, `buildings_result`, `services_result` |
+| сценарий (`/scenarios/{id}/chat/stream`) | `functional_zones`, `classified_result` |
+
+Подпись слоя для пользователя — `content.title` (RU); `name` — стабильный машинный ключ,
+`filename` — имя файла при скачивании.
 
 Как пользоваться ссылками:
 - **мгновенная** выгрузка → `download_url` (если не `null`);
@@ -1013,9 +1036,10 @@ data: {"type":"zone_review","content":{
   (`slot` ∈ `result` / `cadastral` / `zones`), которая на каждый заход редиректит (307) на свежий
   presigned MinIO. Не протухает, авторизация не нужна, большой файл качается прямо из MinIO.
 
-В ChatStorage сохраняется только **result**-ссылка — как `kind: "file"` часть сообщения ассистента
-(`payload` = `{ url, name, title, filename, mime_type, source_service }`, где `url` — долговечный).
-Входные слои в историю не пишутся (приходят только в стриме). `download_url` нигде не сохраняется
+В ChatStorage сохраняются **все** слои, пришедшие событием `file` (сначала входные, затем
+результат), — каждый как `kind: "file"` часть сообщения ассистента (`payload` = `{ url, name, title,
+filename, mime_type, source_service }`, где `url` — долговечный). Поэтому при открытии чата из
+истории восстанавливается тот же набор слоёв, что был в стриме. `download_url` нигде не сохраняется
 (он временный), поэтому при открытии истории качайте по `url`.
 
 **Пример (frontend):**

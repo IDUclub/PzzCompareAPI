@@ -84,6 +84,17 @@ def test_result_layers_two_for_building() -> None:
     assert all(layer["role"] == "result" for layer in layers)
 
 
+def test_result_layers_include_services_for_service_only_input() -> None:
+    task = _task(building_service_col="service_type_id")
+
+    layers = build_result_geo_layers(task, "abc123", get_settings())
+
+    assert {layer["name"] for layer in layers} == {
+        "buildings_result",
+        "services_result",
+    }
+
+
 def test_files_result_split_filters_by_category(tmp_path) -> None:
     from fastapi.testclient import TestClient
 
@@ -101,7 +112,12 @@ def test_files_result_split_filters_by_category(tmp_path) -> None:
             {
                 "type": "Feature",
                 "geometry": None,
-                "properties": {"Категория_объекта": "Сервис", "id": 2},
+                # Compatibility with cached results created before the explicit
+                # category column: the service split is recovered from its basis.
+                "properties": {
+                    "Основание_подбора_ВРИ": "сервис — ВРИ подобран по типу сервиса",
+                    "id": 2,
+                },
             },
             {
                 "type": "Feature",
@@ -138,6 +154,101 @@ def test_files_result_split_filters_by_category(tmp_path) -> None:
         app_module.app.dependency_overrides.clear()
 
 
+def _scenario_zones_fc() -> dict:
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [30.0, 59.0]},
+                "properties": {
+                    "functional_zone_id": 7544530,
+                    "functional_zone_type": {
+                        "id": 2,
+                        "name": "recreation",
+                        "nickname": "Рекреационная зона",
+                    },
+                    "year": 2026,
+                    "source": "User",
+                    "properties": {},
+                    "zone_code": "2",
+                    "zone_name": "Рекреационная зона",
+                },
+            }
+        ],
+    }
+
+
+def _get_scenario_zones(task):
+    from fastapi.testclient import TestClient
+
+    from service import app as app_module
+    from service.dependencies import get_app_settings, get_task_repo
+
+    class StubRepo:
+        def get_by_external_id(self, external_id):
+            return task
+
+    app_module.app.dependency_overrides[get_task_repo] = lambda: StubRepo()
+    app_module.app.dependency_overrides[get_app_settings] = get_settings
+    try:
+        return TestClient(app_module.app).get(
+            "/files/functional_zones/abc", follow_redirects=False
+        )
+    finally:
+        app_module.app.dependency_overrides.clear()
+
+
+def test_files_functional_zones_keep_only_russian_zone_type(tmp_path) -> None:
+    import json
+
+    zones_file = tmp_path / "pzz_zones_feature_collection.geojson"
+    zones_file.write_text(
+        json.dumps(_scenario_zones_fc(), ensure_ascii=False), encoding="utf-8"
+    )
+
+    resp = _get_scenario_zones(
+        _task(status="running", pzz_zones_data_path=str(zones_file))
+    )
+
+    assert resp.status_code == 200
+    assert "functional_zones.geojson" in resp.headers["content-disposition"]
+    assert resp.json()["features"] == [
+        {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [30.0, 59.0]},
+            "properties": {"Тип зоны": "Рекреационная зона"},
+        }
+    ]
+
+
+def test_files_functional_zones_read_from_object_storage(monkeypatch) -> None:
+    import json
+
+    class FakeStorage:
+        def download_file(self, stored_path, local_path):
+            assert stored_path == "minio://inputs/abc/pzz_zones.geojson"
+            with open(local_path, "w", encoding="utf-8") as fh:
+                json.dump(_scenario_zones_fc(), fh, ensure_ascii=False)
+            return local_path
+
+    monkeypatch.setattr(tasks_mod, "get_object_storage", lambda: FakeStorage())
+
+    resp = _get_scenario_zones(
+        _task(pzz_zones_data_path="minio://inputs/abc/pzz_zones.geojson")
+    )
+
+    assert resp.status_code == 200
+    assert [f["properties"] for f in resp.json()["features"]] == [
+        {"Тип зоны": "Рекреационная зона"}
+    ]
+
+
+def test_files_functional_zones_404_without_zones() -> None:
+    resp = _get_scenario_zones(_task(pzz_zones_data_path=""))
+    assert resp.status_code == 404
+
+
 def test_layer_descriptor_none_when_no_result() -> None:
     settings = get_settings()
     assert build_result_geo_layer(_task(status="running"), "x", settings) is None
@@ -171,6 +282,20 @@ def test_input_layers_for_uploaded_files(monkeypatch) -> None:
     assert all(layer["role"] == "input" for layer in layers)
     # Remote (minio://) inputs also carry a presigned download link.
     assert all(layer["download_url"] is not None for layer in layers)
+
+
+def test_input_layers_use_building_label_for_building_mode(monkeypatch) -> None:
+    monkeypatch.setattr(tasks_mod, "get_object_storage", lambda: _StubStorage())
+    task = _task(building_type_col="physical_object_type_id")
+
+    layers = build_input_geo_layers(task, "abc123", get_settings())
+
+    by_name = {layer["name"]: layer for layer in layers}
+    assert by_name["input_cadastral"]["title"] == "Исходные здания и сервисы"
+    assert (
+        by_name["input_cadastral"]["filename"] == "input_buildings_and_services.geojson"
+    )
+    assert by_name["input_zones"]["title"] == "Зоны ПЗЗ"
 
 
 def test_input_layers_skip_missing_zones(monkeypatch) -> None:

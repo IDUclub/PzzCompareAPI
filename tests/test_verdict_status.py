@@ -7,9 +7,11 @@ from service.api.tasks import _classify_verdict, build_object_zone_fit_response
 
 
 class _Task:
-    def __init__(self, result_path: str):
+    def __init__(self, result_path: str, *, building: bool = False):
         self.status = "finished"
         self.result_path = result_path
+        self.building_type_col = "physical_object_type_id" if building else None
+        self.building_service_col = "service_type_id" if building else None
 
 
 def _settings(tmp_path: Path):
@@ -85,3 +87,44 @@ def test_object_zone_fit_reads_status_and_ignores_urban_api(tmp_path: Path):
         "Не разрешен",
         "Нет пересечения с ПЗЗ",
     ]
+
+
+def test_building_object_zone_fit_reports_buildings_and_services(tmp_path: Path):
+    result = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": None,
+                "properties": {
+                    "Категория_объекта": "Здание",
+                    "Вердикт_ПЗЗ": "Разрешен",
+                    "ВРИ_ЕГРН": "Жилой дом",
+                    "Код фактической зоны нахождения кадастра": "Ж-1",
+                },
+            },
+            {
+                "type": "Feature",
+                "geometry": None,
+                "properties": {
+                    "Категория_объекта": "Сервис",
+                    "Вердикт_ПЗЗ": "Не разрешен",
+                    "ВРИ_ЕГРН": "Школа",
+                    "Код фактической зоны нахождения кадастра": "Ж-1",
+                },
+            },
+        ],
+    }
+    f = tmp_path / "building-result.geojson"
+    f.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+
+    resp = build_object_zone_fit_response(
+        _Task(str(f), building=True), "ext-building", "object", _settings(tmp_path)
+    )
+
+    assert resp["mode"] == "building_pzz_check"
+    assert resp["summary"]["by_category"] == {"Здание": 1, "Сервис": 1}
+    assert [obj["category"] for obj in resp["objects"]] == ["Здание", "Сервис"]
+    assert "Проверено объектов (зданий и сервисов): 2" in resp["chat_message"]
+    assert "сервисов: 1" in resp["chat_message"]
+    assert "земельных участков" not in resp["chat_message"]

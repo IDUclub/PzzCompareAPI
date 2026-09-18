@@ -59,9 +59,11 @@ from fastapi.concurrency import run_in_threadpool
 
 from .tasks import (
     _TERMINAL_STATUSES,
+    SCENARIO_ZONE_NAME_COL,
     build_cancel_task_response,
     build_object_zone_fit_response,
     build_recompute_task_response,
+    build_scenario_zone_geo_layers,
     build_task_events_response,
     build_task_result_response,
     get_task_or_404,
@@ -76,7 +78,7 @@ router = APIRouter(prefix="/scenarios", tags=["scenarios"])
 
 _CADASTRAL_VRI_COL = "vri_text"
 _PZZ_ZONE_CODE_COL = "zone_code"
-_PZZ_ZONE_NAME_COL = "zone_name"
+_PZZ_ZONE_NAME_COL = SCENARIO_ZONE_NAME_COL
 _SCENARIO_IDEMPOTENCY_PREFIX = "sc:"
 
 
@@ -544,6 +546,8 @@ async def classify_scenario_stream_endpoint(
             request=request,
             app_settings=app_settings,
             initial=initial,
+            emit_input_files=True,
+            input_layers_builder=build_scenario_zone_geo_layers,
         )
     )
 
@@ -660,6 +664,8 @@ async def scenario_chat_stream_endpoint(
             chat_title=user_query[:256],
             model=model,
             temperature=temperature,
+            emit_input_files=True,
+            input_layers_builder=build_scenario_zone_geo_layers,
         )
     )
 

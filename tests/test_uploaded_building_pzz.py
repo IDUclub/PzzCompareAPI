@@ -741,3 +741,75 @@ def test_description_zone_name_wins_over_layer(tmp_path) -> None:
     # labels DO carry names -> those take precedence over the layer's name column
     props = _run_named_zones(tmp_path, _pzz_index_labels())
     assert props[0][COL_ZONE_NAME] == "Жилая зона"
+
+
+def test_extract_falls_back_to_canonical_service_column() -> None:
+    # Detection is allowed to miss the service column (a run needs type OR
+    # service), so a layer naming it canonically must still resolve the service.
+    r = _runner()
+    req = _req(
+        building_type_col="po", building_service_col="", building_floors_col="fl"
+    )
+
+    _po, _is_res, svc, _floors, label, _src = r._extract(
+        {"po": 999999, "service_type_id": 22, "fl": 1}, req
+    )
+
+    assert svc == 22
+    assert "22" in label
+
+
+def test_extract_falls_back_to_canonical_service_name_and_code() -> None:
+    r = _runner()
+    req = _req(building_type_col="po", building_service_col="")
+
+    by_name = r._extract({"po": 999999, "service_type_name": "Школа"}, req)[2]
+    by_nested = r._extract({"po": 999999, "service_type": {"id": 22}}, req)[2]
+
+    assert by_name == by_nested == 22
+
+
+def test_configured_service_column_wins_over_canonical_field() -> None:
+    r = _runner()
+    req = _req(building_type_col="po", building_service_col="svc")
+
+    svc = r._extract({"po": 999999, "svc": 22, "service_type_id": 87}, req)[2]
+
+    assert svc == 22
+
+
+def test_run_tags_services_when_service_column_undetected(tmp_path) -> None:
+    """The reported defect: an undetected service column filed every row as
+    «Здание», so the services result layer came back empty."""
+    buildings = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": _point(0.5, 0.5),
+                "properties": {"po": 4, "floors": 3},
+            },
+            {
+                "type": "Feature",
+                "geometry": _point(0.5, 0.5),
+                "properties": {"service_type_id": 22},
+            },
+        ],
+    }
+    (tmp_path / "b.geojson").write_text(json.dumps(buildings), encoding="utf-8")
+    (tmp_path / "z.geojson").write_text(json.dumps(_zones()), encoding="utf-8")
+    req = _req(
+        cadastral_data_path=str(tmp_path / "b.geojson"),
+        pzz_zones_data_path=str(tmp_path / "z.geojson"),
+        outputs_dir=str(tmp_path / "out"),
+        building_type_col="po",
+        building_service_col="",
+        building_floors_col="floors",
+    )
+
+    feats = json.load(open(_runner().run(req), encoding="utf-8"))["features"]
+
+    assert [f["properties"][COL_CATEGORY] for f in feats] == [
+        CATEGORY_BUILDING,
+        CATEGORY_SERVICE,
+    ]

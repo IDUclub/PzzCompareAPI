@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -54,6 +56,10 @@ RESULT_LOAD_FAILED_MESSAGE = "Failed to load the task result"
 
 _SCENARIO_IDEMPOTENCY_PREFIX = "sc:"
 _BUILDING_IDEMPOTENCY_PREFIX = "bld:"
+
+InputLayersBuilder = Callable[
+    [PipelineTask, str, Settings, Request | None], list[dict[str, Any]]
+]
 
 
 def get_task_or_404(external_id: str, task_repo: TaskRepository) -> PipelineTask:
@@ -361,14 +367,16 @@ async def task_stream_with_report_generator(
     initial: dict[str, Any],
     include_report: bool = True,
     emit_input_files: bool = False,
+    input_layers_builder: InputLayersBuilder | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Stream a task's lifecycle and, on success, the object-zone-fit report.
 
     Used by the combined "create + stream" scenario endpoint. Emits:
       - ``task``        once, upfront, with the created task descriptor (so a
                         client that drops can reconnect to /stream by external_id);
-      - ``file``        (upload flow) links to uploaded input layers, once,
-                        early; and the result layer when finished;
+      - ``file``        links to the input layers, once, early (uploaded
+                        layers in the upload flow, functional zones for a
+                        scenario); and the result layer when finished;
       - ``task_event``  per new pipeline event;
       - ``status``      on each status change;
       - ``geojson``     the classified result FeatureCollection (geometry +
@@ -399,9 +407,8 @@ async def task_stream_with_report_generator(
 
             if emit_input_files and not inputs_emitted:
                 inputs_emitted = True
-                for layer in build_input_geo_layers(
-                    task, external_id, app_settings, request
-                ):
+                build_inputs = input_layers_builder or build_input_geo_layers
+                for layer in build_inputs(task, external_id, app_settings, request):
                     yield ServerSentEvent(
                         data=json.dumps({"type": "file", "content": layer}),
                         event="file",
@@ -725,6 +732,7 @@ async def task_stream_with_chat_generator(
     include_report: bool = True,
     report_kind: str = "object_zone_fit",
     emit_input_files: bool = False,
+    input_layers_builder: InputLayersBuilder | None = None,
     system_prompt_path: str | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Stream a task to completion, then a grounded LLM answer over its report.
@@ -769,6 +777,7 @@ async def task_stream_with_chat_generator(
 
         last_event_id = 0
         classification_context = ""
+        input_layers: list[dict[str, Any]] = []
         geo_layers: list[dict[str, Any]] = []
         inputs_emitted = False
         while True:
@@ -787,9 +796,11 @@ async def task_stream_with_chat_generator(
 
                 if emit_input_files and not inputs_emitted:
                     inputs_emitted = True
-                    for layer in build_input_geo_layers(
+                    build_inputs = input_layers_builder or build_input_geo_layers
+                    input_layers = build_inputs(
                         task, external_id, app_settings, request
-                    ):
+                    )
+                    for layer in input_layers:
                         yield ServerSentEvent(
                             data=json.dumps({"type": "file", "content": layer}),
                             event="file",
@@ -874,7 +885,7 @@ async def task_stream_with_chat_generator(
         # Conversational events use gMART's {"type", "content"} envelope.
         streamed_answer = False
         assistant_file_parts = [
-            geo_layer_to_file_part(layer) for layer in geo_layers
+            geo_layer_to_file_part(layer) for layer in [*input_layers, *geo_layers]
         ] or None
         if last_status == TaskStatus.finished:
             async for event in _stream_chat_answer_managed(
@@ -1033,6 +1044,14 @@ _SLOT_LABELS: dict[str, tuple[str, str]] = {
     "cadastral": ("Исходные участки", "input_parcels.geojson"),
     "zones": ("Зоны ПЗЗ", "pzz_zones.geojson"),
 }
+_BUILDING_INPUT_LABEL = (
+    "Исходные здания и сервисы",
+    "input_buildings_and_services.geojson",
+)
+_SCENARIO_ZONES_LABEL = ("Функциональные зоны", "functional_zones.geojson")
+_SCENARIO_ZONES_SLOT = "functional_zones"
+SCENARIO_ZONE_NAME_COL = "zone_name"
+_COL_ZONE_TYPE = "Тип зоны"
 _RESULT_LABEL_PZZ = ("Результат проверки ПЗЗ", "pzz_check_result.geojson")
 _RESULT_LABEL_CLASSIFY = (
     "Результат классификации ВРИ",
@@ -1067,6 +1086,22 @@ def _is_building_task(task: PipelineTask) -> bool:
         getattr(task, "building_type_col", None)
         or getattr(task, "building_service_col", None)
     )
+
+
+def _building_feature_category(properties: dict[str, Any]) -> str:
+    """Return the split category, including for pre-category result artifacts.
+
+    ``Категория_объекта`` was introduced after building results already carried
+    ``Основание_подбора_ВРИ``. Old immutable/cached artifacts therefore need a
+    compatibility fallback: service rows say that the VRI was selected by
+    service type; every other row in a building task belongs to the buildings
+    layer.
+    """
+    category = properties.get(_COL_CATEGORY)
+    if category in {"Здание", "Сервис"}:
+        return category
+    basis = str(properties.get(_COL_RESOLUTION_BASIS) or "").strip().casefold()
+    return "Сервис" if basis.startswith("сервис") else "Здание"
 
 
 def _result_label(include_pzz_check: bool | None) -> tuple[str, str]:
@@ -1200,9 +1235,14 @@ def build_input_geo_layers(
         ("cadastral", "cadastral_data_path", "input_cadastral"),
         ("zones", "pzz_zones_data_path", "input_zones"),
     )
+    building_task = _is_building_task(task)
     layers: list[dict[str, Any]] = []
     for slot, column, name in specs:
-        title, filename = _SLOT_LABELS[slot]
+        title, filename = (
+            _BUILDING_INPUT_LABEL
+            if building_task and slot == "cadastral"
+            else _SLOT_LABELS[slot]
+        )
         layer = _build_geo_layer(
             slot=slot,
             name=name,
@@ -1217,6 +1257,36 @@ def build_input_geo_layers(
         if layer is not None:
             layers.append(layer)
     return layers
+
+
+def build_scenario_zone_geo_layers(
+    task: PipelineTask,
+    external_id: str,
+    app_settings: Settings,
+    request: Request | None = None,
+) -> list[dict[str, Any]]:
+    """Input layer for a scenario task: its urban_api functional zones only.
+
+    The scenario's physical objects are not surfaced as an input layer — every
+    one of them is already in the result layer, together with its verdict.
+    """
+    if not task.pzz_zones_data_path:
+        return []
+    title, filename = _SCENARIO_ZONES_LABEL
+    return [
+        {
+            "name": "functional_zones",
+            "title": title,
+            "role": "input",
+            "url": _file_durable_url(
+                _SCENARIO_ZONES_SLOT, external_id, app_settings, request
+            ),
+            "download_url": None,
+            "filename": filename,
+            "mime_type": "application/geo+json",
+            "source_service": app_settings.app_name,
+        }
+    ]
 
 
 def geo_layer_to_file_part(layer: dict[str, Any]) -> dict[str, Any]:
@@ -1247,13 +1317,60 @@ def _serve_result_split(
     category, _name, _title, filename = _RESULT_SPLIT_SLOTS[slot]
     if task.status != "finished" or not task.result_path:
         raise HTTPException(status_code=404, detail="Task result not available yet")
+    if not _is_building_task(task):
+        raise HTTPException(status_code=404, detail="Result split is not available")
     geojson = _load_result_geojson(task.result_path, app_settings.outputs_dir)
     features = [
         f
         for f in (geojson.get("features") or [])
-        if (f.get("properties") or {}).get(_COL_CATEGORY) == category
+        if _building_feature_category(f.get("properties") or {}) == category
     ]
     fc = {"type": "FeatureCollection", "features": features}
+    return Response(
+        content=json.dumps(fc, ensure_ascii=False, default=str),
+        media_type="application/geo+json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _load_input_geojson(stored_path: str) -> dict[str, Any]:
+    """Read a task input GeoJSON from local disk or MinIO."""
+    if not is_remote_path(stored_path):
+        local_path = Path(stored_path).resolve()
+        if not local_path.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+        with local_path.open("rb") as fh:
+            return json.load(fh)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        local_file = Path(tmp_dir) / "input.geojson"
+        get_object_storage().download_file(stored_path, str(local_file))
+        with local_file.open("rb") as fh:
+            return json.load(fh)
+
+
+def _serve_scenario_zones(task: PipelineTask) -> Response:
+    """Serve a scenario's functional zones with display-only attributes.
+
+    The stored zones keep the raw urban_api payload the pipeline needs; the map
+    layer only gets the Russian zone type name.
+    """
+    if not task.pzz_zones_data_path:
+        raise HTTPException(status_code=404, detail="File not found")
+    geojson = _load_input_geojson(task.pzz_zones_data_path)
+    features = [
+        {
+            "type": "Feature",
+            "geometry": feature.get("geometry"),
+            "properties": {
+                _COL_ZONE_TYPE: (feature.get("properties") or {}).get(
+                    SCENARIO_ZONE_NAME_COL
+                )
+            },
+        }
+        for feature in geojson.get("features") or []
+    ]
+    fc = {"type": "FeatureCollection", "features": features}
+    filename = _SCENARIO_ZONES_LABEL[1]
     return Response(
         content=json.dumps(fc, ensure_ascii=False, default=str),
         media_type="application/geo+json",
@@ -1278,6 +1395,8 @@ def get_task_file_redirect(
     if slot in _RESULT_SPLIT_SLOTS:
         task = get_task_or_404(external_id, task_repo)
         return _serve_result_split(task, slot, app_settings)
+    if slot == _SCENARIO_ZONES_SLOT:
+        return _serve_scenario_zones(get_task_or_404(external_id, task_repo))
 
     column = _FILE_SLOTS.get(slot)
     if column is None:
@@ -1367,7 +1486,9 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[: max_chars - 1].rstrip() + "…"
 
 
-def _verdict_breakdown_lines(summary: dict[str, Any]) -> list[str]:
+def _verdict_breakdown_lines(
+    summary: dict[str, Any], *, building_mode: bool = False
+) -> list[str]:
     """Split the 'требуют ручной проверки' bucket by actual Вердикт_ПЗЗ reason.
 
     Reads ``summary['by_verdict']`` (exact Russian-label counts) and keeps only
@@ -1385,8 +1506,9 @@ def _verdict_breakdown_lines(summary: dict[str, Any]) -> list[str]:
     }
     if not reasons:
         return []
+    checked_subject = "эти объекты" if building_mode else "эти земельные участки"
     lines = [
-        "Причины ручной проверки (эти земельные участки можно проверить "
+        f"Причины ручной проверки ({checked_subject} можно проверить "
         "по атрибуту «Вердикт_ПЗЗ»):"
     ]
     for label, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
@@ -1394,7 +1516,9 @@ def _verdict_breakdown_lines(summary: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _reconciled_intro(summary: dict[str, Any]) -> list[str]:
+def _reconciled_intro(
+    summary: dict[str, Any], *, building_mode: bool = False
+) -> list[str]:
     """Intro lines with totals that add up, using the exact counts in ``summary``.
 
     Fixes the "277 находятся в границах 3 зон" contradiction: the no-intersection
@@ -1408,21 +1532,36 @@ def _reconciled_intro(summary: dict[str, Any]) -> list[str]:
     zones_count = summary.get("zones_count", 0)
     not_in_zone = summary.get("not_in_zone", 0)
 
-    intro = f"Проверено земельных участков: {total}."
+    if building_mode:
+        by_category = summary.get("by_category") or {}
+        buildings = by_category.get("Здание", 0)
+        services = by_category.get("Сервис", 0)
+        intro = (
+            f"Проверено объектов (зданий и сервисов): {total} "
+            f"(зданий: {buildings}, сервисов: {services})."
+        )
+        item_dative = "объекта"
+        definition = "ВРИ — вид разрешённого использования; ПЗЗ — правила "
+    else:
+        intro = f"Проверено земельных участков: {total}."
+        item_dative = "земельного участка"
+        definition = (
+            "ВРИ — вид разрешённого использования земельного участка; " "ПЗЗ — правила "
+        )
     if not_in_zone:
         intro += (
-            f" Из них {total - not_in_zone} находятся в границах {zones_count} "
-            f"территориальных зон ПЗЗ, {not_in_zone} не пересеклись ни с одной "
+            f" Из них {total - not_in_zone} находятся в границах "
+            f"{zones_count} территориальных зон ПЗЗ, {not_in_zone} не пересеклись "
+            "ни с одной "
             "зоной ПЗЗ."
         )
     elif zones_count:
         intro += f" Все они находятся в границах {zones_count} территориальных зон ПЗЗ."
     return [
-        "ВРИ — вид разрешённого использования земельного участка; ПЗЗ — правила "
-        "землепользования и застройки.",
+        definition + "землепользования и застройки.",
         "",
         intro,
-        "Результат проверки соответствия ВРИ каждого земельного участка правилам "
+        f"Результат проверки соответствия ВРИ каждого {item_dative} правилам "
         f"его территориальной зоны ПЗЗ ({correct} + {wrong} + {unclear} = {total}):",
         f"- ВРИ допустим, нарушений ПЗЗ нет: {correct};",
         f"- ВРИ не соответствует зоне ПЗЗ (потенциальное нарушение): {wrong};",
@@ -1431,18 +1570,28 @@ def _reconciled_intro(summary: dict[str, Any]) -> list[str]:
 
 
 def _build_chat_message_objects(
-    rows: list[dict[str, Any]], summary: dict[str, Any]
+    rows: list[dict[str, Any]],
+    summary: dict[str, Any],
+    *,
+    building_mode: bool = False,
 ) -> str:
     """Chatbot-friendly plain-text summary for group_by=object."""
-    lines = _reconciled_intro(summary)
+    lines = _reconciled_intro(summary, building_mode=building_mode)
     if summary["unclear"]:
-        breakdown = _verdict_breakdown_lines(summary)
+        breakdown = _verdict_breakdown_lines(summary, building_mode=building_mode)
         if breakdown:
             lines += ["", *breakdown]
 
     wrong = [r for r in rows if r["fit"] == "wrong"]
     if wrong:
-        lines += ["", "Земельные участки с недопустимым в их зоне ВРИ:"]
+        lines += [
+            "",
+            (
+                "Объекты (здания и сервисы) с недопустимым в их зоне ПЗЗ ВРИ:"
+                if building_mode
+                else "Земельные участки с недопустимым в их зоне ВРИ:"
+            ),
+        ]
         for row in wrong[:10]:
             obj_label = row.get("vri_text") or "—"
             zone_label = row.get("zone_name") or row.get("zone_type_id") or "—"
@@ -1451,21 +1600,32 @@ def _build_chat_message_objects(
                 f"- #{row['feature_index']}: «{obj_label}» в зоне «{zone_label}» — {reason}"
             )
         if len(wrong) > 10:
+            noun = "объектов" if building_mode else "земельных участков"
             lines.append(
-                f"...и ещё {len(wrong) - 10} земельных участков с недопустимым "
-                "в их зоне ВРИ."
+                f"...и ещё {len(wrong) - 10} {noun} с недопустимым " "в их зоне ВРИ."
             )
     elif not summary["unclear"]:
         lines += [
             "",
-            "У всех земельных участков ВРИ допустим в их территориальной зоне.",
+            (
+                "У всех объектов (зданий и сервисов) ВРИ допустим в их "
+                "территориальной зоне ПЗЗ."
+                if building_mode
+                else (
+                    "У всех земельных участков ВРИ допустим в их "
+                    "территориальной зоне."
+                )
+            ),
         ]
 
     return "\n".join(lines)
 
 
 def _build_chat_message_zones(
-    zones: list[dict[str, Any]], summary: dict[str, Any]
+    zones: list[dict[str, Any]],
+    summary: dict[str, Any],
+    *,
+    building_mode: bool = False,
 ) -> str:
     """Chatbot-friendly plain-text summary for group_by=zone.
 
@@ -1475,9 +1635,9 @@ def _build_chat_message_zones(
     other instead of duplicating. ``zones`` is kept in the signature for a
     uniform call site with the object variant.
     """
-    lines = _reconciled_intro(summary)
+    lines = _reconciled_intro(summary, building_mode=building_mode)
     if summary["unclear"]:
-        breakdown = _verdict_breakdown_lines(summary)
+        breakdown = _verdict_breakdown_lines(summary, building_mode=building_mode)
         if breakdown:
             lines += ["", *breakdown]
     return "\n".join(lines)
@@ -1528,30 +1688,38 @@ def build_object_zone_fit_response(
         raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to load result GeoJSON for task %s", task.external_id)
-        raise HTTPException(
-            status_code=503, detail=RESULT_LOAD_FAILED_MESSAGE
-        ) from exc
+        raise HTTPException(status_code=503, detail=RESULT_LOAD_FAILED_MESSAGE) from exc
+
+    # Building checks mark every result feature explicitly. Prefer that artifact
+    # marker over task metadata so reports for older/reloaded task objects still
+    # use the right terminology.
+    result_features = geojson.get("features") or []
+    building_mode = _is_building_task(task) or any(
+        (feature.get("properties") or {}).get(_COL_CATEGORY) in {"Здание", "Сервис"}
+        for feature in result_features
+    )
 
     rows: list[dict[str, Any]] = []
-    for idx, feature in enumerate(geojson.get("features") or []):
+    for idx, feature in enumerate(result_features):
         props = feature.get("properties") or {}
         verdict = props.get(_COL_VERDICT)
         fit = _classify_verdict(verdict)
-        rows.append(
-            {
-                "feature_index": idx,
-                "vri_text": props.get(_COL_VRI_TEXT),
-                "zone_type_id": props.get(_COL_ZONE_CODE),
-                "zone_name": props.get(_COL_ZONE_NAME),
-                "verdict": verdict,
-                "is_in_correct_zone": fit == "correct",
-                "fit": fit,
-                "reason": props.get(_COL_REASON),
-                "matched_vri_name": props.get(_COL_MATCHED_VRI_NAME),
-                "matched_vri_code": props.get(_COL_MATCHED_VRI_CODE),
-                "resolution_basis": props.get(_COL_RESOLUTION_BASIS),
-            }
-        )
+        row = {
+            "feature_index": idx,
+            "vri_text": props.get(_COL_VRI_TEXT),
+            "zone_type_id": props.get(_COL_ZONE_CODE),
+            "zone_name": props.get(_COL_ZONE_NAME),
+            "verdict": verdict,
+            "is_in_correct_zone": fit == "correct",
+            "fit": fit,
+            "reason": props.get(_COL_REASON),
+            "matched_vri_name": props.get(_COL_MATCHED_VRI_NAME),
+            "matched_vri_code": props.get(_COL_MATCHED_VRI_CODE),
+            "resolution_basis": props.get(_COL_RESOLUTION_BASIS),
+        }
+        if building_mode:
+            row["category"] = _building_feature_category(props)
+        rows.append(row)
 
     by_verdict: dict[str, int] = {}
     for r in rows:
@@ -1571,13 +1739,21 @@ def build_object_zone_fit_response(
         # "требуют ручной проверки" by reason without recomputing.
         "by_verdict": by_verdict,
     }
+    if building_mode:
+        summary["by_category"] = {
+            category: sum(1 for row in rows if row["category"] == category)
+            for category in ("Здание", "Сервис")
+        }
 
     if group_by == "object":
         return {
             "task_external_id": external_id,
+            "mode": "building_pzz_check" if building_mode else "pzz_check",
             "group_by": "object",
             "summary": summary,
-            "chat_message": _build_chat_message_objects(rows, summary),
+            "chat_message": _build_chat_message_objects(
+                rows, summary, building_mode=building_mode
+            ),
             "objects": rows,
         }
 
@@ -1614,9 +1790,12 @@ def build_object_zone_fit_response(
     )
     return {
         "task_external_id": external_id,
+        "mode": "building_pzz_check" if building_mode else "pzz_check",
         "group_by": "zone",
         "summary": summary,
-        "chat_message": _build_chat_message_zones(zones_list, summary),
+        "chat_message": _build_chat_message_zones(
+            zones_list, summary, building_mode=building_mode
+        ),
         "zones": zones_list,
     }
 
@@ -1689,9 +1868,7 @@ def build_classify_summary_response(
         raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to load result GeoJSON for task %s", task.external_id)
-        raise HTTPException(
-            status_code=503, detail=RESULT_LOAD_FAILED_MESSAGE
-        ) from exc
+        raise HTTPException(status_code=503, detail=RESULT_LOAD_FAILED_MESSAGE) from exc
 
     rows: list[dict[str, Any]] = []
     for idx, feature in enumerate(geojson.get("features") or []):

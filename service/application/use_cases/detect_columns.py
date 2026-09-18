@@ -159,6 +159,7 @@ BUILDING_SERVICE_TARGET = DetectionTarget(
     known_names=(
         "service_type_id",
         "service_type_name",
+        "service_type_code",
         "service_type",
         "service_name",
         "сервис",
