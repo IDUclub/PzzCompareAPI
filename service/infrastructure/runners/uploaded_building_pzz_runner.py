@@ -115,6 +115,31 @@ def _dict_value(raw: Any, *keys: str) -> Any:
     return None
 
 
+_TYPE_UNWRAP_KEYS = ("physical_object_type_id", "id", "name", "code")
+_SERVICE_UNWRAP_KEYS = ("service_type_id", "id", "name", "code")
+_TYPE_FALLBACK_COLUMNS = (
+    "physical_object_type",
+    "physical_object_type_id",
+    "physical_object_type_name",
+)
+_SERVICE_FALLBACK_COLUMNS = (
+    "service_type",
+    "service_type_id",
+    "service_type_name",
+    "service_type_code",
+)
+
+
+def _first_value(
+    props: dict[str, Any], columns: tuple[str, ...], unwrap: tuple[str, ...]
+) -> Any:
+    for column in columns:
+        value = _dict_value(props.get(column), *unwrap)
+        if value not in (None, ""):
+            return value
+    return None
+
+
 _SOURCE_NOTES = {
     "semantic": " (название сопоставлено по смыслу)",
     "llm": " (название сопоставлено ИИ)",
@@ -479,30 +504,31 @@ class UploadedBuildingPzzRunner(PipelineRunner):
         (``physical_object_type`` / ``service_type`` objects), yielding either a
         numeric id or a text name/code — the same raw form the aliases and the
         LLM fallback both consume.
+
+        When the configured column yields nothing, the canonical Urban API field
+        names are read directly. Column detection is optional for the service
+        role (a run needs only the type OR the service column), so without this
+        a layer whose service field the detector missed would resolve no service
+        at all — every row would be filed as «Здание» and the services result
+        layer would come back empty.
         """
-        type_raw = (
-            props.get(request.building_type_col) if request.building_type_col else None
-        )
         type_raw = _dict_value(
-            type_raw, "physical_object_type_id", "id", "name", "code"
+            props.get(request.building_type_col) if request.building_type_col else None,
+            *_TYPE_UNWRAP_KEYS,
         )
-        if type_raw is None:
-            type_raw = _dict_value(
-                props.get("physical_object_type"),
-                "physical_object_type_id",
-                "id",
-                "name",
-                "code",
-            )
-        service_raw = (
-            props.get(request.building_service_col)
-            if request.building_service_col
-            else None
+        if type_raw in (None, ""):
+            type_raw = _first_value(props, _TYPE_FALLBACK_COLUMNS, _TYPE_UNWRAP_KEYS)
+        service_raw = _dict_value(
+            (
+                props.get(request.building_service_col)
+                if request.building_service_col
+                else None
+            ),
+            *_SERVICE_UNWRAP_KEYS,
         )
-        service_raw = _dict_value(service_raw, "service_type_id", "id", "name", "code")
-        if service_raw is None:
-            service_raw = _dict_value(
-                props.get("service_type"), "service_type_id", "id", "name", "code"
+        if service_raw in (None, ""):
+            service_raw = _first_value(
+                props, _SERVICE_FALLBACK_COLUMNS, _SERVICE_UNWRAP_KEYS
             )
         return type_raw, service_raw
 

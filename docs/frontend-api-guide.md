@@ -991,7 +991,10 @@ data: {"type":"zone_review","content":{
 |--------------|--------|---------|------------|
 | Результат, проверка ПЗЗ | `classified_result` | Результат проверки ПЗЗ | `pzz_check_result.geojson` |
 | Результат, только классификация | `classified_result` | Результат классификации ВРИ | `classification_result.geojson` |
-| Входной кадастр | `input_cadastral` | Исходные участки | `input_parcels.geojson` |
+| Результат `building_pzz_check`, здания | `buildings_result` | Результат — здания | `buildings_result.geojson` |
+| Результат `building_pzz_check`, сервисы | `services_result` | Результат — сервисы | `services_result.geojson` |
+| Входной кадастр (`pzz_check` / `classify_only`) | `input_cadastral` | Исходные участки | `input_parcels.geojson` |
+| Входные объекты (`building_pzz_check`) | `input_cadastral` | Исходные здания и сервисы | `input_buildings_and_services.geojson` |
 | Входные зоны | `input_zones` | Зоны ПЗЗ | `pzz_zones.geojson` |
 
 > Раньше `filename` был опаковым хешем (`<external_id>.geojson`). Теперь он человекочитаемый и

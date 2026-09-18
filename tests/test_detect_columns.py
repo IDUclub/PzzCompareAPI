@@ -426,3 +426,53 @@ def test_populated_standard_column_still_resolves_without_the_llm() -> None:
     assert suggestions["cadastral_vri_col"].value == "Вид_разрешенного_исп"
     assert suggestions["cadastral_vri_col"].source == "heuristic"
     assert fake.calls == []
+
+
+# Names the user-facing contract in docs/input-files-examples.md promises to
+# recognise for an uploaded buildings layer. The heuristic must resolve every one
+# of them offline: the LLM pass is a fallback, not a requirement, and a name that
+# only the model can map silently degrades to "column not found" whenever the
+# model is unreachable.
+_DOCUMENTED_BUILDING_NAMES = {
+    "building_type_col": [
+        "physical_object_type_id",
+        "physical_object_type_name",
+        "physical_object_type",
+        "тип",
+        "building_type",
+        "po_type_id",
+    ],
+    "building_service_col": [
+        "service_type_id",
+        "service_type_name",
+        "service_type_code",
+        "service_type",
+        "сервис",
+        "service",
+    ],
+    "building_floors_col": [
+        "floors_count",
+        "floors",
+        "этажность",
+        "количество этажей",
+        "number_of_floors",
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("key", "column"),
+    [
+        (key, name)
+        for key, names in _DOCUMENTED_BUILDING_NAMES.items()
+        for name in names
+    ],
+)
+def test_documented_building_column_names_resolve_without_llm(key, column) -> None:
+    target = next(t for t in BUILDING_TARGETS if t.key == key)
+    profiles = profile_columns(_fc([{column: "Школа"}]))
+
+    hit = _heuristic_match(target, profiles)
+
+    assert hit is not None, f"«{column}» documented for {key} but not in known_names"
+    assert hit.value == column

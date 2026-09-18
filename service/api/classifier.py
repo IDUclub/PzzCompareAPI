@@ -204,7 +204,7 @@ def _crs_http_error(
 # layer the way the UI does.
 _FIELD_TITLES = {
     "cadastral_feature_collection_file": "слой земельных участков",
-    "buildings_feature_collection_file": "слой зданий",
+    "buildings_feature_collection_file": "слой зданий и сервисов",
     "pzz_zones_feature_collection_file": "слой зон ПЗЗ",
     "pzz_zone_vri_labels_file": "описания зон ПЗЗ",
     "pzz_descriptions_file": "описания зон ПЗЗ",
@@ -1265,10 +1265,11 @@ def _default_auto_query(include_pzz_check: bool) -> str:
 
 
 _DEFAULT_BUILDING_AUTO_QUERY = (
-    "Подготовь подробный разбор результата проверки загруженных зданий на "
+    "Подготовь подробный разбор результата проверки загруженных зданий и "
+    "сервисов на "
     "соответствие ПЗЗ в официально-деловом стиле: главный вывод, итоги по "
     "категориям, разбивка по территориальным зонам ПЗЗ и на что обратить "
-    "внимание (потенциальные нарушения, здания на ручной проверке и что делать)."
+    "внимание (потенциальные нарушения, объекты на ручной проверке и что делать)."
 )
 
 
