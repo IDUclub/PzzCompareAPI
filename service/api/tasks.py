@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -1048,6 +1049,9 @@ _BUILDING_INPUT_LABEL = (
     "input_buildings_and_services.geojson",
 )
 _SCENARIO_ZONES_LABEL = ("Функциональные зоны", "functional_zones.geojson")
+_SCENARIO_ZONES_SLOT = "functional_zones"
+SCENARIO_ZONE_NAME_COL = "zone_name"
+_COL_ZONE_TYPE = "Тип зоны"
 _RESULT_LABEL_PZZ = ("Результат проверки ПЗЗ", "pzz_check_result.geojson")
 _RESULT_LABEL_CLASSIFY = (
     "Результат классификации ВРИ",
@@ -1266,19 +1270,23 @@ def build_scenario_zone_geo_layers(
     The scenario's physical objects are not surfaced as an input layer — every
     one of them is already in the result layer, together with its verdict.
     """
+    if not task.pzz_zones_data_path:
+        return []
     title, filename = _SCENARIO_ZONES_LABEL
-    layer = _build_geo_layer(
-        slot="zones",
-        name="functional_zones",
-        title=title,
-        filename=filename,
-        role="input",
-        stored_path=task.pzz_zones_data_path,
-        external_id=external_id,
-        app_settings=app_settings,
-        request=request,
-    )
-    return [layer] if layer is not None else []
+    return [
+        {
+            "name": "functional_zones",
+            "title": title,
+            "role": "input",
+            "url": _file_durable_url(
+                _SCENARIO_ZONES_SLOT, external_id, app_settings, request
+            ),
+            "download_url": None,
+            "filename": filename,
+            "mime_type": "application/geo+json",
+            "source_service": app_settings.app_name,
+        }
+    ]
 
 
 def geo_layer_to_file_part(layer: dict[str, Any]) -> dict[str, Any]:
@@ -1325,6 +1333,51 @@ def _serve_result_split(
     )
 
 
+def _load_input_geojson(stored_path: str) -> dict[str, Any]:
+    """Read a task input GeoJSON from local disk or MinIO."""
+    if not is_remote_path(stored_path):
+        local_path = Path(stored_path).resolve()
+        if not local_path.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+        with local_path.open("rb") as fh:
+            return json.load(fh)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        local_file = Path(tmp_dir) / "input.geojson"
+        get_object_storage().download_file(stored_path, str(local_file))
+        with local_file.open("rb") as fh:
+            return json.load(fh)
+
+
+def _serve_scenario_zones(task: PipelineTask) -> Response:
+    """Serve a scenario's functional zones with display-only attributes.
+
+    The stored zones keep the raw urban_api payload the pipeline needs; the map
+    layer only gets the Russian zone type name.
+    """
+    if not task.pzz_zones_data_path:
+        raise HTTPException(status_code=404, detail="File not found")
+    geojson = _load_input_geojson(task.pzz_zones_data_path)
+    features = [
+        {
+            "type": "Feature",
+            "geometry": feature.get("geometry"),
+            "properties": {
+                _COL_ZONE_TYPE: (feature.get("properties") or {}).get(
+                    SCENARIO_ZONE_NAME_COL
+                )
+            },
+        }
+        for feature in geojson.get("features") or []
+    ]
+    fc = {"type": "FeatureCollection", "features": features}
+    filename = _SCENARIO_ZONES_LABEL[1]
+    return Response(
+        content=json.dumps(fc, ensure_ascii=False, default=str),
+        media_type="application/geo+json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/files/{slot}/{external_id}")
 def get_task_file_redirect(
     slot: str,
@@ -1342,6 +1395,8 @@ def get_task_file_redirect(
     if slot in _RESULT_SPLIT_SLOTS:
         task = get_task_or_404(external_id, task_repo)
         return _serve_result_split(task, slot, app_settings)
+    if slot == _SCENARIO_ZONES_SLOT:
+        return _serve_scenario_zones(get_task_or_404(external_id, task_repo))
 
     column = _FILE_SLOTS.get(slot)
     if column is None:

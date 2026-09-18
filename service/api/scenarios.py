@@ -59,6 +59,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from .tasks import (
     _TERMINAL_STATUSES,
+    SCENARIO_ZONE_NAME_COL,
     build_cancel_task_response,
     build_object_zone_fit_response,
     build_recompute_task_response,
@@ -77,7 +78,7 @@ router = APIRouter(prefix="/scenarios", tags=["scenarios"])
 
 _CADASTRAL_VRI_COL = "vri_text"
 _PZZ_ZONE_CODE_COL = "zone_code"
-_PZZ_ZONE_NAME_COL = "zone_name"
+_PZZ_ZONE_NAME_COL = SCENARIO_ZONE_NAME_COL
 _SCENARIO_IDEMPOTENCY_PREFIX = "sc:"
 
 
