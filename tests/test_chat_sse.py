@@ -6,6 +6,7 @@ import json
 import httpx
 import pytest
 from fastapi import HTTPException
+from sse_starlette.sse import ServerSentEvent
 
 from service.api.security import _get_token_from_header
 from service.api.tasks import _chat_event_to_sse, _final_answer_chunk_sse
@@ -262,3 +263,210 @@ def test_build_classify_summary_response(monkeypatch) -> None:
     assert report["objects"][1]["fit"] == "unclear"
     assert "Классифицировано объектов: 2." in report["chat_message"]
     assert "С подобранным ВРИ: 1." in report["chat_message"]
+
+
+def _geo_layer(name: str, role: str) -> dict:
+    return {
+        "name": name,
+        "title": name,
+        "role": role,
+        "url": f"https://pzz.example/files/{name}/ext-1",
+        "download_url": None,
+        "filename": f"{name}.geojson",
+        "mime_type": "application/geo+json",
+        "source_service": "pzz",
+    }
+
+
+def _run_finished_chat_stream(monkeypatch, result_layers, **generator_kwargs):
+    """Drive ``task_stream_with_chat_generator`` over an already finished task.
+
+    Returns the emitted ``file`` layer names and the file parts handed to chat
+    history persistence.
+    """
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from service.api import tasks as tasks_module
+    from service.models import TaskStatus
+
+    task = SimpleNamespace(id=1, status=TaskStatus.finished)
+
+    class _Result:
+        def scalar_one_or_none(self):
+            return task
+
+        def scalars(self):
+            return SimpleNamespace(all=lambda: [])
+
+    @contextmanager
+    def _session_scope():
+        yield SimpleNamespace(execute=lambda stmt: _Result())
+
+    persisted: dict = {}
+
+    async def _fake_chat_answer(app_settings, **kwargs):
+        persisted["file_parts"] = kwargs["assistant_file_parts"]
+        yield {"type": "done", "chat_id": "chat-1"}
+
+    monkeypatch.setattr(tasks_module, "session_scope", _session_scope)
+    monkeypatch.setattr(
+        tasks_module,
+        "TaskOut",
+        SimpleNamespace(
+            model_validate=lambda t: SimpleNamespace(model_dump=lambda mode: {})
+        ),
+    )
+    monkeypatch.setattr(
+        tasks_module, "build_result_geo_layers", lambda *a, **k: result_layers
+    )
+    monkeypatch.setattr(tasks_module, "_stream_chat_answer_managed", _fake_chat_answer)
+
+    request = SimpleNamespace(is_disconnected=lambda: asyncio.sleep(0, result=False))
+
+    async def run():
+        events = []
+        async for sse in tasks_module.task_stream_with_chat_generator(
+            "ext-1",
+            group_by="zone",
+            poll_interval=0.01,
+            request=request,
+            app_settings=SimpleNamespace(),
+            initial={"external_id": "ext-1"},
+            user_id=None,
+            user_query="q",
+            include_report=False,
+            **generator_kwargs,
+        ):
+            events.append(_payload(sse))
+        return events
+
+    events = asyncio.run(run())
+    streamed = [data["content"]["name"] for event, data in events if event == "file"]
+    return streamed, persisted["file_parts"]
+
+
+def test_task_chat_stream_persists_input_and_result_layers(monkeypatch) -> None:
+    """Chat history must keep the uploaded input layers, not only the result.
+
+    The frontend rebuilds the map from the persisted ``file`` parts when a chat
+    is reopened, so a layer missing here disappears from the reopened chat.
+    """
+    from service.api import tasks as tasks_module
+
+    input_layers = [
+        _geo_layer("input_cadastral", "input"),
+        _geo_layer("input_zones", "input"),
+    ]
+    monkeypatch.setattr(
+        tasks_module, "build_input_geo_layers", lambda *a, **k: input_layers
+    )
+
+    streamed, file_parts = _run_finished_chat_stream(
+        monkeypatch,
+        [_geo_layer("classified_result", "result")],
+        emit_input_files=True,
+    )
+
+    assert streamed == ["input_cadastral", "input_zones", "classified_result"]
+    assert [part["name"] for part in file_parts] == streamed
+    assert all("download_url" not in part for part in file_parts)
+
+
+def test_task_chat_stream_uses_custom_input_layers_builder(monkeypatch) -> None:
+    streamed, file_parts = _run_finished_chat_stream(
+        monkeypatch,
+        [_geo_layer("classified_result", "result")],
+        emit_input_files=True,
+        input_layers_builder=lambda *a: [_geo_layer("functional_zones", "input")],
+    )
+
+    assert streamed == ["functional_zones", "classified_result"]
+    assert [part["name"] for part in file_parts] == streamed
+
+
+def test_build_scenario_zone_geo_layers_exposes_functional_zones_only() -> None:
+    from types import SimpleNamespace
+
+    from service.api.tasks import build_scenario_zone_geo_layers
+
+    app_settings = SimpleNamespace(
+        public_base_url="https://pzz.example", app_name="pzz"
+    )
+    task = SimpleNamespace(
+        cadastral_data_path="/inputs/ext-1/cadastral_feature_collection.geojson",
+        pzz_zones_data_path="/inputs/ext-1/pzz_zones_feature_collection.geojson",
+    )
+
+    layers = build_scenario_zone_geo_layers(task, "ext-1", app_settings)
+
+    assert layers == [
+        {
+            "name": "functional_zones",
+            "title": "Функциональные зоны",
+            "role": "input",
+            "url": "https://pzz.example/files/zones/ext-1",
+            "download_url": None,
+            "filename": "functional_zones.geojson",
+            "mime_type": "application/geo+json",
+            "source_service": "pzz",
+        }
+    ]
+    task.pzz_zones_data_path = None
+    assert build_scenario_zone_geo_layers(task, "ext-1", app_settings) == []
+
+
+def test_scenario_chat_stream_emits_functional_zones_layer(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    from service import app as app_module
+    from service.api import scenarios as scenarios_module
+    from service.api.security import AuthUser, get_current_user
+    from service.api.tasks import build_scenario_zone_geo_layers
+    from service.dependencies import get_db
+
+    captured: dict = {}
+
+    async def _fake_build_task(**kwargs):
+        return SimpleNamespace(external_id="ext-1")
+
+    async def _fake_project_id(*args):
+        return None
+
+    async def _fake_stream(external_id, **kwargs):
+        captured.update(kwargs)
+        yield ServerSentEvent(data="{}", event="done")
+
+    monkeypatch.setattr(
+        scenarios_module, "_build_scenario_classification_task", _fake_build_task
+    )
+    monkeypatch.setattr(scenarios_module, "_fetch_project_id", _fake_project_id)
+    monkeypatch.setattr(
+        scenarios_module,
+        "TaskOut",
+        SimpleNamespace(
+            model_validate=lambda t: SimpleNamespace(model_dump=lambda mode: {})
+        ),
+    )
+    monkeypatch.setattr(
+        scenarios_module, "task_stream_with_chat_generator", _fake_stream
+    )
+    app = app_module.app
+    app.dependency_overrides[get_current_user] = lambda: AuthUser(
+        token="t", user_id="u"
+    )
+    app.dependency_overrides[get_db] = lambda: SimpleNamespace(commit=lambda: None)
+    try:
+        resp = TestClient(app).post(
+            "/scenarios/1/chat/stream",
+            data={"user_query": "q", "year": 2026, "source": "User"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    assert captured["emit_input_files"] is True
+    assert captured["input_layers_builder"] is build_scenario_zone_geo_layers

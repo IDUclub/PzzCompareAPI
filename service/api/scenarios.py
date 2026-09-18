@@ -62,6 +62,7 @@ from .tasks import (
     build_cancel_task_response,
     build_object_zone_fit_response,
     build_recompute_task_response,
+    build_scenario_zone_geo_layers,
     build_task_events_response,
     build_task_result_response,
     get_task_or_404,
@@ -544,6 +545,8 @@ async def classify_scenario_stream_endpoint(
             request=request,
             app_settings=app_settings,
             initial=initial,
+            emit_input_files=True,
+            input_layers_builder=build_scenario_zone_geo_layers,
         )
     )
 
@@ -660,6 +663,8 @@ async def scenario_chat_stream_endpoint(
             chat_title=user_query[:256],
             model=model,
             temperature=temperature,
+            emit_input_files=True,
+            input_layers_builder=build_scenario_zone_geo_layers,
         )
     )
 

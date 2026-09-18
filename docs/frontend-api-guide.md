@@ -1007,10 +1007,26 @@ data: {"type":"zone_review","content":{
 - `role: "result"` — итоговый классифицированный слой (когда задача `finished`). Приходит во всех
   стримах (чат и обычные `*/classify/stream`, `*/pzz-check/stream`).
 - `role: "input"` — **загруженные** входные слои (`input_cadastral`, `input_zones`). Приходят
-  **только в upload-флоу** (`/tasks/pzz-check/chat/stream`, `/tasks/classify-only/chat/stream`,
-  `/tasks/pzz-check/stream`, `/tasks/classify-only/stream`), сразу в начале (можно качать, не
-  дожидаясь завершения).
-  В сценарном флоу их нет (входные данные тянутся из urban_api).
+  **только в upload-флоу** (`/tasks/auto/chat/stream`, `/tasks/pzz-check/chat/stream`,
+  `/tasks/classify-only/chat/stream`, `/tasks/pzz-check/stream`, `/tasks/classify-only/stream`),
+  сразу в начале (можно качать, не дожидаясь завершения).
+- В сценарном флоу (`/scenarios/{id}/chat/stream`, `/scenarios/{id}/classify/stream`) входной
+  слой один — `functional_zones` («Функциональные зоны», `role: "input"`, `url` =
+  `/files/zones/{external_id}`): функциональные зоны сценария из urban_api. Физические объекты
+  отдельным слоем не приходят — все они уже есть в слое результата вместе с вердиктом.
+
+Полный набор `file`-событий (`content.name`) по режимам (`mode` в `/tasks/auto/chat/stream` и
+сценарный чат) — фронт должен показать **все** эти слои, а не только результат:
+
+| Режим | `content.name` |
+|---|---|
+| `classify_only` | `input_cadastral`, `classified_result` |
+| `pzz_check` | `input_cadastral`, `input_zones`, `classified_result` |
+| `building_pzz_check` | `input_cadastral`, `input_zones`, `buildings_result`, `services_result` |
+| сценарий (`/scenarios/{id}/chat/stream`) | `functional_zones`, `classified_result` |
+
+Подпись слоя для пользователя — `content.title` (RU); `name` — стабильный машинный ключ,
+`filename` — имя файла при скачивании.
 
 Как пользоваться ссылками:
 - **мгновенная** выгрузка → `download_url` (если не `null`);
@@ -1018,9 +1034,10 @@ data: {"type":"zone_review","content":{
   (`slot` ∈ `result` / `cadastral` / `zones`), которая на каждый заход редиректит (307) на свежий
   presigned MinIO. Не протухает, авторизация не нужна, большой файл качается прямо из MinIO.
 
-В ChatStorage сохраняется только **result**-ссылка — как `kind: "file"` часть сообщения ассистента
-(`payload` = `{ url, name, title, filename, mime_type, source_service }`, где `url` — долговечный).
-Входные слои в историю не пишутся (приходят только в стриме). `download_url` нигде не сохраняется
+В ChatStorage сохраняются **все** слои, пришедшие событием `file` (сначала входные, затем
+результат), — каждый как `kind: "file"` часть сообщения ассистента (`payload` = `{ url, name, title,
+filename, mime_type, source_service }`, где `url` — долговечный). Поэтому при открытии чата из
+истории восстанавливается тот же набор слоёв, что был в стриме. `download_url` нигде не сохраняется
 (он временный), поэтому при открытии истории качайте по `url`.
 
 **Пример (frontend):**

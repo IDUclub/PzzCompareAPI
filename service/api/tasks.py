@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -54,6 +55,10 @@ RESULT_LOAD_FAILED_MESSAGE = "Failed to load the task result"
 
 _SCENARIO_IDEMPOTENCY_PREFIX = "sc:"
 _BUILDING_IDEMPOTENCY_PREFIX = "bld:"
+
+InputLayersBuilder = Callable[
+    [PipelineTask, str, Settings, Request | None], list[dict[str, Any]]
+]
 
 
 def get_task_or_404(external_id: str, task_repo: TaskRepository) -> PipelineTask:
@@ -361,14 +366,16 @@ async def task_stream_with_report_generator(
     initial: dict[str, Any],
     include_report: bool = True,
     emit_input_files: bool = False,
+    input_layers_builder: InputLayersBuilder | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Stream a task's lifecycle and, on success, the object-zone-fit report.
 
     Used by the combined "create + stream" scenario endpoint. Emits:
       - ``task``        once, upfront, with the created task descriptor (so a
                         client that drops can reconnect to /stream by external_id);
-      - ``file``        (upload flow) links to uploaded input layers, once,
-                        early; and the result layer when finished;
+      - ``file``        links to the input layers, once, early (uploaded
+                        layers in the upload flow, functional zones for a
+                        scenario); and the result layer when finished;
       - ``task_event``  per new pipeline event;
       - ``status``      on each status change;
       - ``geojson``     the classified result FeatureCollection (geometry +
@@ -399,9 +406,8 @@ async def task_stream_with_report_generator(
 
             if emit_input_files and not inputs_emitted:
                 inputs_emitted = True
-                for layer in build_input_geo_layers(
-                    task, external_id, app_settings, request
-                ):
+                build_inputs = input_layers_builder or build_input_geo_layers
+                for layer in build_inputs(task, external_id, app_settings, request):
                     yield ServerSentEvent(
                         data=json.dumps({"type": "file", "content": layer}),
                         event="file",
@@ -725,6 +731,7 @@ async def task_stream_with_chat_generator(
     include_report: bool = True,
     report_kind: str = "object_zone_fit",
     emit_input_files: bool = False,
+    input_layers_builder: InputLayersBuilder | None = None,
     system_prompt_path: str | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Stream a task to completion, then a grounded LLM answer over its report.
@@ -769,6 +776,7 @@ async def task_stream_with_chat_generator(
 
         last_event_id = 0
         classification_context = ""
+        input_layers: list[dict[str, Any]] = []
         geo_layers: list[dict[str, Any]] = []
         inputs_emitted = False
         while True:
@@ -787,9 +795,11 @@ async def task_stream_with_chat_generator(
 
                 if emit_input_files and not inputs_emitted:
                     inputs_emitted = True
-                    for layer in build_input_geo_layers(
+                    build_inputs = input_layers_builder or build_input_geo_layers
+                    input_layers = build_inputs(
                         task, external_id, app_settings, request
-                    ):
+                    )
+                    for layer in input_layers:
                         yield ServerSentEvent(
                             data=json.dumps({"type": "file", "content": layer}),
                             event="file",
@@ -874,7 +884,7 @@ async def task_stream_with_chat_generator(
         # Conversational events use gMART's {"type", "content"} envelope.
         streamed_answer = False
         assistant_file_parts = [
-            geo_layer_to_file_part(layer) for layer in geo_layers
+            geo_layer_to_file_part(layer) for layer in [*input_layers, *geo_layers]
         ] or None
         if last_status == TaskStatus.finished:
             async for event in _stream_chat_answer_managed(
@@ -1037,6 +1047,7 @@ _BUILDING_INPUT_LABEL = (
     "Исходные здания и сервисы",
     "input_buildings_and_services.geojson",
 )
+_SCENARIO_ZONES_LABEL = ("Функциональные зоны", "functional_zones.geojson")
 _RESULT_LABEL_PZZ = ("Результат проверки ПЗЗ", "pzz_check_result.geojson")
 _RESULT_LABEL_CLASSIFY = (
     "Результат классификации ВРИ",
@@ -1242,6 +1253,32 @@ def build_input_geo_layers(
         if layer is not None:
             layers.append(layer)
     return layers
+
+
+def build_scenario_zone_geo_layers(
+    task: PipelineTask,
+    external_id: str,
+    app_settings: Settings,
+    request: Request | None = None,
+) -> list[dict[str, Any]]:
+    """Input layer for a scenario task: its urban_api functional zones only.
+
+    The scenario's physical objects are not surfaced as an input layer — every
+    one of them is already in the result layer, together with its verdict.
+    """
+    title, filename = _SCENARIO_ZONES_LABEL
+    layer = _build_geo_layer(
+        slot="zones",
+        name="functional_zones",
+        title=title,
+        filename=filename,
+        role="input",
+        stored_path=task.pzz_zones_data_path,
+        external_id=external_id,
+        app_settings=app_settings,
+        request=request,
+    )
+    return [layer] if layer is not None else []
 
 
 def geo_layer_to_file_part(layer: dict[str, Any]) -> dict[str, Any]:
