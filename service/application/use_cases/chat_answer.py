@@ -176,14 +176,18 @@ def build_classification_context(
         )
         parts.append(summary_label + "\n" + chat_message)
     if object_zone_fit:
+        subject = object_zone_fit.get("subject")
         building_mode = object_zone_fit.get("mode") == "building_pzz_check"
-        item_count_key = "объектов" if building_mode else "участков"
-        problem_dative = "объектам" if building_mode else "участкам"
-        problem_label = (
-            "Проблемные объекты (здания и сервисы)"
-            if building_mode
-            else "Проблемные земельные участки"
-        )
+        scenario_mode = subject == "scenario_object"
+        object_mode = building_mode or scenario_mode
+        item_count_key = "объектов" if object_mode else "участков"
+        problem_dative = "объектам" if object_mode else "участкам"
+        if scenario_mode:
+            problem_label = "Проблемные объекты сценария"
+        elif building_mode:
+            problem_label = "Проблемные объекты (здания и сервисы)"
+        else:
+            problem_label = "Проблемные земельные участки"
         summary = object_zone_fit.get("summary")
         if summary:
             parts.append(

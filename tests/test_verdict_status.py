@@ -128,3 +128,38 @@ def test_building_object_zone_fit_reports_buildings_and_services(tmp_path: Path)
     assert "Проверено объектов (зданий и сервисов): 2" in resp["chat_message"]
     assert "сервисов: 1" in resp["chat_message"]
     assert "земельных участков" not in resp["chat_message"]
+
+
+def test_scenario_object_zone_fit_reports_scenario_objects(tmp_path: Path):
+    result = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": None,
+                "properties": {
+                    "Вердикт_ПЗЗ": "Разрешен",
+                    "Код фактической зоны нахождения кадастра": "Ж-1",
+                },
+            },
+            {
+                "type": "Feature",
+                "geometry": None,
+                "properties": {
+                    "Вердикт_ПЗЗ": "Не разрешен",
+                    "Код фактической зоны нахождения кадастра": "П-1",
+                },
+            },
+        ],
+    }
+    f = tmp_path / "scenario-result.geojson"
+    f.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+
+    for group_by in ("object", "zone"):
+        resp = build_object_zone_fit_response(
+            _Task(str(f)), "ext-scenario", group_by, _settings(tmp_path), scenario=True
+        )
+
+        assert resp["subject"] == "scenario_object"
+        assert "Проверено объектов сценария: 2" in resp["chat_message"]
+        assert "участк" not in resp["chat_message"]
