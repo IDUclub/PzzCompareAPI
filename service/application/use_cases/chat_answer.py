@@ -106,6 +106,7 @@ def _extract_problem_objects(
     cap: int,
     reason_chars: int = 240,
     vri_names: dict[str, str] | None = None,
+    object_mode: bool = False,
 ) -> list[dict[str, Any]]:
     """Return the wrong/unclear objects (key fields only), capped in count.
 
@@ -113,8 +114,19 @@ def _extract_problem_objects(
     ``zones[].objects``. Keyed by the RESULT FILE's own Russian attribute names
     (``Код_подобранного_ВРИ``, ``Подобранный_ВРИ``, ``Вердикт_ПЗЗ``…) so the model
     can cite the exact attribute where each value is recorded, and so nothing
-    English-labelled leaks into the answer.
+    English-labelled leaks into the answer. ``object_mode`` (building / scenario
+    checks) uses the object result's usage-type attribute names instead.
     """
+    text_key, code_key, name_key, basis_key = (
+        (
+            "Исходный_тип_объекта",
+            "Код_типа_использования",
+            "Тип_использования",
+            "Основание_подбора_типа_использования",
+        )
+        if object_mode
+        else ("ВРИ_ЕГРН", "Код_подобранного_ВРИ", "Подобранный_ВРИ", "Основание_подбора_ВРИ")
+    )
     objects = object_zone_fit.get("objects")
     if not objects:
         objects = []
@@ -129,12 +141,12 @@ def _extract_problem_objects(
         if not name and code and vri_names:
             name = vri_names.get(code, "")
         item = {
-            "ВРИ_ЕГРН": obj.get("vri_text"),
+            text_key: obj.get("vri_text"),
             "Название_зоны_ПЗЗ": obj.get("zone_name"),
             "Вердикт_ПЗЗ": obj.get("verdict"),
-            "Код_подобранного_ВРИ": code or None,
-            "Подобранный_ВРИ": name or None,
-            "Основание_подбора_ВРИ": obj.get("resolution_basis") or None,
+            code_key: code or None,
+            name_key: name or None,
+            basis_key: obj.get("resolution_basis") or None,
             "Причина": reason[:reason_chars] if isinstance(reason, str) else reason,
         }
         if obj.get("category"):
@@ -241,13 +253,17 @@ def build_classification_context(
             parts.append("Структурированный отчёт (JSON):\n" + report_json)
         else:
             problems = _extract_problem_objects(
-                object_zone_fit, max_problem_objects, vri_names=vri_names
+                object_zone_fit,
+                max_problem_objects,
+                vri_names=vri_names,
+                object_mode=object_mode,
             )
             if problems:
                 parts.append(
                     f"{problem_label} (потенциальные нарушения и "
                     f"требующие ручной проверки; показаны первые {len(problems)}, "
-                    "точные итоги — в «Сводка»; для каждого: присвоенный ВРИ и "
+                    "точные итоги — в «Сводка»; для каждого: присвоенный "
+                    f"{'тип использования' if object_mode else 'ВРИ'} и "
                     "причина вердикта):\n"
                     + json.dumps(problems, ensure_ascii=False, default=str)
                 )

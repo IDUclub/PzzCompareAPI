@@ -28,6 +28,15 @@ History:
         instead. The classify-only "reason" text for the classifier-candidate
         rows also no longer says "ПЗЗ отключена". PZZ-check / building runs
         are unaffected (``Вердикт_ПЗЗ`` unchanged).
+  - v5  2026-09-24: scenario checks also include the scenario's services and
+        fill ``Категория_объекта`` / basis column like the file building
+        check, so the result splits into «здания» / «сервисы» layers.
+        Building / scenario results describe objects by usage type, not ВРИ:
+        verdict reasons and basis text say «тип использования», and the columns
+        ``ВРИ_ЕГРН`` / ``Код_подобранного_ВРИ`` / ``Подобранный_ВРИ`` /
+        ``Основание_подбора_ВРИ`` are renamed ``Исходный_тип_объекта`` /
+        ``Код_типа_использования`` / ``Тип_использования`` /
+        ``Основание_подбора_типа_использования`` (parcel runs unchanged).
 """
 
-PIPELINE_OUTPUT_VERSION = "v4"
+PIPELINE_OUTPUT_VERSION = "v5"

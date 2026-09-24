@@ -611,7 +611,7 @@ class UploadedBuildingPzzRunner(PipelineRunner):
                 return (
                     code,
                     name,
-                    f"жилое здание — ВРИ подобран по этажности{floors_txt}{_source_note(type_source)}",
+                    f"жилое здание — тип использования подобран по этажности{floors_txt}{_source_note(type_source)}",
                 )
         if service_type_id is not None:
             entry = self._service_map.get(str(service_type_id))
@@ -619,7 +619,7 @@ class UploadedBuildingPzzRunner(PipelineRunner):
                 return (
                     entry["vri_code"],
                     entry.get("vri_name") or None,
-                    f"сервис (service_type_id={service_type_id}) — ВРИ подобран по типу сервиса{_source_note(service_source)}",
+                    f"сервис (service_type_id={service_type_id}) — тип использования подобран по типу сервиса{_source_note(service_source)}",
                 )
         if po_type_id is not None:
             code, name = resolve_po_type_vri(self._po2vri, po_type_id, floors)
@@ -627,7 +627,7 @@ class UploadedBuildingPzzRunner(PipelineRunner):
                 return (
                     code,
                     name,
-                    f"физический объект (physical_object_type_id={po_type_id}) — ВРИ подобран по типу объекта{_source_note(type_source)}",
+                    f"физический объект (physical_object_type_id={po_type_id}) — тип использования подобран по типу объекта{_source_note(type_source)}",
                 )
         return None, None, ""
 

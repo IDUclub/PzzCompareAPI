@@ -121,6 +121,29 @@ class UrbanApiClient:
         )
         return self._json_or_raise(resp)
 
+    async def get_services_with_geometry(
+        self,
+        scenario_id: int,
+        *,
+        service_type_id: int | None = None,
+        token: str | None = None,
+    ) -> dict[str, Any]:
+        """Return GeoJSON FeatureCollection of the scenario's services with geometry.
+
+        Each feature carries a nested ``service_type`` (``service_type_id``,
+        ``name``, ``code``) — the key the building check resolves a service's
+        VRI by.
+        """
+        params: dict[str, Any] = {}
+        if service_type_id is not None:
+            params["service_type_id"] = service_type_id
+        resp = await self._client.get(
+            f"/api/v1/scenarios/{scenario_id}/services_with_geometry",
+            params=params,
+            headers=self._auth_headers(token),
+        )
+        return self._json_or_raise(resp)
+
     @staticmethod
     def _json_or_raise(resp: httpx.Response) -> Any:
         if resp.status_code >= 400:
