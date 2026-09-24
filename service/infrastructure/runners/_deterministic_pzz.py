@@ -16,14 +16,18 @@ from pathlib import Path
 from typing import Any
 
 # --- result property columns the object-zone-fit endpoint / reports read ------
-COL_VRI_TEXT = "ВРИ_ЕГРН"
+# Source object type (building type / service type) as given in the input.
+COL_VRI_TEXT = "Исходный_тип_объекта"
 COL_ZONE_CODE = "Код фактической зоны нахождения кадастра"
 COL_ZONE_NAME = "Название фактической зоны нахождения кадастра"
 COL_VERDICT = "Вердикт_ПЗЗ"
 COL_REASON = "Причина"
-COL_MATCHED_VRI_NAME = "Подобранный_ВРИ"
-COL_MATCHED_VRI_CODE = "Код_подобранного_ВРИ"
-COL_RESOLUTION_BASIS = "Основание_подбора_ВРИ"
+# Objects (buildings / services) carry a usage type, not a parcel ВРИ, so the
+# object-mode result columns are named accordingly (parcel runs keep
+# «Подобранный_ВРИ» / «Код_подобранного_ВРИ»).
+COL_MATCHED_VRI_NAME = "Тип_использования"
+COL_MATCHED_VRI_CODE = "Код_типа_использования"
+COL_RESOLUTION_BASIS = "Основание_подбора_типа_использования"
 # Object kind, filled only by the building runner so its result can be split into
 # separate «здания» / «сервисы» download layers. Absent from parcel results.
 COL_CATEGORY = "Категория_объекта"
@@ -236,12 +240,12 @@ def verdict(
         )
     zone_name = zone_nick.get(fz_type_id, str(fz_type_id))
     if vri is None:
-        return "unclear", "Для типа объекта нет сопоставленного ВРИ в словаре.", "", ""
+        return "unclear", "Для объекта нет сопоставленного типа использования в словаре.", "", ""
     sections = zone_allowed.get(fz_type_id)
     if not sections or not any(sections.values()):
         return (
             "no_zone_metadata",
-            f"Для зоны «{zone_name}» нет описания разрешённых ВРИ.",
+            f"Для зоны «{zone_name}» нет описания разрешённых типов использования.",
             vri,
             "",
         )
@@ -249,13 +253,13 @@ def verdict(
         if is_allowed(vri, sections.get(section) or set()):
             return (
                 f"allowed_{section}",
-                f"ВРИ {vri} разрешён в зоне «{zone_name}» ({section}).",
+                f"Тип использования {vri} разрешён в зоне «{zone_name}» ({section}).",
                 vri,
                 "",
             )
     return (
         "not_allowed",
-        f"ВРИ {vri} не входит в разрешённые в зоне «{zone_name}».",
+        f"Тип использования {vri} не входит в разрешённые в зоне «{zone_name}».",
         vri,
         "",
     )

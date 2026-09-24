@@ -25,6 +25,8 @@ from typing import Any
 
 from service.domain import PipelineRequest
 from service.infrastructure.runners._deterministic_pzz import (
+    CATEGORY_BUILDING,
+    CATEGORY_SERVICE,
     build_zone_gdf,
     clean_result_properties,
     join_objects_to_zones,
@@ -44,6 +46,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("service.tasks")
 
 _FLOORS_FIELD = "Количество этажей"
+_RESIDENTIAL_PO_TYPE = 4  # urban_api "жилой дом"
 
 
 class DeterministicScenarioRunner(PipelineRunner):
@@ -57,6 +60,60 @@ class DeterministicScenarioRunner(PipelineRunner):
         self._zone_allowed, self._zone_nick = load_zone_mapping(
             settings.default_fz_to_pzz_mapping_path
         )
+        raw_service = json.loads(
+            Path(settings.service_type_to_vri_path).read_text(encoding="utf-8")
+        )
+        self._service_map: dict[str, Any] = raw_service.get("by_service_type_id", {})
+
+    def _resolve(
+        self, props: dict[str, Any]
+    ) -> tuple[str | None, str | None, str, str]:
+        """Return ``(vri_code, vri_name, basis, category)`` for one scenario feature.
+
+        Mirrors the uploaded-building runner: services (``service_type`` present)
+        resolve by service_type_id, residential buildings by floors, other
+        physical objects by type — with the same basis wording, so the scenario
+        result splits into the same «здания» / «сервисы» layers.
+        """
+        service_type = props.get("service_type")
+        if isinstance(service_type, dict):
+            st_id = service_type.get("service_type_id")
+            entry = self._service_map.get(str(st_id)) if st_id is not None else None
+            if entry and entry.get("vri_code"):
+                return (
+                    entry["vri_code"],
+                    entry.get("vri_name") or None,
+                    f"сервис (service_type_id={st_id}) — тип использования подобран по типу сервиса",
+                    CATEGORY_SERVICE,
+                )
+            return None, None, "", CATEGORY_SERVICE
+
+        po_type = (props.get("physical_object_type") or {}).get(
+            "physical_object_type_id"
+        )
+        nested = (
+            props.get("properties") if isinstance(props.get("properties"), dict) else {}
+        )
+        floors = nested.get(_FLOORS_FIELD, props.get(_FLOORS_FIELD))
+        if po_type is None:
+            return None, None, "", CATEGORY_BUILDING
+        po_type = int(po_type)
+        code, name = resolve_po_type_vri(self._po2vri, po_type, floors)
+        if not code:
+            return None, None, "", CATEGORY_BUILDING
+        if po_type == _RESIDENTIAL_PO_TYPE:
+            floors_txt = (
+                f", {floors} эт."
+                if floors not in (None, "")
+                else " (этажность не указана)"
+            )
+            basis = f"жилое здание — тип использования подобран по этажности{floors_txt}"
+        else:
+            basis = (
+                f"физический объект (physical_object_type_id={po_type}) "
+                "— тип использования подобран по типу объекта"
+            )
+        return code, name, basis, CATEGORY_BUILDING
 
     def run(self, request: PipelineRequest) -> str:
         output_dir = Path(request.outputs_dir)
@@ -80,18 +137,7 @@ class DeterministicScenarioRunner(PipelineRunner):
         # --- classify + annotate features ---
         for i, feature in enumerate(feats):
             old_props = feature.get("properties") or {}
-            po_type = (old_props.get("physical_object_type") or {}).get(
-                "physical_object_type_id"
-            )
-            nested = (
-                old_props.get("properties")
-                if isinstance(old_props.get("properties"), dict)
-                else {}
-            )
-            floors = nested.get(_FLOORS_FIELD, old_props.get(_FLOORS_FIELD))
-            vri, vri_name = (None, None)
-            if po_type is not None:
-                vri, vri_name = resolve_po_type_vri(self._po2vri, int(po_type), floors)
+            vri, vri_name, basis, category = self._resolve(old_props)
 
             fz = fz_by_obj.get(i)
             machine_verdict, reason, mcode, _ = compute_verdict(
@@ -105,6 +151,8 @@ class DeterministicScenarioRunner(PipelineRunner):
                 reason=reason,
                 matched_vri_code=mcode,
                 matched_vri_name=vri_name,
+                resolution_basis=basis,
+                category=category,
             )
 
         result = {"type": "FeatureCollection", "features": feats}

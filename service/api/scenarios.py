@@ -152,6 +152,17 @@ def _flatten_physical_object_features(
     features = feature_collection.get("features") or []
     for feature in features:
         props = feature.setdefault("properties", {})
+        service_type = props.get("service_type")
+        if isinstance(service_type, dict):
+            # Scenario service (from services_with_geometry): the runner resolves
+            # its VRI by service_type_id; this text is for display only.
+            type_name = service_type.get("name") or ""
+            name = props.get("name") or ""
+            if type_name and name and name != type_name:
+                props[vri_col] = f"{type_name}, {name}"
+            else:
+                props[vri_col] = type_name or name or "неизвестный сервис"
+            continue
         po_type = props.get("physical_object_type") or {}
         type_name = (po_type.get("name") if isinstance(po_type, dict) else None) or ""
         nested = (
@@ -405,6 +416,34 @@ async def _build_scenario_classification_task(
         except UrbanApiError as exc:
             raise HTTPException(status_code=502, detail=f"urban_api: {exc}") from exc
 
+        # Services are checked alongside buildings (same as the file building
+        # check → separate «здания» / «сервисы» result layers). Non-fatal: a
+        # services failure must not block the buildings check.
+        try:
+            services_fc = await urban.get_services_with_geometry(
+                scenario_id, token=token
+            )
+        except UrbanApiError as exc:
+            api_log(
+                "create_task",
+                "services_fetch_failed",
+                mode="scenario_classify",
+                scenario_id=scenario_id,
+                error=str(exc),
+            )
+            services_fc = {}
+
+    service_features = [
+        f
+        for f in ((services_fc or {}).get("features") or [])
+        if f.get("geometry") is not None
+    ]
+    if service_features:
+        objects_fc = {
+            **objects_fc,
+            "features": list(objects_fc.get("features") or []) + service_features,
+        }
+
     if not (zones_fc.get("features") or []):
         raise HTTPException(
             status_code=422,
@@ -415,7 +454,7 @@ async def _build_scenario_classification_task(
             status_code=422,
             detail=(
                 f"urban_api returned no physical objects of type {physical_object_type_id} "
-                f"for scenario {scenario_id}."
+                f"and no services for scenario {scenario_id}."
             ),
         )
 

@@ -230,13 +230,13 @@ def test_run_residential_verdicts_fallback_mapping(tmp_path) -> None:
     assert props[1][COL_VERDICT] == "Не разрешен"
     # clean whitelist: exactly the 8 result columns + the building-mode category
     assert set(props[0].keys()) == {
-        "ВРИ_ЕГРН",
+        "Исходный_тип_объекта",
         COL_ZONE_CODE,
         "Название фактической зоны нахождения кадастра",
         COL_VERDICT,
         "Причина",
         COL_MATCHED_VRI_CODE,
-        "Подобранный_ВРИ",
+        "Тип_использования",
         COL_RESOLUTION_BASIS,
         COL_CATEGORY,
     }
