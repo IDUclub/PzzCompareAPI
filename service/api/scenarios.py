@@ -548,6 +548,7 @@ async def classify_scenario_stream_endpoint(
             initial=initial,
             emit_input_files=True,
             input_layers_builder=build_scenario_zone_geo_layers,
+            scenario=True,
         )
     )
 
@@ -666,6 +667,8 @@ async def scenario_chat_stream_endpoint(
             temperature=temperature,
             emit_input_files=True,
             input_layers_builder=build_scenario_zone_geo_layers,
+            system_prompt_path=app_settings.chat_system_prompt_scenario_path,
+            scenario=True,
         )
     )
 
@@ -805,7 +808,9 @@ async def get_scenario_task_object_zone_fit_endpoint(
         external_id=external_id,
         task_repo=task_repo,
     )
-    return build_object_zone_fit_response(task, external_id, group_by, app_settings)
+    return build_object_zone_fit_response(
+        task, external_id, group_by, app_settings, scenario=True
+    )
 
 
 @router.delete("/{scenario_id}/tasks/{external_id}", response_model=TaskOut)
@@ -999,7 +1004,7 @@ async def _scenario_task_sse_generator(
                 if current_status == TaskStatus.finished:
                     try:
                         ozone = build_object_zone_fit_response(
-                            task, external_id, "zone", app_settings
+                            task, external_id, "zone", app_settings, scenario=True
                         )
                         yield ServerSentEvent(
                             data=json.dumps(ozone, default=str),

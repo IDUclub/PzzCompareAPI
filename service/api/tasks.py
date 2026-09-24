@@ -368,6 +368,7 @@ async def task_stream_with_report_generator(
     include_report: bool = True,
     emit_input_files: bool = False,
     input_layers_builder: InputLayersBuilder | None = None,
+    scenario: bool = False,
 ) -> AsyncIterator[ServerSentEvent]:
     """Stream a task's lifecycle and, on success, the object-zone-fit report.
 
@@ -454,7 +455,11 @@ async def task_stream_with_report_generator(
                             )
                         if include_report:
                             report = build_object_zone_fit_response(
-                                task, external_id, group_by, app_settings
+                                task,
+                                external_id,
+                                group_by,
+                                app_settings,
+                                scenario=scenario,
                             )
                             yield ServerSentEvent(
                                 data=json.dumps(report), event="report"
@@ -734,6 +739,7 @@ async def task_stream_with_chat_generator(
     emit_input_files: bool = False,
     input_layers_builder: InputLayersBuilder | None = None,
     system_prompt_path: str | None = None,
+    scenario: bool = False,
 ) -> AsyncIterator[ServerSentEvent]:
     """Stream a task to completion, then a grounded LLM answer over its report.
 
@@ -856,7 +862,11 @@ async def task_stream_with_chat_generator(
                                 report_event = "classify_summary"
                             else:
                                 report = build_object_zone_fit_response(
-                                    task, external_id, group_by, app_settings
+                                    task,
+                                    external_id,
+                                    group_by,
+                                    app_settings,
+                                    scenario=scenario,
                                 )
                                 report_event = "object_zone_fit"
                             yield ServerSentEvent(
@@ -1078,6 +1088,14 @@ _RESULT_SPLIT_SLOTS: dict[str, tuple[str, str, str, str]] = {
         "services_result.geojson",
     ),
 }
+
+
+# Who the checked items are — drives the wording of the deterministic summary
+# and of the LLM grounding: cadastral land parcels (pzz_check upload), uploaded
+# buildings + services (building_pzz_check) or a scenario's physical objects.
+SUBJECT_PARCEL = "parcel"
+SUBJECT_BUILDING = "building"
+SUBJECT_SCENARIO_OBJECT = "scenario_object"
 
 
 def _is_building_task(task: PipelineTask) -> bool:
@@ -1487,7 +1505,7 @@ def _truncate(text: str, max_chars: int) -> str:
 
 
 def _verdict_breakdown_lines(
-    summary: dict[str, Any], *, building_mode: bool = False
+    summary: dict[str, Any], *, subject: str = SUBJECT_PARCEL
 ) -> list[str]:
     """Split the 'требуют ручной проверки' bucket by actual Вердикт_ПЗЗ reason.
 
@@ -1506,7 +1524,9 @@ def _verdict_breakdown_lines(
     }
     if not reasons:
         return []
-    checked_subject = "эти объекты" if building_mode else "эти земельные участки"
+    checked_subject = (
+        "эти земельные участки" if subject == SUBJECT_PARCEL else "эти объекты"
+    )
     lines = [
         f"Причины ручной проверки ({checked_subject} можно проверить "
         "по атрибуту «Вердикт_ПЗЗ»):"
@@ -1517,7 +1537,7 @@ def _verdict_breakdown_lines(
 
 
 def _reconciled_intro(
-    summary: dict[str, Any], *, building_mode: bool = False
+    summary: dict[str, Any], *, subject: str = SUBJECT_PARCEL
 ) -> list[str]:
     """Intro lines with totals that add up, using the exact counts in ``summary``.
 
@@ -1532,7 +1552,7 @@ def _reconciled_intro(
     zones_count = summary.get("zones_count", 0)
     not_in_zone = summary.get("not_in_zone", 0)
 
-    if building_mode:
+    if subject == SUBJECT_BUILDING:
         by_category = summary.get("by_category") or {}
         buildings = by_category.get("Здание", 0)
         services = by_category.get("Сервис", 0)
@@ -1540,6 +1560,10 @@ def _reconciled_intro(
             f"Проверено объектов (зданий и сервисов): {total} "
             f"(зданий: {buildings}, сервисов: {services})."
         )
+        item_dative = "объекта"
+        definition = "ВРИ — вид разрешённого использования; ПЗЗ — правила "
+    elif subject == SUBJECT_SCENARIO_OBJECT:
+        intro = f"Проверено объектов сценария: {total}."
         item_dative = "объекта"
         definition = "ВРИ — вид разрешённого использования; ПЗЗ — правила "
     else:
@@ -1573,12 +1597,12 @@ def _build_chat_message_objects(
     rows: list[dict[str, Any]],
     summary: dict[str, Any],
     *,
-    building_mode: bool = False,
+    subject: str = SUBJECT_PARCEL,
 ) -> str:
     """Chatbot-friendly plain-text summary for group_by=object."""
-    lines = _reconciled_intro(summary, building_mode=building_mode)
+    lines = _reconciled_intro(summary, subject=subject)
     if summary["unclear"]:
-        breakdown = _verdict_breakdown_lines(summary, building_mode=building_mode)
+        breakdown = _verdict_breakdown_lines(summary, subject=subject)
         if breakdown:
             lines += ["", *breakdown]
 
@@ -1586,11 +1610,14 @@ def _build_chat_message_objects(
     if wrong:
         lines += [
             "",
-            (
-                "Объекты (здания и сервисы) с недопустимым в их зоне ПЗЗ ВРИ:"
-                if building_mode
-                else "Земельные участки с недопустимым в их зоне ВРИ:"
-            ),
+            {
+                SUBJECT_BUILDING: (
+                    "Объекты (здания и сервисы) с недопустимым в их зоне ПЗЗ ВРИ:"
+                ),
+                SUBJECT_SCENARIO_OBJECT: (
+                    "Объекты сценария с недопустимым в их зоне ПЗЗ ВРИ:"
+                ),
+            }.get(subject, "Земельные участки с недопустимым в их зоне ВРИ:"),
         ]
         for row in wrong[:10]:
             obj_label = row.get("vri_text") or "—"
@@ -1600,21 +1627,25 @@ def _build_chat_message_objects(
                 f"- #{row['feature_index']}: «{obj_label}» в зоне «{zone_label}» — {reason}"
             )
         if len(wrong) > 10:
-            noun = "объектов" if building_mode else "земельных участков"
+            noun = "земельных участков" if subject == SUBJECT_PARCEL else "объектов"
             lines.append(
                 f"...и ещё {len(wrong) - 10} {noun} с недопустимым " "в их зоне ВРИ."
             )
     elif not summary["unclear"]:
         lines += [
             "",
-            (
-                "У всех объектов (зданий и сервисов) ВРИ допустим в их "
-                "территориальной зоне ПЗЗ."
-                if building_mode
-                else (
-                    "У всех земельных участков ВРИ допустим в их "
-                    "территориальной зоне."
-                )
+            {
+                SUBJECT_BUILDING: (
+                    "У всех объектов (зданий и сервисов) ВРИ допустим в их "
+                    "территориальной зоне ПЗЗ."
+                ),
+                SUBJECT_SCENARIO_OBJECT: (
+                    "У всех объектов сценария ВРИ допустим в их "
+                    "территориальной зоне ПЗЗ."
+                ),
+            }.get(
+                subject,
+                "У всех земельных участков ВРИ допустим в их территориальной зоне.",
             ),
         ]
 
@@ -1625,7 +1656,7 @@ def _build_chat_message_zones(
     zones: list[dict[str, Any]],
     summary: dict[str, Any],
     *,
-    building_mode: bool = False,
+    subject: str = SUBJECT_PARCEL,
 ) -> str:
     """Chatbot-friendly plain-text summary for group_by=zone.
 
@@ -1635,9 +1666,9 @@ def _build_chat_message_zones(
     other instead of duplicating. ``zones`` is kept in the signature for a
     uniform call site with the object variant.
     """
-    lines = _reconciled_intro(summary, building_mode=building_mode)
+    lines = _reconciled_intro(summary, subject=subject)
     if summary["unclear"]:
-        breakdown = _verdict_breakdown_lines(summary, building_mode=building_mode)
+        breakdown = _verdict_breakdown_lines(summary, subject=subject)
         if breakdown:
             lines += ["", *breakdown]
     return "\n".join(lines)
@@ -1672,8 +1703,14 @@ def build_object_zone_fit_response(
     external_id: str,
     group_by: str,
     app_settings: Settings,
+    *,
+    scenario: bool = False,
 ) -> dict[str, Any]:
-    """Build the object-zone fit payload for an already-authorized task."""
+    """Build the object-zone fit payload for an already-authorized task.
+
+    ``scenario`` marks a scenario task: its items are the scenario's physical
+    objects (not land parcels), so the report is worded in terms of objects.
+    """
     if task.status != "finished":
         raise HTTPException(
             status_code=409,
@@ -1698,6 +1735,12 @@ def build_object_zone_fit_response(
         (feature.get("properties") or {}).get(_COL_CATEGORY) in {"Здание", "Сервис"}
         for feature in result_features
     )
+    if building_mode:
+        subject = SUBJECT_BUILDING
+    elif scenario:
+        subject = SUBJECT_SCENARIO_OBJECT
+    else:
+        subject = SUBJECT_PARCEL
 
     rows: list[dict[str, Any]] = []
     for idx, feature in enumerate(result_features):
@@ -1749,11 +1792,10 @@ def build_object_zone_fit_response(
         return {
             "task_external_id": external_id,
             "mode": "building_pzz_check" if building_mode else "pzz_check",
+            "subject": subject,
             "group_by": "object",
             "summary": summary,
-            "chat_message": _build_chat_message_objects(
-                rows, summary, building_mode=building_mode
-            ),
+            "chat_message": _build_chat_message_objects(rows, summary, subject=subject),
             "objects": rows,
         }
 
@@ -1791,11 +1833,10 @@ def build_object_zone_fit_response(
     return {
         "task_external_id": external_id,
         "mode": "building_pzz_check" if building_mode else "pzz_check",
+        "subject": subject,
         "group_by": "zone",
         "summary": summary,
-        "chat_message": _build_chat_message_zones(
-            zones_list, summary, building_mode=building_mode
-        ),
+        "chat_message": _build_chat_message_zones(zones_list, summary, subject=subject),
         "zones": zones_list,
     }
 
