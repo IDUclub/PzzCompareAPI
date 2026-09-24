@@ -472,7 +472,7 @@ async def task_stream_with_report_generator(
                     # so the frontend can switch to download-by-link for big files).
                     # building_pzz_check yields two — здания + сервисы.
                     for layer in build_result_geo_layers(
-                        task, external_id, app_settings, request
+                        task, external_id, app_settings, request, scenario=scenario
                     ):
                         yield ServerSentEvent(
                             data=json.dumps({"type": "file", "content": layer}),
@@ -851,7 +851,7 @@ async def task_stream_with_chat_generator(
                 # answer outside any I/O on it.
                 if current_status == TaskStatus.finished:
                     geo_layers = build_result_geo_layers(
-                        task, external_id, app_settings, request
+                        task, external_id, app_settings, request, scenario=scenario
                     )
                     if include_report:
                         try:
@@ -1106,11 +1106,19 @@ def _is_building_task(task: PipelineTask) -> bool:
     )
 
 
+def _first_prop(properties: dict[str, Any], *keys: str) -> Any:
+    """Value of the first of ``keys`` present in ``properties`` (else ``None``)."""
+    for key in keys:
+        if key in properties:
+            return properties[key]
+    return None
+
+
 def _building_feature_category(properties: dict[str, Any]) -> str:
     """Return the split category, including for pre-category result artifacts.
 
     ``Категория_объекта`` was introduced after building results already carried
-    ``Основание_подбора_ВРИ``. Old immutable/cached artifacts therefore need a
+    ``Основание_подбора_ВРИ`` (now ``Основание_подбора_типа_использования``). Old immutable/cached artifacts therefore need a
     compatibility fallback: service rows say that the VRI was selected by
     service type; every other row in a building task belongs to the buildings
     layer.
@@ -1118,7 +1126,8 @@ def _building_feature_category(properties: dict[str, Any]) -> str:
     category = properties.get(_COL_CATEGORY)
     if category in {"Здание", "Сервис"}:
         return category
-    basis = str(properties.get(_COL_RESOLUTION_BASIS) or "").strip().casefold()
+    basis = _first_prop(properties, _COL_RESOLUTION_BASIS, _COL_RESOLUTION_BASIS_LEGACY)
+    basis = str(basis or "").strip().casefold()
     return "Сервис" if basis.startswith("сервис") else "Здание"
 
 
@@ -1208,16 +1217,19 @@ def build_result_geo_layers(
     external_id: str,
     app_settings: Settings,
     request: Request | None = None,
+    *,
+    scenario: bool = False,
 ) -> list[dict[str, Any]]:
     """Result-layer link descriptors for a finished task (one or two layers).
 
-    building_pzz_check returns TWO layers — «здания» and «сервисы» — served by
-    filtering the combined result on the fly (durable ``url`` only, no presigned
-    ``download_url``). Every other mode returns the single combined result layer.
+    building_pzz_check — for uploaded files and for scenarios alike — returns TWO
+    layers, «здания» and «сервисы», served by filtering the combined result on the
+    fly (durable ``url`` only, no presigned ``download_url``). Every other mode
+    returns the single combined result layer.
     """
     if task.status != "finished" or not task.result_path:
         return []
-    if not _is_building_task(task):
+    if not (_is_building_task(task) or scenario):
         single = build_result_geo_layer(task, external_id, app_settings, request)
         return [single] if single is not None else []
     layers: list[dict[str, Any]] = []
@@ -1324,7 +1336,7 @@ def geo_layer_to_file_part(layer: dict[str, Any]) -> dict[str, Any]:
 
 
 def _serve_result_split(
-    task: PipelineTask, slot: str, app_settings: Settings
+    task: PipelineTask, slot: str, app_settings: Settings, *, scenario: bool = False
 ) -> Response:
     """Serve one half (здания / сервисы) of a building_pzz_check result.
 
@@ -1335,7 +1347,7 @@ def _serve_result_split(
     category, _name, _title, filename = _RESULT_SPLIT_SLOTS[slot]
     if task.status != "finished" or not task.result_path:
         raise HTTPException(status_code=404, detail="Task result not available yet")
-    if not _is_building_task(task):
+    if not (_is_building_task(task) or scenario):
         raise HTTPException(status_code=404, detail="Result split is not available")
     geojson = _load_result_geojson(task.result_path, app_settings.outputs_dir)
     features = [
@@ -1412,7 +1424,13 @@ def get_task_file_redirect(
     """
     if slot in _RESULT_SPLIT_SLOTS:
         task = get_task_or_404(external_id, task_repo)
-        return _serve_result_split(task, slot, app_settings)
+        return _serve_result_split(
+            task,
+            slot,
+            app_settings,
+            scenario=not _is_building_task(task)
+            and _is_scenario_task(external_id, task_repo),
+        )
     if slot == _SCENARIO_ZONES_SLOT:
         return _serve_scenario_zones(get_task_or_404(external_id, task_repo))
 
@@ -1454,13 +1472,19 @@ def get_task_file_redirect(
 
 
 _COL_VRI_TEXT = "ВРИ_ЕГРН"
+_COL_OBJECT_TYPE_TEXT = "Исходный_тип_объекта"
 _COL_ZONE_CODE = "Код фактической зоны нахождения кадастра"
 _COL_ZONE_NAME = "Название фактической зоны нахождения кадастра"
 _COL_VERDICT = "Вердикт_ПЗЗ"
 _COL_REASON = "Причина"
 _COL_MATCHED_VRI_NAME = "Подобранный_ВРИ"
 _COL_MATCHED_VRI_CODE = "Код_подобранного_ВРИ"
-_COL_RESOLUTION_BASIS = "Основание_подбора_ВРИ"
+# Building / scenario (object) results name the same fields after the object's
+# usage type; results produced before v5 still carry the legacy ВРИ names.
+_COL_OBJECT_USE_NAME = "Тип_использования"
+_COL_OBJECT_USE_CODE = "Код_типа_использования"
+_COL_RESOLUTION_BASIS = "Основание_подбора_типа_использования"
+_COL_RESOLUTION_BASIS_LEGACY = "Основание_подбора_ВРИ"
 _COL_TOP1_CANDIDATE = "Топ1_возможный_ВРИ"
 _COL_TOP5_CANDIDATES = "Топ5_возможных_ВРИ"
 
@@ -1561,11 +1585,18 @@ def _reconciled_intro(
             f"(зданий: {buildings}, сервисов: {services})."
         )
         item_dative = "объекта"
-        definition = "ВРИ — вид разрешённого использования; ПЗЗ — правила "
+        definition = "ПЗЗ — правила "
     elif subject == SUBJECT_SCENARIO_OBJECT:
-        intro = f"Проверено объектов сценария: {total}."
+        by_category = summary.get("by_category") or {}
+        intro = f"Проверено объектов сценария: {total}"
+        if by_category:
+            intro += (
+                f" (зданий: {by_category.get('Здание', 0)}, "
+                f"сервисов: {by_category.get('Сервис', 0)})"
+            )
+        intro += "."
         item_dative = "объекта"
-        definition = "ВРИ — вид разрешённого использования; ПЗЗ — правила "
+        definition = "ПЗЗ — правила "
     else:
         intro = f"Проверено земельных участков: {total}."
         item_dative = "земельного участка"
@@ -1581,14 +1612,19 @@ def _reconciled_intro(
         )
     elif zones_count:
         intro += f" Все они находятся в границах {zones_count} территориальных зон ПЗЗ."
+    # Objects (buildings / services / scenario objects) have a usage type, not
+    # a land parcel's ВРИ — so the object modes never say «ВРИ».
+    parcel = subject == SUBJECT_PARCEL
+    use = "ВРИ" if parcel else "Тип использования"
+    use_genitive = "ВРИ" if parcel else "типа использования"
     return [
         definition + "землепользования и застройки.",
         "",
         intro,
-        f"Результат проверки соответствия ВРИ каждого {item_dative} правилам "
+        f"Результат проверки соответствия {use_genitive} каждого {item_dative} правилам "
         f"его территориальной зоны ПЗЗ ({correct} + {wrong} + {unclear} = {total}):",
-        f"- ВРИ допустим, нарушений ПЗЗ нет: {correct};",
-        f"- ВРИ не соответствует зоне ПЗЗ (потенциальное нарушение): {wrong};",
+        f"- {use} допустим, нарушений ПЗЗ нет: {correct};",
+        f"- {use} не соответствует зоне ПЗЗ (потенциальное нарушение): {wrong};",
         f"- требуют ручной проверки: {unclear}.",
     ]
 
@@ -1612,10 +1648,10 @@ def _build_chat_message_objects(
             "",
             {
                 SUBJECT_BUILDING: (
-                    "Объекты (здания и сервисы) с недопустимым в их зоне ПЗЗ ВРИ:"
+                    "Объекты (здания и сервисы) с недопустимым в их зоне ПЗЗ типом использования:"
                 ),
                 SUBJECT_SCENARIO_OBJECT: (
-                    "Объекты сценария с недопустимым в их зоне ПЗЗ ВРИ:"
+                    "Объекты сценария с недопустимым в их зоне ПЗЗ типом использования:"
                 ),
             }.get(subject, "Земельные участки с недопустимым в их зоне ВРИ:"),
         ]
@@ -1627,20 +1663,21 @@ def _build_chat_message_objects(
                 f"- #{row['feature_index']}: «{obj_label}» в зоне «{zone_label}» — {reason}"
             )
         if len(wrong) > 10:
-            noun = "земельных участков" if subject == SUBJECT_PARCEL else "объектов"
-            lines.append(
-                f"...и ещё {len(wrong) - 10} {noun} с недопустимым " "в их зоне ВРИ."
-            )
+            if subject == SUBJECT_PARCEL:
+                tail = "земельных участков с недопустимым в их зоне ВРИ."
+            else:
+                tail = "объектов с недопустимым в их зоне ПЗЗ типом использования."
+            lines.append(f"...и ещё {len(wrong) - 10} {tail}")
     elif not summary["unclear"]:
         lines += [
             "",
             {
                 SUBJECT_BUILDING: (
-                    "У всех объектов (зданий и сервисов) ВРИ допустим в их "
+                    "У всех объектов (зданий и сервисов) тип использования допустим в их "
                     "территориальной зоне ПЗЗ."
                 ),
                 SUBJECT_SCENARIO_OBJECT: (
-                    "У всех объектов сценария ВРИ допустим в их "
+                    "У всех объектов сценария тип использования допустим в их "
                     "территориальной зоне ПЗЗ."
                 ),
             }.get(
@@ -1735,10 +1772,12 @@ def build_object_zone_fit_response(
         (feature.get("properties") or {}).get(_COL_CATEGORY) in {"Здание", "Сервис"}
         for feature in result_features
     )
-    if building_mode:
-        subject = SUBJECT_BUILDING
-    elif scenario:
+    # A scenario check is also a building check (buildings + services) but keeps
+    # its own «объекты сценария» wording.
+    if scenario:
         subject = SUBJECT_SCENARIO_OBJECT
+    elif building_mode:
+        subject = SUBJECT_BUILDING
     else:
         subject = SUBJECT_PARCEL
 
@@ -1749,16 +1788,22 @@ def build_object_zone_fit_response(
         fit = _classify_verdict(verdict)
         row = {
             "feature_index": idx,
-            "vri_text": props.get(_COL_VRI_TEXT),
+            "vri_text": _first_prop(props, _COL_OBJECT_TYPE_TEXT, _COL_VRI_TEXT),
             "zone_type_id": props.get(_COL_ZONE_CODE),
             "zone_name": props.get(_COL_ZONE_NAME),
             "verdict": verdict,
             "is_in_correct_zone": fit == "correct",
             "fit": fit,
             "reason": props.get(_COL_REASON),
-            "matched_vri_name": props.get(_COL_MATCHED_VRI_NAME),
-            "matched_vri_code": props.get(_COL_MATCHED_VRI_CODE),
-            "resolution_basis": props.get(_COL_RESOLUTION_BASIS),
+            "matched_vri_name": _first_prop(
+                props, _COL_OBJECT_USE_NAME, _COL_MATCHED_VRI_NAME
+            ),
+            "matched_vri_code": _first_prop(
+                props, _COL_OBJECT_USE_CODE, _COL_MATCHED_VRI_CODE
+            ),
+            "resolution_basis": _first_prop(
+                props, _COL_RESOLUTION_BASIS, _COL_RESOLUTION_BASIS_LEGACY
+            ),
         }
         if building_mode:
             row["category"] = _building_feature_category(props)
