@@ -283,6 +283,29 @@ def test_building_report_context_uses_objects_and_keeps_category() -> None:
     assert "земельные участки" not in ctx
 
 
+def test_scenario_report_context_counts_objects_not_parcels() -> None:
+    report = {
+        "mode": "pzz_check",
+        "subject": "scenario_object",
+        "summary": {"total": 1, "in_wrong_zone": 1},
+        "objects": [
+            {
+                "vri_text": "Магазины",
+                "verdict": "Не разрешен",
+                "fit": "wrong",
+                "reason": "ВРИ не разрешён",
+            },
+        ],
+    }
+
+    ctx = build_classification_context(object_zone_fit=report, max_report_chars=1)
+
+    assert "Причины по проблемным объектам" in ctx
+    assert '"объектов": 1' in ctx
+    assert "Проблемные объекты сценария" in ctx
+    assert "участк" not in ctx
+
+
 def test_build_messages_and_context() -> None:
     ctx = build_classification_context(chat_message="РЕЗЮМЕ", object_zone_fit={"a": 1})
     assert "РЕЗЮМЕ" in ctx and "JSON" in ctx
