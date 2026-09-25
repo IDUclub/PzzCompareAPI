@@ -9934,7 +9934,7 @@
     {
       "functional_zone_type_id": 8,
       "db_name": "basic",
-      "db_zone_nickname": "basic",
+      "db_zone_nickname": "Зона без профиля",
       "db_description": "Без профиля",
       "mapping_confidence": "low",
       "mapping_note": "В ПЗЗ нет прямого аналога DB-типа basic / без профиля; использована зона градостроительного преобразования как наиболее широкий профиль. Требует ручной проверки.",
@@ -18073,7 +18073,7 @@
     {
       "functional_zone_type_id": 14,
       "db_name": "unknown",
-      "db_zone_nickname": "unknown",
+      "db_zone_nickname": "Тип зоны не определён",
       "db_description": "--",
       "mapping_confidence": "none",
       "mapping_note": "DB-тип unknown не имеет содержательного профиля, автоматическое соответствие ПЗЗ не назначено.",

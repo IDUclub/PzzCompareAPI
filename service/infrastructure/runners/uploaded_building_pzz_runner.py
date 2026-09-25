@@ -31,6 +31,7 @@ from service.infrastructure.chat_llm_client import ChatLlmError, build_chat_llm_
 from service.infrastructure.runners._deterministic_pzz import (
     CATEGORY_BUILDING,
     CATEGORY_SERVICE,
+    ZONE_STATS_KEY,
     build_zone_gdf,
     clean_result_properties,
     join_objects_to_zones,
@@ -41,6 +42,7 @@ from service.infrastructure.runners._deterministic_pzz import (
     zone_code_display_map,
     zone_codes_are_numeric,
     zone_layer_name_map,
+    zone_stats,
 )
 from service.infrastructure.runners.pipeline_runner import (
     PipelineRunner,
@@ -695,7 +697,8 @@ class UploadedBuildingPzzRunner(PipelineRunner):
                 po_type_id, is_residential, service_type_id, floors, *sources
             )
 
-            fz = fz_by_obj.get(i)
+            match = fz_by_obj.get(i)
+            fz = match.key if match else None
             machine_verdict, reason, mcode, _ = compute_verdict(
                 vri, fz, zone_allowed, display_nick
             )
@@ -722,7 +725,11 @@ class UploadedBuildingPzzRunner(PipelineRunner):
                 zone_code_display=code_display.get(fz) if fz is not None else None,
             )
 
-        result = {"type": "FeatureCollection", "features": feats}
+        result = {
+            "type": "FeatureCollection",
+            "features": feats,
+            ZONE_STATS_KEY: zone_stats(fz_by_obj),
+        }
         out_path = (
             output_dir / f"pzz_compare_spatial_first_{request.task_external_id}.geojson"
         )
