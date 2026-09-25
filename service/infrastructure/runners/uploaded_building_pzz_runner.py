@@ -695,7 +695,8 @@ class UploadedBuildingPzzRunner(PipelineRunner):
                 po_type_id, is_residential, service_type_id, floors, *sources
             )
 
-            fz = fz_by_obj.get(i)
+            match = fz_by_obj.get(i)
+            fz = match.key if match else None
             machine_verdict, reason, mcode, _ = compute_verdict(
                 vri, fz, zone_allowed, display_nick
             )

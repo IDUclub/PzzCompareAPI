@@ -107,7 +107,9 @@ class DeterministicScenarioRunner(PipelineRunner):
                 if floors not in (None, "")
                 else " (этажность не указана)"
             )
-            basis = f"жилое здание — тип использования подобран по этажности{floors_txt}"
+            basis = (
+                f"жилое здание — тип использования подобран по этажности{floors_txt}"
+            )
         else:
             basis = (
                 f"физический объект (physical_object_type_id={po_type}) "
@@ -128,7 +130,7 @@ class DeterministicScenarioRunner(PipelineRunner):
         code_col = request.pzz_zone_code_col or "zone_code"
         vri_col = request.cadastral_vri_col or "vri_text"
 
-        zgdf = build_zone_gdf(zones, code_col)
+        zgdf = build_zone_gdf(zones, code_col, name_col=request.pzz_zone_name_col)
         feats = [
             f for f in (objects.get("features") or []) if f.get("geometry") is not None
         ]
@@ -139,14 +141,17 @@ class DeterministicScenarioRunner(PipelineRunner):
             old_props = feature.get("properties") or {}
             vri, vri_name, basis, category = self._resolve(old_props)
 
-            fz = fz_by_obj.get(i)
+            match = fz_by_obj.get(i)
+            fz = match.key if match else None
+            zone_name = match.name if match else None
             machine_verdict, reason, mcode, _ = compute_verdict(
-                vri, fz, self._zone_allowed, self._zone_nick
+                vri, fz, self._zone_allowed, self._zone_nick, zone_label=zone_name
             )
             feature["properties"] = clean_result_properties(
                 vri_text=old_props.get(vri_col),
                 fz_type_id=fz,
                 zone_nick=self._zone_nick,
+                zone_name=zone_name,
                 machine_verdict=machine_verdict,
                 reason=reason,
                 matched_vri_code=mcode,
