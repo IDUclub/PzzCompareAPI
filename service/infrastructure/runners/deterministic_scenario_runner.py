@@ -27,12 +27,14 @@ from service.domain import PipelineRequest
 from service.infrastructure.runners._deterministic_pzz import (
     CATEGORY_BUILDING,
     CATEGORY_SERVICE,
+    ZONE_STATS_KEY,
     build_zone_gdf,
     clean_result_properties,
     join_objects_to_zones,
     load_zone_mapping,
     resolve_po_type_vri,
     verdict as compute_verdict,
+    zone_stats,
 )
 from service.infrastructure.runners.pipeline_runner import (
     PipelineRunner,
@@ -160,7 +162,11 @@ class DeterministicScenarioRunner(PipelineRunner):
                 category=category,
             )
 
-        result = {"type": "FeatureCollection", "features": feats}
+        result = {
+            "type": "FeatureCollection",
+            "features": feats,
+            ZONE_STATS_KEY: zone_stats(fz_by_obj),
+        }
         out_path = (
             output_dir / f"pzz_compare_spatial_first_{request.task_external_id}.geojson"
         )

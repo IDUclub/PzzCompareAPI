@@ -136,7 +136,12 @@ def test_scenario_runner_names_each_object_by_its_own_zone(tmp_path):
     )
 
     with open(runner.run(request), encoding="utf-8") as fh:
-        result = [f["properties"] for f in json.load(fh)["features"]]
+        collection = json.load(fh)
+    result = [f["properties"] for f in collection["features"]]
+
+    # Two residential zones are separate zones, not one type bucket.
+    assert collection["zone_stats"] == {"zones_count": 3}
+    assert all("zone_stats" not in p for p in result)
 
     assert [p["Название фактической зоны нахождения кадастра"] for p in result] == [
         "Квартал А",

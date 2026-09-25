@@ -281,11 +281,23 @@ def verdict(
     )
 
 
+ZONE_STATS_KEY = "zone_stats"
+
+
 class ZoneMatch(NamedTuple):
-    """The zone an object stands in: its mapping key and the zone's own layer name."""
+    """The zone an object stands in: its mapping key, its own layer name and its
+    position in the zones layer (tells apart separate zones of the same type)."""
 
     key: Any
     name: str
+    zone_index: int
+
+
+def zone_stats(fz_by_obj: dict[int, ZoneMatch]) -> dict[str, int]:
+    """Collection-level counters for the chat answer: how many separate zones
+    (polygons) hold at least one object. Kept off the features, so it never
+    shows up as an attribute on the map."""
+    return {"zones_count": len({match.zone_index for match in fz_by_obj.values()})}
 
 
 def build_zone_gdf(
@@ -373,7 +385,7 @@ def join_objects_to_zones(feats: list[dict[str, Any]], zgdf) -> dict[int, ZoneMa
             key = fz if isinstance(fz, str) else int(fz)
             name = row.get("zone_name")
             fz_by_obj[int(ogdf.loc[idx, "_i"])] = ZoneMatch(
-                key, name if isinstance(name, str) else ""
+                key, name if isinstance(name, str) else "", int(row["index_right"])
             )
     return fz_by_obj
 
