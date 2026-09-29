@@ -1,4 +1,4 @@
-"""Tests for geo-layer download links: descriptor + /files redirect (phase 8)."""
+"""Tests for geo-layer download links: descriptor + /files proxy streaming."""
 
 from types import SimpleNamespace
 
@@ -13,10 +13,7 @@ from service.settings import get_settings
 
 
 class _StubStorage:
-    """Presign stub: layer-descriptor tests must not reach a real object storage."""
-
-    def presigned_url(self, stored_path, expires_seconds=3600):
-        return f"https://minio.example/{stored_path}?sig=1"
+    """Layer-descriptor tests must not reach a real object storage."""
 
 
 def _task(
@@ -40,11 +37,11 @@ def _task(
 
 
 def test_layer_descriptor_local_result_relative_url() -> None:
-    settings = get_settings()  # public_base_url empty in tests
+    settings = get_settings()
     layer = build_result_geo_layer(_task(), "abc123", settings)
     assert layer is not None
     assert layer["url"] == "/files/result/abc123"
-    assert layer["download_url"] is None  # local storage can't presign
+    assert layer["download_url"] is None  # never a direct storage link
     # Human-readable RU label + ASCII English filename (not the opaque task hash).
     assert layer["title"] == "Результат проверки ПЗЗ"
     assert layer["filename"] == "pzz_check_result.geojson"
@@ -79,7 +76,7 @@ def test_result_layers_two_for_building() -> None:
     assert by_name["buildings_result"]["filename"] == "buildings_result.geojson"
     assert by_name["services_result"]["url"] == "/files/result_services/abc123"
     assert by_name["services_result"]["title"] == "Результат — сервисы"
-    # split served on the fly -> durable url only, no presigned download
+    # split served on the fly -> durable url only
     assert all(layer["download_url"] is None for layer in layers)
     assert all(layer["role"] == "result" for layer in layers)
 
@@ -259,7 +256,7 @@ def test_file_part_keeps_only_durable_url() -> None:
     layer = build_result_geo_layer(_task(), "abc123", get_settings())
     part = geo_layer_to_file_part(layer)
     assert part["url"] == "/files/result/abc123"
-    # The ephemeral presigned download_url must never be persisted to history.
+    # download_url (always None) is not persisted to history.
     assert "download_url" not in part
     # Human-readable label rides along so the frontend can show it in history.
     assert part["title"] == "Результат проверки ПЗЗ"
@@ -280,8 +277,9 @@ def test_input_layers_for_uploaded_files(monkeypatch) -> None:
     assert by_name["input_zones"]["title"] == "Зоны ПЗЗ"
     assert by_name["input_zones"]["filename"] == "pzz_zones.geojson"
     assert all(layer["role"] == "input" for layer in layers)
-    # Remote (minio://) inputs also carry a presigned download link.
-    assert all(layer["download_url"] is not None for layer in layers)
+    # MinIO is unreachable from outside: even remote (minio://) inputs are
+    # fetched through the API, never by a direct storage link.
+    assert all(layer["download_url"] is None for layer in layers)
 
 
 def test_input_layers_use_building_label_for_building_mode(monkeypatch) -> None:
@@ -307,21 +305,23 @@ def test_input_layers_skip_missing_zones(monkeypatch) -> None:
     assert [layer["name"] for layer in layers] == ["input_cadastral"]
 
 
-def test_files_cadastral_slot_redirects(monkeypatch) -> None:
+def test_files_cadastral_slot_is_proxied_from_storage(monkeypatch) -> None:
     from fastapi.testclient import TestClient
 
     from service import app as app_module
     from service.dependencies import get_app_settings, get_task_repo
 
     task = _task(status="running")  # inputs available even before finish
+    opened = []
 
     class StubRepo:
         def get_by_external_id(self, external_id):
             return task
 
     class FakeStorage:
-        def presigned_url(self, stored_path, expires_seconds=3600):
-            return "https://minio.example/cadastral?sig=1"
+        def open_stream(self, stored_path):
+            opened.append(stored_path)
+            return iter([b'{"type": "FeatureCollection", ', b'"features": []}'])
 
     monkeypatch.setattr(tasks_mod, "get_object_storage", lambda: FakeStorage())
     app_module.app.dependency_overrides[get_task_repo] = lambda: StubRepo()
@@ -329,8 +329,37 @@ def test_files_cadastral_slot_redirects(monkeypatch) -> None:
     try:
         client = TestClient(app_module.app)
         resp = client.get("/files/cadastral/abc", follow_redirects=False)
-        assert resp.status_code == 307
-        assert resp.headers["location"] == "https://minio.example/cadastral?sig=1"
+        assert resp.status_code == 200
+        assert resp.json() == {"type": "FeatureCollection", "features": []}
+        assert resp.headers["content-type"] == "application/geo+json"
+        assert opened == ["minio://inputs/abc/cadastral_feature_collection.geojson"]
+    finally:
+        app_module.app.dependency_overrides.clear()
+
+
+def test_files_input_storage_failure_is_503(monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from service import app as app_module
+    from service.dependencies import get_app_settings, get_task_repo
+
+    task = _task(status="running")
+
+    class StubRepo:
+        def get_by_external_id(self, external_id):
+            return task
+
+    class BrokenStorage:
+        def open_stream(self, stored_path):
+            raise ConnectionError("minio down")
+
+    monkeypatch.setattr(tasks_mod, "get_object_storage", lambda: BrokenStorage())
+    app_module.app.dependency_overrides[get_task_repo] = lambda: StubRepo()
+    app_module.app.dependency_overrides[get_app_settings] = get_settings
+    try:
+        client = TestClient(app_module.app)
+        resp = client.get("/files/cadastral/abc", follow_redirects=False)
+        assert resp.status_code == 503
     finally:
         app_module.app.dependency_overrides.clear()
 
@@ -351,30 +380,34 @@ def test_files_unknown_slot_404() -> None:
         app_module.app.dependency_overrides.clear()
 
 
-def test_files_result_redirects_to_presigned(monkeypatch) -> None:
+def test_files_result_is_proxied_from_storage(monkeypatch, tmp_path) -> None:
     from fastapi.testclient import TestClient
 
     from service import app as app_module
     from service.dependencies import get_app_settings, get_task_repo
 
     task = _task(result_path="minio://outputs/abc/result.geojson")
+    settings = get_settings().model_copy(update={"outputs_dir": str(tmp_path)})
 
     class StubRepo:
         def get_by_external_id(self, external_id):
             return task
 
     class FakeStorage:
-        def presigned_url(self, stored_path, expires_seconds=3600):
-            return "https://minio.example/presigned?sig=1"
+        def download_file(self, stored_path, local_path):
+            assert stored_path == "minio://outputs/abc/result.geojson"
+            with open(local_path, "w", encoding="utf-8") as fh:
+                fh.write('{"type": "FeatureCollection", "features": []}')
+            return local_path
 
     monkeypatch.setattr(tasks_mod, "get_object_storage", lambda: FakeStorage())
     app_module.app.dependency_overrides[get_task_repo] = lambda: StubRepo()
-    app_module.app.dependency_overrides[get_app_settings] = get_settings
+    app_module.app.dependency_overrides[get_app_settings] = lambda: settings
     try:
         client = TestClient(app_module.app)
         resp = client.get("/files/result/abc", follow_redirects=False)
-        assert resp.status_code == 307
-        assert resp.headers["location"] == "https://minio.example/presigned?sig=1"
+        assert resp.status_code == 200
+        assert resp.json() == {"type": "FeatureCollection", "features": []}
     finally:
         app_module.app.dependency_overrides.clear()
 

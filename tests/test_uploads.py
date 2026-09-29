@@ -3,7 +3,6 @@ import time
 
 import pytest
 
-from service.api.utils import durable_url
 from service.application.use_cases.uploads import (
     UploadError,
     describe_upload,
@@ -141,18 +140,6 @@ def test_description_refuses_another_users_upload(tmp_path):
         describe_upload(record.upload_id, owner_id="user-2", settings=settings)
 
     assert exc_info.value.status_code == 403
-
-
-def test_durable_link_is_absolute_when_a_public_base_is_configured():
-    """A link stored in chat history outlives the request that produced it."""
-    assert (
-        durable_url("/uploads/8f3c", "https://pzz.example.org")
-        == "https://pzz.example.org/uploads/8f3c"
-    )
-
-
-def test_durable_link_falls_back_to_a_relative_path():
-    assert durable_url("/uploads/8f3c", "") == "/uploads/8f3c"
 
 
 def test_expired_uploads_are_purged_and_live_ones_kept(tmp_path):

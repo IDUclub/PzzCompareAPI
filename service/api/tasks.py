@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
-from starlette.responses import FileResponse, RedirectResponse, Response
+from starlette.responses import FileResponse, Response, StreamingResponse
 
 from ..application.use_cases.chat_answer import (
     build_classification_context,
@@ -43,7 +43,7 @@ from ..schemas import TaskEventOut, TaskListOut, TaskOut
 from ..settings import Settings
 from ..tasks import celery_app, enqueue_pipeline_task, execute_pipeline_task
 from ..time_utils import utc_now
-from .utils import api_log, durable_url
+from .utils import api_log
 
 router = APIRouter(tags=["tasks"])
 logger = logging.getLogger("service.api.tasks")
@@ -1141,16 +1141,15 @@ def _result_label(include_pzz_check: bool | None) -> tuple[str, str]:
     return _RESULT_LABEL_PZZ if is_pzz else _RESULT_LABEL_CLASSIFY
 
 
-def _file_durable_url(
-    slot: str,
-    external_id: str,
-    app_settings: Settings,
-    request: Request | None = None,
-) -> str:
-    """Stable, never-expiring URL for a task's file slot."""
-    return durable_url(
-        f"/files/{slot}/{external_id}", app_settings.public_base_url, request
-    )
+def _file_url(slot: str, external_id: str) -> str:
+    """Stable, never-expiring URL for a task's file slot.
+
+    Always a path relative to this service: the frontend prepends the base
+    address it knows for ``source_service``. A host baked into chat history
+    would be an internal address the browser behind the external proxy can't
+    reach.
+    """
+    return f"/files/{slot}/{external_id}"
 
 
 def _build_geo_layer(
@@ -1168,17 +1167,14 @@ def _build_geo_layer(
     """Build one geo-layer link descriptor, or None when there's no file."""
     if not stored_path:
         return None
-    download_url: str | None = None
-    if is_remote_path(stored_path):
-        download_url = get_object_storage().presigned_url(
-            stored_path, app_settings.geo_layer_url_ttl_seconds
-        )
     return {
         "name": name,
         "title": title,
         "role": role,
-        "url": _file_durable_url(slot, external_id, app_settings, request),
-        "download_url": download_url,
+        "url": _file_url(slot, external_id),
+        # No direct object-storage link: MinIO is unreachable from outside,
+        # so the layer is always fetched through ``url``.
+        "download_url": None,
         "filename": filename,
         "mime_type": "application/geo+json",
         "source_service": app_settings.app_name,
@@ -1224,7 +1220,7 @@ def build_result_geo_layers(
 
     building_pzz_check — for uploaded files and for scenarios alike — returns TWO
     layers, «здания» and «сервисы», served by filtering the combined result on the
-    fly (durable ``url`` only, no presigned ``download_url``). Every other mode
+    fly (durable ``url`` only). Every other mode
     returns the single combined result layer.
     """
     if task.status != "finished" or not task.result_path:
@@ -1239,7 +1235,7 @@ def build_result_geo_layers(
                 "name": name,
                 "title": title,
                 "role": "result",
-                "url": _file_durable_url(slot, external_id, app_settings, request),
+                "url": _file_url(slot, external_id),
                 "download_url": None,
                 "filename": filename,
                 "mime_type": "application/geo+json",
@@ -1308,9 +1304,7 @@ def build_scenario_zone_geo_layers(
             "name": "functional_zones",
             "title": title,
             "role": "input",
-            "url": _file_durable_url(
-                _SCENARIO_ZONES_SLOT, external_id, app_settings, request
-            ),
+            "url": _file_url(_SCENARIO_ZONES_SLOT, external_id),
             "download_url": None,
             "filename": filename,
             "mime_type": "application/geo+json",
@@ -1322,8 +1316,8 @@ def build_scenario_zone_geo_layers(
 def geo_layer_to_file_part(layer: dict[str, Any]) -> dict[str, Any]:
     """ChatStorage ``file`` part payload from a layer descriptor.
 
-    Stores only the durable ``url`` — the presigned ``download_url`` is
-    ephemeral and must not be persisted into permanent chat history.
+    Stores only the durable ``url`` (streamed through the API); ``download_url``
+    is always None and is not persisted into chat history.
     """
     return {
         "url": layer["url"],
@@ -1408,8 +1402,24 @@ def _serve_scenario_zones(task: PipelineTask) -> Response:
     )
 
 
+def _stream_remote_input(stored_path: str, filename: str) -> StreamingResponse:
+    """Proxy an uploaded input layer from MinIO through the API."""
+    try:
+        chunks = get_object_storage().open_stream(stored_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to open %s in object storage", stored_path)
+        raise HTTPException(
+            status_code=503, detail="Failed to fetch the task file from object storage"
+        ) from exc
+    return StreamingResponse(
+        chunks,
+        media_type="application/geo+json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/files/{slot}/{external_id}")
-def get_task_file_redirect(
+def get_task_file(
     slot: str,
     external_id: str,
     task_repo: TaskRepository = Depends(get_task_repo),
@@ -1417,9 +1427,9 @@ def get_task_file_redirect(
 ):
     """Durable, open download link for a task's file (result or uploaded input).
 
-    Redirects (307) to a fresh presigned MinIO URL so the link never expires
-    (big files download straight from object storage); falls back to streaming
-    the file when storage is local. Intentionally unauthenticated so links saved
+    The bytes are always proxied through the API — MinIO lives in a closed
+    network the frontend (behind an external proxy) can't reach, so the link
+    never points at object storage. Intentionally unauthenticated so links saved
     in chat history keep working — the ``external_id`` (a uuid) is the capability.
     """
     if slot in _RESULT_SPLIT_SLOTS:
@@ -1444,15 +1454,10 @@ def get_task_file_redirect(
     if not stored_path:
         raise HTTPException(status_code=404, detail="File not found")
 
-    if is_remote_path(stored_path):
-        url = get_object_storage().presigned_url(
-            stored_path, app_settings.geo_layer_url_ttl_seconds
-        )
-        if url:
-            return RedirectResponse(url, status_code=307)
-
     if slot == "result":
         return build_task_result_response(task, external_id, app_settings)
+    if is_remote_path(stored_path):
+        return _stream_remote_input(stored_path, _SLOT_LABELS[slot][1])
     # Local storage fallback for input layers: serve the file under task_inputs.
     local_path = Path(stored_path).resolve()
     inputs_root = Path(app_settings.task_inputs_dir).resolve()

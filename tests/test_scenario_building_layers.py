@@ -71,9 +71,7 @@ class _Task:
 
 
 def test_scenario_result_splits_into_building_and_service_layers(tmp_path: Path):
-    settings = SimpleNamespace(
-        outputs_dir=str(tmp_path), app_name="pzz", public_base_url="http://x"
-    )
+    settings = SimpleNamespace(outputs_dir=str(tmp_path), app_name="pzz")
     layers = build_result_geo_layers(
         _Task("r.geojson"), "ext-sc", settings, None, scenario=True
     )

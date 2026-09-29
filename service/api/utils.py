@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import HTTPException, Request, UploadFile
+from fastapi import HTTPException, UploadFile
 
 logger = logging.getLogger("service.app")
 
@@ -37,19 +37,6 @@ def stream_upload_to_file(
                     detail=f"{field_name} exceeds limit of {max_bytes} bytes",
                 )
             fh.write(chunk)
-
-
-def durable_url(path: str, public_base_url: str, request: Request | None = None) -> str:
-    """Stable, never-expiring URL for a stored file.
-
-    Absolute when ``PUBLIC_BASE_URL`` is set (what a link kept in chat history needs),
-    otherwise derived from the request, else a relative path.
-    """
-    if public_base_url:
-        return f"{public_base_url}{path}"
-    if request is not None:
-        return str(request.base_url).rstrip("/") + path
-    return path
 
 
 def api_log(stage: str, status: str, **extra: object) -> None:
