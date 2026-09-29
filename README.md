@@ -116,7 +116,7 @@ docker compose -f docker-compose.yml up -d --build
 - `POST /tasks/pzz-check/chat/stream` — проверка ПЗЗ + стрим разговорного ответа LLM (SSE, требует Bearer)
 - `POST /tasks/classify-only/chat/stream` — классификация ВРИ + стрим разговорного ответа LLM (SSE, требует Bearer)
 - `GET /tasks/{id}` · `GET /tasks_list` · `GET /tasks/{id}/result`
-- `GET /files/{slot}/{id}` — долговечная ссылка на геослой (`slot`: `result`/`cadastral`/`zones` — 307 → presigned MinIO; `result_buildings`/`result_services`/`functional_zones` — собираются на лету)
+- `GET /files/{slot}/{id}` — долговечная ссылка на геослой (`slot`: `result`/`cadastral`/`zones` — API отдаёт байты из MinIO потоком через себя; `result_buildings`/`result_services`/`functional_zones` — собираются на лету)
 - `GET /tasks/{id}/object-zone-fit?group_by=zone|object` — структурированный отчёт + `chat_message`
 - `GET /tasks/{id}/events` · `DELETE /tasks/{id}` · `POST /tasks/{id}/recompute`
 
@@ -155,9 +155,9 @@ OpenAI-совместимый `/v1/chat/completions` на `VLLM_BASE_URL`, ин�
 `OLLAMA_BASE_URL`. Модель — параметр запроса `model` (дефолт `CHAT_MODEL`/`GENERATE_MODEL`).
 
 Большой GeoJSON-результат в чат-стриме отдаётся **ссылкой** (событие `file`), а не инлайном:
-долговечный `url = /files/result/{id}` (307 → свежий presigned MinIO, не протухает) сохраняется в
-ChatStorage как `file`-часть сообщения; временный `download_url` — для мгновенной выгрузки.
-Настройки: `PUBLIC_BASE_URL` (абсолютные ссылки), `GEO_LAYER_URL_TTL_SECONDS`.
+долговечный `url = /files/result/{id}` (API проксирует байты из MinIO, не протухает) сохраняется в
+ChatStorage как `file`-часть сообщения. `download_url` всегда `null`: MinIO во внешней сети недоступен.
+`url` всегда относительный: фронт сам подставляет базовый адрес сервиса по `source_service`.
 
 **Системное**: `GET /health`, `GET /readiness`, `GET /metrics`
 

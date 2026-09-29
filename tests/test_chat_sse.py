@@ -390,9 +390,7 @@ def test_build_scenario_zone_geo_layers_exposes_functional_zones_only() -> None:
 
     from service.api.tasks import build_scenario_zone_geo_layers
 
-    app_settings = SimpleNamespace(
-        public_base_url="https://pzz.example", app_name="pzz"
-    )
+    app_settings = SimpleNamespace(app_name="pzz")
     task = SimpleNamespace(
         cadastral_data_path="/inputs/ext-1/cadastral_feature_collection.geojson",
         pzz_zones_data_path="/inputs/ext-1/pzz_zones_feature_collection.geojson",
@@ -405,7 +403,7 @@ def test_build_scenario_zone_geo_layers_exposes_functional_zones_only() -> None:
             "name": "functional_zones",
             "title": "Функциональные зоны",
             "role": "input",
-            "url": "https://pzz.example/files/functional_zones/ext-1",
+            "url": "/files/functional_zones/ext-1",
             "download_url": None,
             "filename": "functional_zones.geojson",
             "mime_type": "application/geo+json",
