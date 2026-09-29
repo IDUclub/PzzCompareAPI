@@ -39,6 +39,10 @@ from ..db import session_scope
 from ..dependencies import get_app_settings, get_db, get_event_repo, get_task_repo
 from ..domain.ports.event_repository import EventRepository
 from ..domain.ports.task_repository import TaskRepository
+from ..infrastructure.functional_zone_names import (
+    functional_zone_display_name,
+    functional_zone_type_label,
+)
 from ..infrastructure.pzz_mapping import (
     build_pipeline_zone_labels,
     lookup_zone_summary,
@@ -187,23 +191,18 @@ def _flatten_functional_zone_features(
     """Flatten ``functional_zone_type`` into top-level ``zone_code`` / ``zone_name``.
 
     Pipeline expects scalar string columns; urban_api gives us a nested
-    object. We use the type id as the code (stable per scenario) and
-    prefer ``nickname`` (Russian human-readable name like «Жилая зона»)
-    over ``name`` (English code like "residential") so downstream outputs
-    look natural in chat messages and reports.
+    object. We use the type id as the code (stable per scenario). The name is
+    the zone's own ``name`` when the project set one, else the Russian type
+    label (see ``functional_zone_display_name``), so downstream outputs never
+    show an English type code.
     """
     features = feature_collection.get("features") or []
     for feature in features:
         props = feature.setdefault("properties", {})
-        zone_type = props.get("functional_zone_type") or {}
-        if isinstance(zone_type, dict):
-            zone_type_id = zone_type.get("id")
-            zone_type_name = zone_type.get("nickname") or zone_type.get("name") or ""
-        else:
-            zone_type_id = None
-            zone_type_name = ""
+        zone_type = props.get("functional_zone_type")
+        zone_type_id = zone_type.get("id") if isinstance(zone_type, dict) else None
         props[code_col] = str(zone_type_id) if zone_type_id is not None else ""
-        props[name_col] = zone_type_name
+        props[name_col] = functional_zone_display_name(props)
     return feature_collection
 
 
@@ -757,7 +756,7 @@ async def get_scenario_zones_info(
         zone_type = props.get("functional_zone_type") or {}
         if isinstance(zone_type, dict):
             zone_type_id = zone_type.get("id")
-            zone_type_name = zone_type.get("nickname") or zone_type.get("name")
+            zone_type_name = functional_zone_type_label(zone_type)
         else:
             zone_type_id = None
             zone_type_name = None
@@ -959,7 +958,7 @@ async def _scenario_task_sse_generator(
                 zone_type = props.get("functional_zone_type") or {}
                 if isinstance(zone_type, dict):
                     zone_type_id = zone_type.get("id")
-                    zone_type_name = zone_type.get("nickname") or zone_type.get("name")
+                    zone_type_name = functional_zone_type_label(zone_type)
                 else:
                     zone_type_id = None
                     zone_type_name = None

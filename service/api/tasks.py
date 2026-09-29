@@ -1474,6 +1474,8 @@ def get_task_file_redirect(
 _COL_VRI_TEXT = "ВРИ_ЕГРН"
 _COL_OBJECT_TYPE_TEXT = "Исходный_тип_объекта"
 _COL_ZONE_CODE = "Код фактической зоны нахождения кадастра"
+# Collection-level counters written by the deterministic object runners.
+_ZONE_STATS_KEY = "zone_stats"
 _COL_ZONE_NAME = "Название фактической зоны нахождения кадастра"
 _COL_VERDICT = "Вердикт_ПЗЗ"
 _COL_REASON = "Причина"
@@ -1560,6 +1562,36 @@ def _verdict_breakdown_lines(
     return lines
 
 
+def _genitive_count(count: int, singular: str, plural: str) -> str:
+    """«1 территориальной зоны» / «21 типа», but «5 территориальных зон» / «6 типов»."""
+    word = singular if count % 10 == 1 and count % 100 != 11 else plural
+    return f"{count} {word}"
+
+
+def _zones_phrase(summary: dict[str, Any], *, parcel: bool) -> str:
+    """How many zones the checked items fall into, in words (after «в границах»).
+
+    ``zones_count`` counts distinct zone codes. For a parcel check that is the
+    zone itself (the pipeline attributes a parcel to a code, not to a polygon);
+    for an object check a code is a zone *type*, so separate zones come from
+    ``zone_polygons_count`` when the runner recorded it.
+    """
+    types_count = summary.get("zones_count", 0)
+    polygons_count = summary.get("zone_polygons_count")
+    if polygons_count is not None:
+        phrase = _genitive_count(
+            polygons_count, "территориальной зоны ПЗЗ", "территориальных зон ПЗЗ"
+        )
+        if types_count != polygons_count:
+            phrase += f" ({_genitive_count(types_count, 'типа', 'типов')} зон)"
+        return phrase
+    if parcel:
+        return _genitive_count(
+            types_count, "территориальной зоны ПЗЗ", "территориальных зон ПЗЗ"
+        )
+    return f"территориальных зон ПЗЗ {_genitive_count(types_count, 'типа', 'типов')}"
+
+
 def _reconciled_intro(
     summary: dict[str, Any], *, subject: str = SUBJECT_PARCEL
 ) -> list[str]:
@@ -1603,15 +1635,16 @@ def _reconciled_intro(
         definition = (
             "ВРИ — вид разрешённого использования земельного участка; " "ПЗЗ — правила "
         )
+    zones_phrase = _zones_phrase(summary, parcel=subject == SUBJECT_PARCEL)
     if not_in_zone:
         intro += (
             f" Из них {total - not_in_zone} находятся в границах "
-            f"{zones_count} территориальных зон ПЗЗ, {not_in_zone} не пересеклись "
+            f"{zones_phrase}, {not_in_zone} не пересеклись "
             "ни с одной "
             "зоной ПЗЗ."
         )
     elif zones_count:
-        intro += f" Все они находятся в границах {zones_count} территориальных зон ПЗЗ."
+        intro += f" Все они находятся в границах {zones_phrase}."
     # Objects (buildings / services / scenario objects) have a usage type, not
     # a land parcel's ВРИ — so the object modes never say «ВРИ».
     parcel = subject == SUBJECT_PARCEL
@@ -1827,6 +1860,9 @@ def build_object_zone_fit_response(
         # "требуют ручной проверки" by reason without recomputing.
         "by_verdict": by_verdict,
     }
+    zone_polygons_count = (geojson.get(_ZONE_STATS_KEY) or {}).get("zones_count")
+    if isinstance(zone_polygons_count, int):
+        summary["zone_polygons_count"] = zone_polygons_count
     if building_mode:
         summary["by_category"] = {
             category: sum(1 for row in rows if row["category"] == category)

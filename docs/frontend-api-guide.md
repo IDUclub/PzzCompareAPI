@@ -471,6 +471,7 @@ JSON-ответом, без SSE и без текста LLM. Здания (фор
 | Поле | Что показать |
 |------|--------------|
 | `summary.total` / `in_correct_zone` / `in_wrong_zone` | KPI-плашки |
+| `summary.zones_count` / `zone_polygons_count` | Число разных кодов (типов) зон / число отдельных зон с объектами. `zone_polygons_count` есть только у проверки объектов (сценарий, загруженные здания) |
 | `chat_message` | Готовый текст для чат-бота (plain-text) |
 | `zones[].zone_name` | Название зоны (русское) |
 | `zones[].pzz_summary.allowed_construction_summary` | Справка «что можно строить в этой зоне» |

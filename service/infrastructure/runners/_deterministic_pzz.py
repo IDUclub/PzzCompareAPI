@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 # --- result property columns the object-zone-fit endpoint / reports read ------
 # Source object type (building type / service type) as given in the input.
@@ -45,6 +45,12 @@ VERDICT_RU = {
     "unclear": "Требуется ручная проверка",
     "no_actual_zone": "Нет пересечения с ПЗЗ",
     "no_zone_metadata": "Нет описания зоны в шаблоне",
+}
+
+SECTION_RU = {
+    "main": "основной вид использования",
+    "conditional": "условно разрешённый вид использования",
+    "auxiliary": "вспомогательный вид использования",
 }
 
 
@@ -229,8 +235,13 @@ def verdict(
     fz_type_id: Any | None,
     zone_allowed: dict[Any, dict[str, set[str]]],
     zone_nick: dict[Any, str],
+    zone_label: str | None = None,
 ) -> tuple[str, str, str, str]:
-    """Return ``(machine_verdict, reason, matched_vri_code, matched_vri_name)``."""
+    """Return ``(machine_verdict, reason, matched_vri_code, matched_vri_name)``.
+
+    ``zone_label`` is the name of the specific zone the object stands in (from
+    the zones layer); it wins over the per-type ``zone_nick`` name.
+    """
     if fz_type_id is None:
         return (
             "no_actual_zone",
@@ -238,9 +249,14 @@ def verdict(
             "",
             "",
         )
-    zone_name = zone_nick.get(fz_type_id, str(fz_type_id))
+    zone_name = zone_label or zone_nick.get(fz_type_id, str(fz_type_id))
     if vri is None:
-        return "unclear", "Для объекта нет сопоставленного типа использования в словаре.", "", ""
+        return (
+            "unclear",
+            "Для объекта нет сопоставленного типа использования в словаре.",
+            "",
+            "",
+        )
     sections = zone_allowed.get(fz_type_id)
     if not sections or not any(sections.values()):
         return (
@@ -253,7 +269,7 @@ def verdict(
         if is_allowed(vri, sections.get(section) or set()):
             return (
                 f"allowed_{section}",
-                f"Тип использования {vri} разрешён в зоне «{zone_name}» ({section}).",
+                f"Тип использования {vri} разрешён в зоне «{zone_name}» ({SECTION_RU[section]}).",
                 vri,
                 "",
             )
@@ -265,7 +281,32 @@ def verdict(
     )
 
 
-def build_zone_gdf(zones: dict[str, Any], code_col: str, *, numeric: bool = True):
+ZONE_STATS_KEY = "zone_stats"
+
+
+class ZoneMatch(NamedTuple):
+    """The zone an object stands in: its mapping key, its own layer name and its
+    position in the zones layer (tells apart separate zones of the same type)."""
+
+    key: Any
+    name: str
+    zone_index: int
+
+
+def zone_stats(fz_by_obj: dict[int, ZoneMatch]) -> dict[str, int]:
+    """Collection-level counters for the chat answer: how many separate zones
+    (polygons) hold at least one object. Kept off the features, so it never
+    shows up as an attribute on the map."""
+    return {"zones_count": len({match.zone_index for match in fz_by_obj.values()})}
+
+
+def build_zone_gdf(
+    zones: dict[str, Any],
+    code_col: str,
+    *,
+    numeric: bool = True,
+    name_col: str | None = None,
+):
     """Build a zones GeoDataFrame carrying the zone key from ``code_col``.
 
     ``numeric=True`` (urban_api scenario / building flow): the key is an integer
@@ -273,12 +314,13 @@ def build_zone_gdf(zones: dict[str, Any], code_col: str, *, numeric: bool = True
     shape and drops zones whose code isn't an int.
     ``numeric=False`` (real ПЗЗ flow): the key is the code string verbatim (e.g.
     «Ж-1»), matched against a label mapping; the nested/int coercion doesn't apply.
-    Imports geopandas lazily.
+    ``name_col`` carries each zone's own display name alongside the key (empty
+    when not given). Imports geopandas lazily.
     """
     import geopandas as gpd
     from shapely.geometry import shape
 
-    zg_geom, zg_fz = [], []
+    zg_geom, zg_fz, zg_name = [], [], []
     for f in zones.get("features") or []:
         props = f.get("properties") or {}
         raw = props.get(code_col)
@@ -295,15 +337,21 @@ def build_zone_gdf(zones: dict[str, Any], code_col: str, *, numeric: bool = True
             key = normalise_zone_code(raw)
             if not key:
                 continue
+        name = props.get(name_col) if name_col else None
         zg_fz.append(key)
+        zg_name.append(str(name).strip() if name not in (None, "") else "")
         zg_geom.append(shape(f["geometry"]))
-    return gpd.GeoDataFrame({"fz_type_id": zg_fz}, geometry=zg_geom, crs="EPSG:4326")
+    return gpd.GeoDataFrame(
+        {"fz_type_id": zg_fz, "zone_name": zg_name},
+        geometry=zg_geom,
+        crs="EPSG:4326",
+    )
 
 
-def join_objects_to_zones(feats: list[dict[str, Any]], zgdf) -> dict[int, Any]:
+def join_objects_to_zones(feats: list[dict[str, Any]], zgdf) -> dict[int, ZoneMatch]:
     """Spatial-join object features to their containing zone.
 
-    Returns ``{feature_index: fz_type_id}`` using each object's representative
+    Returns ``{feature_index: ZoneMatch}`` using each object's representative
     point and a ``within`` predicate (one deterministic zone per object). The
     zone key is an ``int`` for numeric (urban_api) codes and the code ``str`` for
     PZZ letter indices — matching how ``build_zone_gdf`` stored it.
@@ -316,14 +364,14 @@ def join_objects_to_zones(feats: list[dict[str, Any]], zgdf) -> dict[int, Any]:
         {"_i": list(range(len(feats)))}, geometry=o_geom, crs="EPSG:4326"
     )
 
-    fz_by_obj: dict[int, int] = {}
+    fz_by_obj: dict[int, ZoneMatch] = {}
     if len(ogdf) and len(zgdf):
         metric = zgdf.estimate_utm_crs()
         pts = ogdf.to_crs(metric).copy()
         pts["geometry"] = pts.representative_point()
         joined = gpd.sjoin(
             pts,
-            zgdf.to_crs(metric)[["fz_type_id", "geometry"]],
+            zgdf.to_crs(metric)[["fz_type_id", "zone_name", "geometry"]],
             how="left",
             predicate="within",
         )
@@ -335,7 +383,10 @@ def join_objects_to_zones(feats: list[dict[str, Any]], zgdf) -> dict[int, Any]:
             # Numeric codes survive the left-join as floats (3 -> 3.0); coerce back
             # to int. String codes (PZZ indices) pass through untouched.
             key = fz if isinstance(fz, str) else int(fz)
-            fz_by_obj[int(ogdf.loc[idx, "_i"])] = key
+            name = row.get("zone_name")
+            fz_by_obj[int(ogdf.loc[idx, "_i"])] = ZoneMatch(
+                key, name if isinstance(name, str) else "", int(row["index_right"])
+            )
     return fz_by_obj
 
 
@@ -351,6 +402,7 @@ def clean_result_properties(
     resolution_basis: str | None = None,
     category: str | None = None,
     zone_code_display: str | None = None,
+    zone_name: str | None = None,
 ) -> dict[str, Any]:
     """Build the whitelist of PZZ result columns for one feature.
 
@@ -363,7 +415,15 @@ def clean_result_properties(
     ``zone_code_display`` overrides the shown zone code — the building runner passes
     the user's verbatim ПЗЗ index (e.g. «Ж-1») when the join key is a normalised
     form; numeric flows leave it ``None`` and the code is shown as-is.
+    ``zone_name`` is the specific zone's own name from the zones layer; it wins
+    over the per-type ``zone_nick`` name.
     """
+    if zone_name:
+        shown_zone_name = zone_name
+    elif fz_type_id is not None:
+        shown_zone_name = zone_nick.get(fz_type_id, "")
+    else:
+        shown_zone_name = ""
     props: dict[str, Any] = {
         COL_VRI_TEXT: vri_text,
         COL_ZONE_CODE: (
@@ -371,7 +431,7 @@ def clean_result_properties(
             if zone_code_display is not None
             else (str(fz_type_id) if fz_type_id is not None else "")
         ),
-        COL_ZONE_NAME: zone_nick.get(fz_type_id, "") if fz_type_id is not None else "",
+        COL_ZONE_NAME: shown_zone_name,
         COL_VERDICT: VERDICT_RU.get(machine_verdict, "Требуется ручная проверка"),
         COL_REASON: reason,
         COL_MATCHED_VRI_CODE: matched_vri_code,
