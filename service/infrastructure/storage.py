@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import shutil
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
 
 _MINIO_SCHEME = "minio://"
+_CHUNK_SIZE = 64 * 1024
 
 
 def is_remote_path(stored_path: str | None) -> bool:
@@ -44,15 +46,14 @@ class ObjectStorage(ABC):
     def delete(self, stored_path: str) -> None:
         """Best-effort delete; never raises."""
 
-    def presigned_url(
-        self, stored_path: str, expires_seconds: int = 3600
-    ) -> str | None:
-        """Return a time-limited direct download URL, or None if unsupported.
+    @abstractmethod
+    def open_stream(self, stored_path: str) -> Iterator[bytes]:
+        """Open the stored object and return its bytes in chunks.
 
-        Only the remote (MinIO) backend can mint one; local storage returns
-        None so callers fall back to a backend-served download.
+        The object is opened eagerly, so a missing object or an unreachable
+        storage raises here rather than mid-response. Bytes always flow through
+        the API: MinIO lives in a closed network the frontend can't reach.
         """
-        return None
 
 
 class LocalStorage(ObjectStorage):
@@ -78,6 +79,16 @@ class LocalStorage(ObjectStorage):
             Path(stored_path).unlink(missing_ok=True)
         except OSError:
             pass
+
+    def open_stream(self, stored_path: str) -> Iterator[bytes]:
+        handle = Path(stored_path).open("rb")
+
+        def chunks() -> Iterator[bytes]:
+            with handle:
+                while chunk := handle.read(_CHUNK_SIZE):
+                    yield chunk
+
+        return chunks()
 
 
 class MinioStorage(ObjectStorage):
@@ -129,18 +140,19 @@ class MinioStorage(ObjectStorage):
         except Exception:  # noqa: BLE001 — delete is best-effort
             pass
 
-    def presigned_url(
-        self, stored_path: str, expires_seconds: int = 3600
-    ) -> str | None:
-        from datetime import timedelta
+    def open_stream(self, stored_path: str) -> Iterator[bytes]:
+        response = self._client.get_object(
+            self._bucket, self._strip_scheme(stored_path)
+        )
 
-        object_key = self._strip_scheme(stored_path)
-        try:
-            return self._client.presigned_get_object(
-                self._bucket, object_key, expires=timedelta(seconds=expires_seconds)
-            )
-        except Exception:  # noqa: BLE001 — presign failure shouldn't break the stream
-            return None
+        def chunks() -> Iterator[bytes]:
+            try:
+                yield from response.stream(_CHUNK_SIZE)
+            finally:
+                response.close()
+                response.release_conn()
+
+        return chunks()
 
 
 @lru_cache(maxsize=1)

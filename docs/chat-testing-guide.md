@@ -121,18 +121,18 @@ curl "http://10.32.1.99:8010/api/v1/chat_history/<chat_id>" -H "Authorization: B
 В чат-стриме (и в обычных `*/classify/stream`, `*/pzz-check/stream`) должно прийти событие `file`:
 ```json
 { "type": "file", "content": { "name": "classified_result",
-  "url": "…/files/result/<external_id>", "download_url": "<presigned|null>",
+  "url": "…/files/result/<external_id>", "download_url": null,
   "filename": "<external_id>.geojson", "mime_type": "application/geo+json" } }
 ```
 Поле `role` различает `result` и `input`. В **upload-флоу** дополнительно приходят входные слои
 (`role:"input"`, `name:"input_cadastral"/"input_zones"`) — сразу в начале стрима. В сценарном их нет.
 
-Проверь долговечные ссылки (307 → presigned MinIO → GeoJSON), `slot` ∈ result/cadastral/zones:
+Проверь долговечные ссылки (API проксирует GeoJSON из MinIO, без редиректа), `slot` ∈ result/cadastral/zones:
 ```bash
-curl -IL "http://localhost:8000/files/result/<external_id>"      # 307 → 200 от MinIO
-curl -IL "http://localhost:8000/files/cadastral/<external_id>"   # входной кадастр (upload-флоу)
+curl -i "http://localhost:8000/files/result/<external_id>"       # сразу 200 + GeoJSON
+curl -i "http://localhost:8000/files/cadastral/<external_id>"    # входной кадастр (upload-флоу)
 ```
-`download_url` (если не null) должен качать файл напрямую из MinIO без авторизации.
+`download_url` всегда `null` — ссылок напрямую на MinIO быть не должно.
 В ChatStorage сохраняется только `result`-ссылка (как `file`-часть assistant-сообщения); входные слои — нет.
 
 ## 5. Что считать успехом

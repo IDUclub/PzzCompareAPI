@@ -23,7 +23,7 @@ from ..application.use_cases.uploads import (
 from ..dependencies import get_app_settings
 from ..settings import Settings
 from .security import AuthUser, get_current_user
-from .utils import durable_url, stream_upload_to_file
+from .utils import stream_upload_to_file
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
 logger = logging.getLogger("service.api.uploads")
@@ -61,9 +61,8 @@ def create_upload(
         raise
     return {
         **record.as_dict(),
-        "url": durable_url(
-            f"/uploads/{upload_id}", app_settings.public_base_url, request
-        ),
+        # Relative on purpose: the frontend prepends its own base for this service.
+        "url": f"/uploads/{upload_id}",
     }
 
 

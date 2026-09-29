@@ -183,13 +183,10 @@ class Settings(BaseSettings):
 
     # ── Geo-layer download links ─────────────────────────────────────────────
     # Result GeoJSON layers are offered as links instead of inline payloads.
-    # The durable link points at ``/files/result/{external_id}`` and redirects
-    # (302) to a fresh presigned MinIO URL, so it never expires (good for chat
-    # history) while big files download straight from object storage.
-    # ``public_base_url`` makes the stored link absolute; when empty a relative
-    # path is used (the frontend resolves it against the API base).
-    public_base_url: str = Field(default="")
-    geo_layer_url_ttl_seconds: int = Field(default=3600)
+    # The durable link points at ``/files/{slot}/{external_id}`` and the API
+    # streams the bytes itself: MinIO is unreachable from the external network,
+    # so no link ever points at object storage. The link is always a relative
+    # path: the frontend prepends the base address it knows for this service.
 
     # ── Admin config API ─────────────────────────────────────────────────────
     # Shared secret guarding the runtime config endpoints (/admin/config/*),
@@ -272,10 +269,6 @@ def _build_settings_cached() -> Settings:
         keycloak_client_id=_get_optional_env(config, "KEYCLOAK_CLIENT_ID"),
         keycloak_client_secret=_get_optional_env(config, "KEYCLOAK_CLIENT_SECRET"),
         keycloak_scope=_get_optional_env(config, "KEYCLOAK_SCOPE"),
-        public_base_url=_get_optional_env(config, "PUBLIC_BASE_URL").rstrip("/"),
-        geo_layer_url_ttl_seconds=int(
-            _get_optional_env(config, "GEO_LAYER_URL_TTL_SECONDS", "3600")
-        ),
         fileserver_endpoint=_get_optional_env(config, "FILESERVER_ENDPOINT"),
         fileserver_access_key=_get_optional_env(config, "FILESERVER_ACCESS_KEY"),
         fileserver_secret_key=_get_optional_env(config, "FILESERVER_SECRET_KEY"),
