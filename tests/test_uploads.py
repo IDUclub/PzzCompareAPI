@@ -182,3 +182,25 @@ def test_corrupt_metadata_is_not_found(tmp_path):
         resolve_upload(record.upload_id, owner_id="user-1", settings=settings)
 
     assert exc_info.value.status_code == 404
+
+
+def test_refusals_are_worded_for_the_end_user(tmp_path):
+    settings = _settings(tmp_path)
+    record = _store(settings, owner="user-1")
+
+    with pytest.raises(UploadError) as foreign:
+        resolve_upload(record.upload_id, owner_id="user-2", settings=settings)
+    assert foreign.value.detail == "файл загружен другим пользователем."
+
+    with pytest.raises(UploadError) as unknown:
+        resolve_upload("0" * 32, owner_id="user-1", settings=settings)
+    assert unknown.value.detail == (
+        f"файл с upload_id «{'0' * 32}» не найден: загрузите его заново."
+    )
+
+    expired = _settings(tmp_path / "e", uploads_max_age_hours=0)
+    old = _store(expired)
+    time.sleep(0.01)
+    with pytest.raises(UploadError) as gone:
+        resolve_upload(old.upload_id, owner_id="user-1", settings=expired)
+    assert "истёк" in gone.value.detail and "загрузите его заново" in gone.value.detail

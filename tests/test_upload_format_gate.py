@@ -184,3 +184,23 @@ def test_missing_required_file_is_a_422_in_russian(tmp_path: Path) -> None:
         "«pzz_zones_feature_collection_file» или укажите "
         "«pzz_zones_feature_collection_file_upload_id»."
     )
+
+
+def test_upload_id_refusal_names_the_slot_in_russian(tmp_path: Path) -> None:
+    from service.settings import Settings
+
+    settings = Settings(uploads_dir=str(tmp_path / "uploads"))
+    with pytest.raises(HTTPException) as exc:
+        _resolve_file_slot(
+            None,
+            "0" * 32,
+            "pzz_zones_feature_collection_file",
+            required=True,
+            owner_id="u1",
+            app_settings=settings,
+            scratch=tmp_path / "scratch",
+        )
+    assert exc.value.status_code == 404
+    assert exc.value.detail == (
+        f"слой зон ПЗЗ: файл с upload_id «{'0' * 32}» не найден: загрузите его заново."
+    )

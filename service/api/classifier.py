@@ -122,9 +122,7 @@ def _resolve_file_slot(
                 upload_id, owner_id=owner_id, settings=app_settings
             )
         except UploadError as exc:
-            raise HTTPException(
-                status_code=exc.status_code, detail=f"{field_name}: {exc.detail}"
-            ) from exc
+            raise _slot_http_error(exc.status_code, field_name, exc.detail) from exc
         # Copied into the request scratch dir so the ingest path may consume, rewind
         # and delete it without touching the stored upload, which outlives this task.
         scratch.mkdir(parents=True, exist_ok=True)
