@@ -285,6 +285,33 @@ pytest
 Postgres/Redis не нужен. Пайплайн-тесты требуют установленных зависимостей
 пайплайна (geopandas, nltk и пр.).
 
+Интеграционные тесты (`tests/integration`, маркер `integration`) работают с настоящими
+PostgreSQL, Redis и MinIO: миграции Alembic строят схему моделей и откатываются, задача проходит
+свои статусы в базе, брокер Celery принимает сообщение, файлы задач проходят через MinIO. Без
+переменных `PZZ_TEST_*` они пропускаются:
+
+```bash
+PZZ_TEST_DATABASE_URL=postgresql+psycopg://pzz:pzz@localhost:5432/pzz \
+PZZ_TEST_REDIS_URL=redis://localhost:6379/0 \
+PZZ_TEST_MINIO_ENDPOINT=localhost:9000 PZZ_TEST_MINIO_ACCESS_KEY=minioadmin \
+PZZ_TEST_MINIO_SECRET_KEY=minioadmin \
+pytest -m integration tests/integration
+```
+
+## CI и версии
+
+- `tests.yml` — на каждый PR в `dev`/`main`: юнит-тесты, интеграционные тесты (`integration.yml`,
+  ещё и по ночам) и проверка black (несоответствия правятся коммитом в ветку PR).
+- `pr-autofill.yml` — заголовок PR `vX.Y.Z (ветка)` (версия, с которой он вольётся) и список
+  коммитов в описании.
+- `version-bump.yml` — версия поднимается в ветке PR перед мерджем в `dev`: включите **Enable
+  auto-merge**, и коммит `bump:` обновит `pyproject.toml`, `service/__version__.py` и
+  `CHANGELOG.md` (метка `major` → major, ветки `feat/*`/`feature/*` → minor, остальные → patch),
+  после чего статус `version` пропустит мердж. Без auto-merge `version` ждёт. Нужен секрет
+  `VERSION_STATUS_TOKEN` (токен с правом `repo:status`).
+- `release.yml` — мердж в `main` ставит тег версии из `dev` и черновик релиза из CHANGELOG.
+- Версия видна в `GET /health` и в OpenAPI.
+
 ---
 
 ## Деплой

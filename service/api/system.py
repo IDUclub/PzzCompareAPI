@@ -12,6 +12,7 @@ from sqlalchemy import text
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import RedirectResponse, Response
 
+from ..__version__ import VERSION
 from ..db import session_scope
 from ..dependencies import get_app_settings
 from ..log_sink import LOG_STREAM_KEY
@@ -33,7 +34,7 @@ def root() -> RedirectResponse:
 
 @router.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "version": VERSION}
 
 
 @router.get("/readiness")

@@ -9,3 +9,6 @@ repos:
     rev: 26.5.1
     hooks:
       - id: black
+        # pipeline_modules/ is vendored: keep it as upstream ships it (pre-commit passes
+        # file names, so black's own extend-exclude would not apply).
+        exclude: ^pipeline_modules/

@@ -24,6 +24,7 @@ from .api import (
     uploads,
     zone_descriptions,
 )
+from .__version__ import VERSION
 from .api.utils import api_log
 from .db import session_scope
 from .dependencies import (
@@ -102,7 +103,9 @@ async def lifespan(app: FastAPI):
             api_log("shutdown", "finished")
 
 
-app = FastAPI(title="PZZ Pipeline Background Service", lifespan=lifespan)
+app = FastAPI(
+    title="PZZ Pipeline Background Service", version=VERSION, lifespan=lifespan
+)
 
 _cors_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "*")
 _cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
