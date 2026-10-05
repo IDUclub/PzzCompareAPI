@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Optional
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 
@@ -52,6 +54,8 @@ from .rerank_layer import (
     should_run_not_allowed_llm_rerank,
     NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N,
 )
+from .overlap_layer import OVERLAPS_KEY, run_overlap_checks
+from .overlap_layer import PARCEL_COLUMNS as OVERLAP_PARCEL_COLUMNS
 from .spatial_layer import build_source_with_spatial_attributes
 from .text_utils import (
     build_actual_zone_key,
@@ -218,6 +222,63 @@ def _prefill_query_vectors(
     )
     for (text, _), vec in zip(embeddable, vecs):
         context.not_allowed_query_vector_cache[get_not_allowed_query_key(text)] = vec
+
+
+def _attach_overlap_checks(
+    classified_gdf: gpd.GeoDataFrame,
+    *,
+    source_gdf: gpd.GeoDataFrame,
+    pzz_zones_gdf: gpd.GeoDataFrame,
+    pzz_zone_code_col: str,
+    pzz_zone_name_col: str,
+) -> tuple[gpd.GeoDataFrame, Optional[dict[str, Any]]]:
+    """Add the overlap columns to the parcels and build the overlap report.
+
+    A failure here must not cost the user the ВРИ check it rides along with:
+    it is logged and the result simply has no overlap data.
+    """
+    started = perf_counter()
+    if len(classified_gdf) != len(source_gdf):
+        # Row positions are how the check addresses parcels; a merge that
+        # changed the row count would misattribute every note.
+        _log_stage(
+            "overlap_checks",
+            "skipped",
+            reason="row_count_mismatch",
+            rows=len(classified_gdf),
+            source_rows=len(source_gdf),
+        )
+        return classified_gdf, None
+    try:
+        result = run_overlap_checks(
+            source_gdf,
+            pzz_zones_gdf,
+            zone_code_col=pzz_zone_code_col,
+            zone_name_col=pzz_zone_name_col,
+        )
+    except Exception as exc:  # noqa: BLE001 — optional diagnostics
+        logger.exception("overlap checks failed")
+        _log_stage("overlap_checks", "failed", error=str(exc)[:300])
+        return classified_gdf, None
+    classified_gdf = classified_gdf.reset_index(drop=True)
+    for column in OVERLAP_PARCEL_COLUMNS:
+        classified_gdf[column] = result.parcel_columns[column].to_numpy()
+    _log_stage(
+        "overlap_checks",
+        "finished",
+        duration_ms=int((perf_counter() - started) * 1000),
+        **result.summary,
+    )
+    return classified_gdf, result.report
+
+
+def _write_overlap_report(output_path: Path, report: dict[str, Any]) -> None:
+    """Store the report as a top-level ``overlaps`` member of the result."""
+    with output_path.open(encoding="utf-8") as fh:
+        result = json.load(fh)
+    result[OVERLAPS_KEY] = report
+    with output_path.open("w", encoding="utf-8") as fh:
+        json.dump(result, fh, ensure_ascii=False)
 
 
 def run_pipeline(
@@ -759,6 +820,16 @@ def run_pipeline(
         overwrite=False,
     )
 
+    overlap_report = None
+    if include_pzz_check:
+        classified_gdf, overlap_report = _attach_overlap_checks(
+            classified_gdf,
+            source_gdf=source_gdf,
+            pzz_zones_gdf=pzz_zones_gdf,
+            pzz_zone_code_col=pzz_zone_code_col,
+            pzz_zone_name_col=pzz_zone_name_col,
+        )
+
     classified_gdf["PZZ_ACTUAL_CODE_x"] = classified_gdf["PZZ_ACTUAL_CODE"]
     classified_gdf["PZZ_ACTUAL_NAME_x"] = classified_gdf["PZZ_ACTUAL_NAME"]
     output_gdf = select_and_rename_result_columns(
@@ -771,6 +842,8 @@ def run_pipeline(
     output_path = Path(output_geojson_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_gdf.to_file(output_path, driver="GeoJSON")
+    if overlap_report is not None:
+        _write_overlap_report(output_path, overlap_report)
 
     output_table = pd.DataFrame(output_gdf.drop(columns="geometry", errors="ignore"))
     output_table.to_excel(unique_results_xlsx_path, index=False)

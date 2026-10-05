@@ -1481,6 +1481,15 @@ _COL_OBJECT_TYPE_TEXT = "Исходный_тип_объекта"
 _COL_ZONE_CODE = "Код фактической зоны нахождения кадастра"
 # Collection-level counters written by the deterministic object runners.
 _ZONE_STATS_KEY = "zone_stats"
+# Overlap report of a parcel check (pipeline ``overlap_layer.OVERLAPS_KEY``; the
+# key is repeated here to keep the API free of a ``pipeline_modules`` import).
+_OVERLAPS_KEY = "overlaps"
+_OVERLAP_COUNT_KEYS = (
+    "parcel_overlaps",
+    "parcels_with_overlaps",
+    "parcels_in_multiple_zones",
+    "zone_overlaps",
+)
 _COL_ZONE_NAME = "Название фактической зоны нахождения кадастра"
 _COL_VERDICT = "Вердикт_ПЗЗ"
 _COL_REASON = "Причина"
@@ -1516,6 +1525,46 @@ def _load_result_geojson(result_path: str, outputs_dir: str) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="Task result file not found")
     with local_path.open("rb") as fh:
         return json.load(fh)
+
+
+def _overlap_counts(geojson: dict[str, Any]) -> dict[str, int] | None:
+    """Overlap counters of a result, or None when the check did not run for it."""
+    report = geojson.get(_OVERLAPS_KEY)
+    if not isinstance(report, dict):
+        return None
+    summary = report.get("summary") or {}
+    return {key: int(summary.get(key) or 0) for key in _OVERLAP_COUNT_KEYS}
+
+
+def _overlap_summary_lines(counts: dict[str, int] | None) -> list[str]:
+    """Russian sentences about overlaps for the chat answer; empty when none."""
+    if not counts:
+        return []
+    lines = []
+    if counts.get("parcel_overlaps"):
+        lines.append(
+            f"Наложения земельных участков друг на друга: {counts['parcel_overlaps']} "
+            f"(затронуто участков: {counts.get('parcels_with_overlaps', 0)})."
+        )
+    if counts.get("parcels_in_multiple_zones"):
+        lines.append(
+            "Участков, расположенных сразу в нескольких территориальных зонах: "
+            f"{counts['parcels_in_multiple_zones']}."
+        )
+    if counts.get("zone_overlaps"):
+        lines.append(
+            f"Наложения территориальных зон друг на друга: {counts['zone_overlaps']}."
+        )
+    return lines
+
+
+def _with_overlap_lines(chat_message: str, counts: dict[str, int] | None) -> str:
+    lines = _overlap_summary_lines(counts)
+    if not lines:
+        return chat_message
+    return "\n".join(
+        [chat_message, "", "Проверка наложений исходных слоёв:", *(f"- {l}" for l in lines)]
+    )
 
 
 def _classify_verdict(status: str | None) -> str:
@@ -1873,6 +1922,9 @@ def build_object_zone_fit_response(
             category: sum(1 for row in rows if row["category"] == category)
             for category in ("Здание", "Сервис")
         }
+    overlap_counts = _overlap_counts(geojson)
+    if overlap_counts is not None:
+        summary["overlaps"] = overlap_counts
 
     if group_by == "object":
         return {
@@ -1881,7 +1933,9 @@ def build_object_zone_fit_response(
             "subject": subject,
             "group_by": "object",
             "summary": summary,
-            "chat_message": _build_chat_message_objects(rows, summary, subject=subject),
+            "chat_message": _with_overlap_lines(
+            _build_chat_message_objects(rows, summary, subject=subject), overlap_counts
+        ),
             "objects": rows,
         }
 
@@ -1922,7 +1976,9 @@ def build_object_zone_fit_response(
         "subject": subject,
         "group_by": "zone",
         "summary": summary,
-        "chat_message": _build_chat_message_zones(zones_list, summary, subject=subject),
+        "chat_message": _with_overlap_lines(
+            _build_chat_message_zones(zones_list, summary, subject=subject), overlap_counts
+        ),
         "zones": zones_list,
     }
 
@@ -1956,6 +2012,68 @@ def _build_chat_message_classify(
             lines.append(f"...и ещё {len(rows) - 10} объектов.")
 
     return "\n".join(lines)
+
+
+@router.get("/tasks/{external_id}/overlaps")
+def get_overlaps_endpoint(
+    external_id: str,
+    task_repo: TaskRepository = Depends(get_task_repo),
+    app_settings: Settings = Depends(get_app_settings),
+) -> dict[str, Any]:
+    """Overlaps found in the input layers of a finished parcel check.
+
+    Returns the counts, a chat-ready summary and a GeoJSON FeatureCollection of
+    the overlap geometries: parcel↔parcel, zone↔zone and the parts of parcels
+    lying outside their main zone (``properties.kind``). 409 if the task isn't
+    finished; 404 if the result carries no overlap report (a building/scenario
+    check, a classify-only task, or a result computed before the check existed).
+    """
+    task = get_public_task_or_404(external_id, task_repo)
+    if task.status != "finished":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task is not finished (status: {task.status})",
+        )
+    if not task.result_path:
+        raise HTTPException(status_code=404, detail="Task has no result")
+    try:
+        geojson = _load_result_geojson(task.result_path, app_settings.outputs_dir)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to load result GeoJSON for task %s", task.external_id)
+        raise HTTPException(status_code=503, detail=RESULT_LOAD_FAILED_MESSAGE) from exc
+
+    report = geojson.get(_OVERLAPS_KEY)
+    if not isinstance(report, dict):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Для этой задачи нет результатов проверки наложений: она выполняется "
+                "только при проверке земельных участков на соответствие ПЗЗ. Если "
+                "задача была рассчитана до появления этой проверки, перезапустите "
+                f"её: POST /tasks/{external_id}/recompute."
+            ),
+        )
+    counts = _overlap_counts(geojson)
+    lines = _overlap_summary_lines(counts)
+    return {
+        "task_external_id": external_id,
+        "summary": {
+            **counts,
+            "min_area_m2": (report.get("summary") or {}).get("min_area_m2"),
+            "min_share": (report.get("summary") or {}).get("min_share"),
+        },
+        "chat_message": (
+            "\n".join(lines)
+            if lines
+            else "Наложений земельных участков и территориальных зон не найдено."
+        ),
+        "overlaps": {
+            "type": "FeatureCollection",
+            "features": report.get("features") or [],
+        },
+    }
 
 
 @router.get("/tasks/{external_id}/classify-summary")
