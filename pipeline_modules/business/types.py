@@ -25,6 +25,8 @@ class PipelinePaths:
     output_geojson_path: Path
     unique_results_xlsx_path: Path
     unique_results_json_path: Path
+    # Optional municipal boundary layer for the overlap checks.
+    mo_boundaries_geojson_path: Path | None = None
 
 
 @dataclass(frozen=True)

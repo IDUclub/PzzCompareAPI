@@ -1041,6 +1041,7 @@ _FILE_SLOTS: dict[str, str] = {
     "result": "result_path",
     "cadastral": "cadastral_data_path",
     "zones": "pzz_zones_data_path",
+    "mo_boundaries": "mo_boundaries_data_path",
 }
 
 # Human-readable label (``title``, RU — shown in chat/layer panel) + ASCII
@@ -1053,6 +1054,7 @@ _SLOT_LABELS: dict[str, tuple[str, str]] = {
     # slot -> (title, filename)
     "cadastral": ("Исходные участки", "input_parcels.geojson"),
     "zones": ("Зоны ПЗЗ", "pzz_zones.geojson"),
+    "mo_boundaries": ("Границы муниципальных образований", "mo_boundaries.geojson"),
 }
 _BUILDING_INPUT_LABEL = (
     "Исходные здания и сервисы",
@@ -1253,13 +1255,15 @@ def build_input_geo_layers(
 ) -> list[dict[str, Any]]:
     """Geo-layer link descriptors for a task's uploaded input layers.
 
-    Covers the cadastral parcels and PZZ zones the user uploaded (both stored
-    per-task under ``inputs/``). Optional config files (labels/classifier) are
-    intentionally excluded — they're often static defaults, not user uploads.
+    Covers the cadastral parcels, PZZ zones and the optional municipal
+    boundaries the user uploaded (all stored per-task under ``inputs/``).
+    Optional config files (labels/classifier) are intentionally excluded —
+    they're often static defaults, not user uploads.
     """
     specs = (
         ("cadastral", "cadastral_data_path", "input_cadastral"),
         ("zones", "pzz_zones_data_path", "input_zones"),
+        ("mo_boundaries", "mo_boundaries_data_path", "input_mo_boundaries"),
     )
     building_task = _is_building_task(task)
     layers: list[dict[str, Any]] = []
@@ -1490,6 +1494,14 @@ _OVERLAP_COUNT_KEYS = (
     "parcels_in_multiple_zones",
     "zone_overlaps",
 )
+# Reported only when the run had a municipal boundary layer to check against.
+_MO_OVERLAP_COUNT_KEYS = (
+    "mo_overlaps",
+    "parcels_in_multiple_mo",
+    "parcels_outside_mo",
+    "zones_in_multiple_mo",
+    "zones_outside_mo",
+)
 _COL_ZONE_NAME = "Название фактической зоны нахождения кадастра"
 _COL_VERDICT = "Вердикт_ПЗЗ"
 _COL_REASON = "Причина"
@@ -1533,7 +1545,10 @@ def _overlap_counts(geojson: dict[str, Any]) -> dict[str, int] | None:
     if not isinstance(report, dict):
         return None
     summary = report.get("summary") or {}
-    return {key: int(summary.get(key) or 0) for key in _OVERLAP_COUNT_KEYS}
+    keys = _OVERLAP_COUNT_KEYS
+    if summary.get("mo_checked"):
+        keys += _MO_OVERLAP_COUNT_KEYS
+    return {key: int(summary.get(key) or 0) for key in keys}
 
 
 def _overlap_summary_lines(counts: dict[str, int] | None) -> list[str]:
@@ -1555,7 +1570,24 @@ def _overlap_summary_lines(counts: dict[str, int] | None) -> list[str]:
         lines.append(
             f"Наложения территориальных зон друг на друга: {counts['zone_overlaps']}."
         )
+    mo_lines = (
+        ("mo_overlaps", "Наложения границ муниципальных образований друг на друга"),
+        ("parcels_in_multiple_mo", "Участков, пересекающих границу муниципальных образований"),
+        ("parcels_outside_mo", "Участков, полностью или частично вне границ муниципальных образований"),
+        ("zones_in_multiple_mo", "Территориальных зон, пересекающих границу муниципальных образований"),
+        ("zones_outside_mo", "Территориальных зон, полностью или частично вне границ муниципальных образований"),
+    )
+    lines.extend(f"{text}: {counts[key]}." for key, text in mo_lines if counts.get(key))
     return lines
+
+
+def _no_overlaps_message(counts: dict[str, int]) -> str:
+    if "mo_overlaps" in counts:
+        return (
+            "Наложений земельных участков, территориальных зон и границ "
+            "муниципальных образований не найдено."
+        )
+    return "Наложений земельных участков и территориальных зон не найдено."
 
 
 def _with_overlap_lines(chat_message: str, counts: dict[str, int] | None) -> str:
@@ -2064,11 +2096,7 @@ def get_overlaps_endpoint(
             "min_area_m2": (report.get("summary") or {}).get("min_area_m2"),
             "min_share": (report.get("summary") or {}).get("min_share"),
         },
-        "chat_message": (
-            "\n".join(lines)
-            if lines
-            else "Наложений земельных участков и территориальных зон не найдено."
-        ),
+        "chat_message": "\n".join(lines) if lines else _no_overlaps_message(counts),
         "overlaps": {
             "type": "FeatureCollection",
             "features": report.get("features") or [],

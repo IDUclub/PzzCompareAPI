@@ -17,6 +17,7 @@ def build_paths(
     pzz_zone_name_col: str,
     task_external_id: str,
     outputs_dir: str,
+    mo_boundaries_geojson: str = "",
 ) -> PipelinePaths:
     out_dir = Path(outputs_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -44,4 +45,5 @@ def build_paths(
         output_geojson_path=out_dir / f"{basename}.geojson",
         unique_results_xlsx_path=out_dir / f"{basename}.xlsx",
         unique_results_json_path=out_dir / f"{basename}.json",
+        mo_boundaries_geojson_path=Path(mo_boundaries_geojson) if mo_boundaries_geojson else None,
     )

@@ -55,7 +55,6 @@ from .rerank_layer import (
     NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N,
 )
 from .overlap_layer import OVERLAPS_KEY, run_overlap_checks
-from .overlap_layer import PARCEL_COLUMNS as OVERLAP_PARCEL_COLUMNS
 from .spatial_layer import build_source_with_spatial_attributes
 from .text_utils import (
     build_actual_zone_key,
@@ -231,6 +230,7 @@ def _attach_overlap_checks(
     pzz_zones_gdf: gpd.GeoDataFrame,
     pzz_zone_code_col: str,
     pzz_zone_name_col: str,
+    mo_gdf: Optional[gpd.GeoDataFrame] = None,
 ) -> tuple[gpd.GeoDataFrame, Optional[dict[str, Any]]]:
     """Add the overlap columns to the parcels and build the overlap report.
 
@@ -255,13 +255,14 @@ def _attach_overlap_checks(
             pzz_zones_gdf,
             zone_code_col=pzz_zone_code_col,
             zone_name_col=pzz_zone_name_col,
+            mo_gdf=mo_gdf,
         )
     except Exception as exc:  # noqa: BLE001 — optional diagnostics
         logger.exception("overlap checks failed")
         _log_stage("overlap_checks", "failed", error=str(exc)[:300])
         return classified_gdf, None
     classified_gdf = classified_gdf.reset_index(drop=True)
-    for column in OVERLAP_PARCEL_COLUMNS:
+    for column in result.parcel_columns.columns:
         classified_gdf[column] = result.parcel_columns[column].to_numpy()
     _log_stage(
         "overlap_checks",
@@ -270,6 +271,18 @@ def _attach_overlap_checks(
         **result.summary,
     )
     return classified_gdf, result.report
+
+
+def _load_mo_boundaries(path: str) -> Optional[gpd.GeoDataFrame]:
+    """The optional МО boundaries layer; ``None`` when absent or unreadable."""
+    if not (path or "").strip():
+        return None
+    try:
+        return InputDataLoader.load_geojson_to_gdf(path)
+    except Exception as exc:  # noqa: BLE001 — optional diagnostics
+        logger.exception("МО boundaries layer could not be loaded")
+        _log_stage("overlap_checks", "mo_layer_failed", error=str(exc)[:300])
+        return None
 
 
 def _write_overlap_report(output_path: Path, report: dict[str, Any]) -> None:
@@ -299,6 +312,7 @@ def run_pipeline(
     generate_model: str,
     top_k: int,
     batch_size: int,
+    mo_boundaries_geojson_path: str = "",
 ) -> None:
     """Service-safe orchestrator that mirrors spatial-first notebook logic."""
     _ = (pzz_codes_path, base_url, embed_model, generate_model, top_k, batch_size)
@@ -828,6 +842,7 @@ def run_pipeline(
             pzz_zones_gdf=pzz_zones_gdf,
             pzz_zone_code_col=pzz_zone_code_col,
             pzz_zone_name_col=pzz_zone_name_col,
+            mo_gdf=_load_mo_boundaries(mo_boundaries_geojson_path),
         )
 
     classified_gdf["PZZ_ACTUAL_CODE_x"] = classified_gdf["PZZ_ACTUAL_CODE"]

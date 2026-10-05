@@ -10,9 +10,14 @@ from fastapi import HTTPException
 from shapely.geometry import box
 
 import service.api.tasks as tasks_api
-from pipeline_modules.business.overlap_layer import COL_OVERLAP_NOTES, OVERLAPS_KEY
+from pipeline_modules.business.overlap_layer import (
+    COL_MO,
+    COL_OVERLAP_NOTES,
+    OVERLAPS_KEY,
+)
 from pipeline_modules.business.pipeline_impl import (
     _attach_overlap_checks,
+    _load_mo_boundaries,
     _write_overlap_report,
 )
 
@@ -189,3 +194,82 @@ def test_pipeline_skips_check_on_row_mismatch():
 
     assert report is None
     assert COL_OVERLAP_NOTES not in classified.columns
+
+
+MO_SUMMARY = {
+    "mo_checked": True,
+    "mo_overlaps": 0,
+    "parcels_in_multiple_mo": 2,
+    "parcels_outside_mo": 1,
+    "zones_in_multiple_mo": 0,
+    "zones_outside_mo": 0,
+}
+
+
+def test_overlaps_endpoint_reports_mo_counts(monkeypatch, tmp_path: Path):
+    report = {**REPORT, "summary": {**REPORT["summary"], **MO_SUMMARY}}
+    task = _Task(_result(tmp_path, overlaps=report))
+
+    resp = _get_overlaps(monkeypatch, tmp_path, task)
+
+    assert resp["summary"]["parcels_in_multiple_mo"] == 2
+    assert resp["summary"]["parcels_outside_mo"] == 1
+    assert (
+        "Участков, пересекающих границу муниципальных образований: 2."
+        in resp["chat_message"]
+    )
+
+
+def test_overlaps_endpoint_without_mo_layer_has_no_mo_keys(monkeypatch, tmp_path: Path):
+    resp = _get_overlaps(monkeypatch, tmp_path, _Task(_result(tmp_path, overlaps=REPORT)))
+
+    assert "parcels_outside_mo" not in resp["summary"]
+    assert "муниципальных" not in resp["chat_message"]
+
+
+def test_clean_mo_check_says_mo_were_checked(monkeypatch, tmp_path: Path):
+    clean = {**REPORT, "summary": {"mo_checked": True}, "features": []}
+    task = _Task(_result(tmp_path, overlaps=clean))
+
+    resp = _get_overlaps(monkeypatch, tmp_path, task)
+
+    assert resp["summary"]["mo_overlaps"] == 0
+    assert resp["chat_message"] == (
+        "Наложений земельных участков, территориальных зон и границ "
+        "муниципальных образований не найдено."
+    )
+
+
+def test_pipeline_checks_parcels_against_mo(tmp_path: Path):
+    parcels = gpd.GeoDataFrame(
+        {"geometry": [box(0.001, 0.001, 0.002, 0.002)]}, crs="EPSG:4326"
+    )
+    zones = gpd.GeoDataFrame(
+        {"code": ["Ж-1"], "geometry": [box(0, 0, 0.01, 0.01)]}, crs="EPSG:4326"
+    )
+    mo_path = tmp_path / "mo.geojson"
+    gpd.GeoDataFrame(
+        {"name": ["Западный"], "geometry": [box(0, 0, 0.00175, 0.01)]},
+        crs="EPSG:4326",
+    ).to_file(mo_path, driver="GeoJSON")
+
+    classified, report = _attach_overlap_checks(
+        parcels.copy(),
+        source_gdf=parcels,
+        pzz_zones_gdf=zones,
+        pzz_zone_code_col="code",
+        pzz_zone_name_col="code",
+        mo_gdf=_load_mo_boundaries(str(mo_path)),
+    )
+
+    assert report["summary"]["mo_checked"] is True
+    assert report["summary"]["parcels_outside_mo"] == 1
+    assert classified[COL_MO].iloc[0] == "МО «Западный» (75 %), вне МО (25 %)"
+
+
+def test_unreadable_mo_layer_is_skipped(tmp_path: Path):
+    broken = tmp_path / "mo.geojson"
+    broken.write_text("not json", encoding="utf-8")
+
+    assert _load_mo_boundaries("") is None
+    assert _load_mo_boundaries(str(broken)) is None

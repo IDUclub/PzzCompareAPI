@@ -108,6 +108,7 @@ class ApiClient:
         pzz_zones_geojson: dict[str, Any] | None = None,
         cadastral_upload_id: str | None = None,
         pzz_zones_upload_id: str | None = None,
+        mo_boundaries_upload_id: str | None = None,
         priority: int = 1,
         force_recompute: bool = False,
         idempotency_key: str | None = None,
@@ -137,6 +138,10 @@ class ApiClient:
             data["cadastral_feature_collection_upload_id"] = cadastral_upload_id
         if pzz_zones_upload_id:
             data["pzz_zones_feature_collection_upload_id"] = pzz_zones_upload_id
+        if mo_boundaries_upload_id:
+            data["mo_boundaries_feature_collection_upload_id"] = (
+                mo_boundaries_upload_id
+            )
         headers: dict[str, str] = {}
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key

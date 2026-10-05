@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 
 from service.infrastructure.runners import pipeline_runner as runner_mod
@@ -126,3 +127,75 @@ def test_build_output_glob_raises_if_no_geojson(tmp_path) -> None:
         raise AssertionError(
             "FileNotFoundError is expected when no geojson artifacts are produced"
         )
+
+
+def _in_process_kwargs(tmp_path, monkeypatch, request) -> dict:
+    seen: dict = {}
+
+    class FakeModule:
+        @staticmethod
+        def fake_callable(**kwargs):
+            seen.update(kwargs)
+            (tmp_path / "pzz_compare_spatial_first_task-123_result.geojson").write_text(
+                "{}"
+            )
+
+    monkeypatch.setattr(
+        runner_mod, "importlib", SimpleNamespace(import_module=lambda _: FakeModule)
+    )
+    InProcessPipelineRunner(_settings("in_process")).run(request)
+    return seen
+
+
+def test_in_process_passes_mo_layer_only_when_present(tmp_path, monkeypatch) -> None:
+    request = _request(tmp_path)
+    assert "mo_boundaries_features_path" not in _in_process_kwargs(
+        tmp_path, monkeypatch, request
+    )
+
+    with_mo = replace(request, mo_boundaries_data_path="/tmp/mo.geojson")
+    kwargs = _in_process_kwargs(tmp_path, monkeypatch, with_mo)
+    assert kwargs["mo_boundaries_features_path"] == "/tmp/mo.geojson"
+
+
+def test_subprocess_passes_mo_layer_via_env(tmp_path, monkeypatch) -> None:
+    envs = []
+
+    def fake_subprocess_run(*args, **kwargs):
+        envs.append(kwargs["env"])
+        (tmp_path / "pzz_compare_spatial_first_task-123_result.geojson").write_text(
+            "{}"
+        )
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_subprocess_run)
+    request = replace(_request(tmp_path), mo_boundaries_data_path="/tmp/mo.geojson")
+    SubprocessPipelineRunner(_settings("subprocess")).run(request)
+
+    assert envs[0]["MO_BOUNDARIES_FEATURES_PATH"] == "/tmp/mo.geojson"
+
+
+def test_storage_runner_downloads_mo_layer(tmp_path) -> None:
+    downloaded = []
+
+    class RemoteStorage:
+        def is_remote(self) -> bool:
+            return True
+
+        def download_file(self, stored_path, local_path):
+            downloaded.append(stored_path)
+
+    runner = StorageAwarePipelineRunner(inner=None, storage=RemoteStorage())
+    request = replace(
+        _request(tmp_path), mo_boundaries_data_path="minio://inputs/t/mo.geojson"
+    )
+
+    local = runner._materialise_inputs(request, tmp_path)
+
+    assert downloaded == ["minio://inputs/t/mo.geojson"]
+    assert local.mo_boundaries_data_path == str(
+        tmp_path / "mo_boundaries_feature_collection.geojson"
+    )
+    # An absent МО layer stays absent.
+    without_mo = runner._materialise_inputs(_request(tmp_path), tmp_path)
+    assert without_mo.mo_boundaries_data_path == ""

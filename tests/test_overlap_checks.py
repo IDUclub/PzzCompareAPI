@@ -12,11 +12,18 @@ from shapely.geometry import box
 from pipeline_modules.business.overlap_layer import (
     COL_ACTUAL_SHARE_PCT,
     COL_INTERSECT_ZONES,
+    COL_MO,
     COL_OVERLAP_NOTES,
+    KIND_MO_MO,
+    KIND_PARCEL_MULTI_MO,
     KIND_PARCEL_MULTI_ZONE,
+    KIND_PARCEL_OUTSIDE_MO,
     KIND_PARCEL_PARCEL,
+    KIND_ZONE_MULTI_MO,
+    KIND_ZONE_OUTSIDE_MO,
     KIND_ZONE_ZONE,
     detect_cadastral_number_column,
+    detect_mo_name_column,
     run_overlap_checks,
 )
 from service.api.tasks import _overlap_summary_lines as overlap_summary_lines
@@ -167,4 +174,170 @@ def test_summary_lines_mention_every_kind():
         "Наложения земельных участков друг на друга: 2 (затронуто участков: 3).",
         "Участков, расположенных сразу в нескольких территориальных зонах: 4.",
         "Наложения территориальных зон друг на друга: 1.",
+    ]
+
+
+
+# --- Municipal boundaries (МО) ---------------------------------------------
+
+def _mo(shapes):
+    return gpd.GeoDataFrame(
+        {
+            "Наименование_МО": [name for name, _ in shapes],
+            "geometry": [geom for _, geom in shapes],
+        },
+        crs="EPSG:4326",
+    )
+
+
+WEST_EAST_MO = [
+    ("Западный", box(0.0, 0.0, 0.00175, 0.01)),
+    ("Восточный", box(0.00175, 0.0, 0.01, 0.01)),
+]
+
+
+def _check_mo(parcels, zones, mo):
+    return run_overlap_checks(
+        parcels,
+        zones,
+        zone_code_col="Индекс_зоны",
+        zone_name_col="Наименование_зоны",
+        mo_gdf=mo,
+    )
+
+
+def test_without_mo_layer_nothing_about_mo():
+    result = _check(_parcels([box(0.001, 0.001, 0.002, 0.002)]), _zones(BIG_ZONE))
+
+    assert result.summary["mo_checked"] is False
+    assert "parcels_outside_mo" not in result.summary
+    assert COL_MO not in result.parcel_columns.columns
+
+
+def test_parcel_inside_one_mo_gets_its_name():
+    result = _check_mo(
+        _parcels([box(0.003, 0.001, 0.004, 0.002)]),
+        _zones(BIG_ZONE),
+        _mo(WEST_EAST_MO),
+    )
+
+    assert _kinds(result) == [KIND_ZONE_MULTI_MO]
+    assert result.summary["mo_checked"] is True
+    assert result.summary["parcels_in_multiple_mo"] == 0
+    assert result.parcel_columns.iloc[0][COL_MO] == "МО «Восточный»"
+    assert result.parcel_columns.iloc[0][COL_OVERLAP_NOTES] is None
+    # The zone straddles both МО — that is reported, parcels are clean.
+    assert result.summary["zones_in_multiple_mo"] == 1
+
+
+def test_parcel_split_between_two_mo():
+    result = _check_mo(
+        _parcels([box(0.001, 0.001, 0.002, 0.002)]),
+        _zones([("Ж-1", box(0.0, 0.0, 0.00175, 0.01))]),
+        _mo(WEST_EAST_MO),
+    )
+
+    assert KIND_PARCEL_MULTI_MO in _kinds(result)
+    props = next(
+        f["properties"]
+        for f in result.report["features"]
+        if f["properties"]["kind"] == KIND_PARCEL_MULTI_MO
+    )
+    assert props["Основное_МО"] == "МО «Западный»"
+    assert props["Доля_в_основном_МО_%"] == pytest.approx(75, abs=0.5)
+    assert props["Объект_2"] == "МО «Восточный»"
+    row = result.parcel_columns.iloc[0]
+    assert row[COL_MO] == "МО «Западный» (75 %), МО «Восточный» (25 %)"
+    assert "пересекает границу МО" in row[COL_OVERLAP_NOTES]
+    assert result.summary["parcels_in_multiple_mo"] == 1
+    assert result.summary["parcels_outside_mo"] == 0
+
+
+def test_parcel_partly_and_wholly_outside_mo():
+    mo = _mo([("Западный", box(0.0, 0.0, 0.00175, 0.01))])
+    parcels = _parcels(
+        [box(0.001, 0.001, 0.002, 0.002), box(0.005, 0.001, 0.006, 0.002)]
+    )
+    result = _check_mo(parcels, _zones([("Ж-1", box(0.0, 0.0, 0.00175, 0.01))]), mo)
+
+    outside = [
+        f["properties"]
+        for f in result.report["features"]
+        if f["properties"]["kind"] == KIND_PARCEL_OUTSIDE_MO
+    ]
+    assert [p["feature_index_1"] for p in outside] == [0, 1]
+    assert outside[0]["Доля_наложения_%"] == pytest.approx(25, abs=0.5)
+    assert outside[1]["Доля_наложения_%"] == pytest.approx(100, abs=0.1)
+    notes = result.parcel_columns[COL_OVERLAP_NOTES].tolist()
+    assert "частично вне границ МО" in notes[0]
+    assert "расположен вне границ МО" in notes[1]
+    assert result.parcel_columns.iloc[1][COL_MO] == "вне МО (100 %)"
+    assert result.summary["parcels_outside_mo"] == 2
+    assert result.summary["parcels_in_multiple_mo"] == 0
+
+
+def test_zone_across_mo_boundary_and_outside_mo():
+    mo = _mo([("Западный", box(0.0, 0.0, 0.005, 0.01)), ("Восточный", box(0.005, 0.0, 0.01, 0.01))])
+    zones = _zones(
+        [("Ж-1", box(0.004, 0.0, 0.006, 0.01)), ("ОД-1", box(0.009, 0.0, 0.012, 0.01))]
+    )
+    result = _check_mo(_parcels([box(0.001, 0.001, 0.002, 0.002)]), zones, mo)
+
+    by_kind = {}
+    for f in result.report["features"]:
+        by_kind.setdefault(f["properties"]["kind"], []).append(f["properties"])
+    assert [p["zone_index_1"] for p in by_kind[KIND_ZONE_MULTI_MO]] == [0]
+    assert by_kind[KIND_ZONE_MULTI_MO][0]["Объект_1"] == "Зона Ж-1 «Зона Ж-1»"
+    assert [p["zone_index_1"] for p in by_kind[KIND_ZONE_OUTSIDE_MO]] == [1]
+    assert by_kind[KIND_ZONE_OUTSIDE_MO][0]["Доля_наложения_%"] == pytest.approx(
+        66.67, abs=0.5
+    )
+    assert result.summary["zones_in_multiple_mo"] == 1
+    assert result.summary["zones_outside_mo"] == 1
+
+
+def test_overlapping_mo_are_reported():
+    mo = _mo([("Западный", box(0.0, 0.0, 0.006, 0.01)), ("Восточный", box(0.005, 0.0, 0.01, 0.01))])
+    result = _check_mo(_parcels([box(0.001, 0.001, 0.002, 0.002)]), _zones([]), mo)
+
+    mo_features = [
+        f["properties"] for f in result.report["features"] if f["properties"]["kind"] == KIND_MO_MO
+    ]
+    assert len(mo_features) == 1
+    assert mo_features[0]["Объект_1"] == "МО «Западный»"
+    assert mo_features[0]["mo_index_1"] == 0 and mo_features[0]["mo_index_2"] == 1
+    assert result.summary["mo_overlaps"] == 1
+
+
+def test_mo_name_column_detection():
+    frame = _mo(WEST_EAST_MO)
+    assert detect_mo_name_column(frame) == "Наименование_МО"
+    renamed = frame.rename(columns={"Наименование_МО": "что-то"})
+    assert detect_mo_name_column(renamed) == "что-то"  # unique text values
+    assert detect_mo_name_column(frame[["geometry"]]) is None
+
+
+def test_mo_without_names_gets_numbers():
+    mo = _mo(WEST_EAST_MO)[["geometry"]]
+    result = _check_mo(_parcels([box(0.001, 0.001, 0.002, 0.002)]), _zones(BIG_ZONE), mo)
+
+    assert result.parcel_columns.iloc[0][COL_MO] == "МО № 0 (75 %), МО № 1 (25 %)"
+
+
+def test_summary_lines_mention_mo_kinds():
+    lines = overlap_summary_lines(
+        {
+            "parcel_overlaps": 0,
+            "mo_overlaps": 1,
+            "parcels_in_multiple_mo": 2,
+            "parcels_outside_mo": 3,
+            "zones_in_multiple_mo": 0,
+            "zones_outside_mo": 4,
+        }
+    )
+    assert lines == [
+        "Наложения границ муниципальных образований друг на друга: 1.",
+        "Участков, пересекающих границу муниципальных образований: 2.",
+        "Участков, полностью или частично вне границ муниципальных образований: 3.",
+        "Территориальных зон, полностью или частично вне границ муниципальных образований: 4.",
     ]

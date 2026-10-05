@@ -94,6 +94,7 @@ multipart не хочется. Ручки создания задач прини
 |---|---|---|
 | `cadastral_feature_collection_file` | `cadastral_feature_collection_upload_id` | B1, B2 |
 | `pzz_zones_feature_collection_file` | `pzz_zones_feature_collection_upload_id` | B1, B5 |
+| `mo_boundaries_feature_collection_file` | `mo_boundaries_feature_collection_upload_id` | B1, стримы `pzz-check`, `/tasks/auto/chat/stream` (`pzz_check`) |
 | `pzz_zone_vri_labels_file` | `pzz_zone_vri_labels_upload_id` | B1 |
 | `vri_classifier_file` | `vri_classifier_upload_id` | B1, B2 |
 | `buildings_feature_collection_file` | `buildings_feature_collection_upload_id` | B5 |
@@ -123,6 +124,7 @@ multipart не хочется. Ручки создания задач прини
 |------|-----|-------------|----------|
 | `cadastral_feature_collection_file` | File | да | Кадастровые участки. GeoJSON в **EPSG:4326**, либо любой гео-формат (см. ниже) |
 | `pzz_zones_feature_collection_file` | File | да | PZZ-зоны. GeoJSON в **EPSG:4326**, либо любой гео-формат |
+| `mo_boundaries_feature_collection_file` | File | – | Границы муниципальных образований — только для проверки наложений (D4). Гео-формат как у зон. Название МО берётся из колонки вроде `Наименование_МО` / `name` / `ОКТМО`, иначе МО нумеруются. Тот же слот есть у `/tasks/pzz-check/stream`, `/tasks/pzz-check/chat/stream` и `/tasks/auto/chat/stream` (режим `pzz_check`) |
 | `pzz_zone_vri_labels_file` | File | – | Свой JSON с описанием зон (если нет — используется дефолт) |
 | `vri_classifier_file` | File | – | Свой классификатор Росреестра (если нет — дефолт) |
 | `cadastral_vri_col` | string | да | Имя поля в кадастре с текстом ВРИ (например `"Вид разреш"`) |
@@ -422,7 +424,9 @@ JSON-ответом, без SSE и без текста LLM. Здания (фор
 - `Доля_в_фактической_зоне_%` — какая доля площади участка лежит в его фактической зоне
   (`100.0` у участка целиком в одной зоне; `null`, если участок вне зон)
 - `Наложения` — текст для тултипа: на какие участки наложен этот участок и/или что он
-  разрезан границей зон; `null`, если наложений нет
+  разрезан границей зон (или МО); `null`, если наложений нет
+- `Муниципальные_образования` — только если загружен слой границ МО: в каких МО лежит
+  участок, например `"МО «Западный» (75 %), вне МО (25 %)"`. Без слоя МО колонки нет
 
 Кроме того, в корне FeatureCollection появляется член `overlaps` (рядом с `features`) — тот же
 отчёт, что отдаёт `GET /tasks/{external_id}/overlaps` (D4). Обычные GeoJSON-библиотеки его
@@ -485,7 +489,7 @@ JSON-ответом, без SSE и без текста LLM. Здания (фор
 | `summary.total` / `in_correct_zone` / `in_wrong_zone` | KPI-плашки |
 | `summary.zones_count` / `zone_polygons_count` | Число разных кодов (типов) зон / число отдельных зон с объектами. `zone_polygons_count` есть только у проверки объектов (сценарий, загруженные здания) |
 | `chat_message` | Готовый текст для чат-бота (plain-text) |
-| `summary.overlaps` | Только `pzz_check`: `{parcel_overlaps, parcels_with_overlaps, parcels_in_multiple_zones, zone_overlaps}`. Если что-то из этого > 0, в конец `chat_message` добавляется блок «Проверка наложений исходных слоёв:». У задач, посчитанных до появления проверки, поля нет |
+| `summary.overlaps` | Только `pzz_check`: `{parcel_overlaps, parcels_with_overlaps, parcels_in_multiple_zones, zone_overlaps}`, а если загружен слой МО — ещё `mo_overlaps, parcels_in_multiple_mo, parcels_outside_mo, zones_in_multiple_mo, zones_outside_mo`. Если что-то из этого > 0, в конец `chat_message` добавляется блок «Проверка наложений исходных слоёв:». У задач, посчитанных до появления проверки, поля нет |
 | `zones[].zone_name` | Название зоны (русское) |
 | `zones[].pzz_summary.allowed_construction_summary` | Справка «что можно строить в этой зоне» |
 | `zones[].objects[].feature_index` | Привязка к Feature в GeoJSON (D1) для подсветки на карте |
@@ -525,6 +529,19 @@ JSON-ответом, без SSE и без текста LLM. Здания (фор
 - наложения земельных участков друг на друга (`kind = "parcel_parcel"`);
 - участки, расположенные сразу в нескольких территориальных зонах (`kind = "parcel_multi_zone"`);
 - наложения территориальных зон друг на друга (`kind = "zone_zone"`).
+
+Если при создании задачи загружен слой границ МО (`mo_boundaries_feature_collection_file`),
+дополнительно ищутся:
+- наложения границ МО друг на друга (`kind = "mo_mo"`, индексы `mo_index_1/2`);
+- участки, пересекающие границу МО (`parcel_multi_mo`) или лежащие вне всех МО
+  целиком/частично (`parcel_outside_mo`);
+- территориальные зоны, пересекающие границу МО (`zone_multi_mo`) или выходящие за
+  границы МО (`zone_outside_mo`).
+
+Для `*_multi_mo` геометрия — части объекта в «чужих» МО, плюс поля `Основное_МО` и
+`Доля_в_основном_МО_%`; для `*_outside_mo` — часть объекта вне МО (`Объект_2` =
+«Вне границ МО»). Слой МО — необязательная диагностика: если его не удалось прочитать,
+задача всё равно завершается, просто без проверок МО.
 
 Наложение меньше **1 м²** или **0,1 %** площади меньшего из объектов не считается ошибкой
 (погрешность оцифровки; пороги — `OVERLAP_MIN_AREA_M2` / `OVERLAP_MIN_SHARE` на бэкенде).
@@ -571,7 +588,11 @@ JSON-ответом, без SSE и без текста LLM. Здания (фор
 - `zone_zone`: `zone_index_1/2` — индексы зон во входном слое зон.
 - `Доля_наложения_%` — от площади меньшего объекта пары.
 - Нет наложений → `features: []`, `chat_message` = «Наложений земельных участков и
-  территориальных зон не найдено.»
+  территориальных зон не найдено.» (со слоем МО — «Наложений земельных участков,
+  территориальных зон и границ муниципальных образований не найдено.»)
+- Ключи МО в `summary` (`mo_overlaps`, `parcels_in_multiple_mo`, `parcels_outside_mo`,
+  `zones_in_multiple_mo`, `zones_outside_mo`) есть, только если слой МО был загружен и
+  проверен; их отсутствие значит «МО не проверялись», а не «ошибок нет».
 
 Ошибки: `409` — задача не `finished`; `404` — задачи/результата нет, либо в результате нет
 отчёта (задача не `pzz_check` или посчитана до появления проверки — тогда
@@ -1035,7 +1056,7 @@ data: {"type":"zone_review","content":{
 
 ```json
 { "type": "file", "content": {
-  "name": "classified_result",          // машинный id слоя (стабильный ключ): classified_result | input_cadastral | input_zones
+  "name": "classified_result",          // машинный id слоя (стабильный ключ): classified_result | input_cadastral | input_zones | input_mo_boundaries
   "title": "Результат проверки ПЗЗ",    // человекочитаемая подпись (RU) — её и показывать пользователю
   "role": "result",                      // "result" | "input"
   "url": "/files/result/<external_id>",   // долговечная относительная ссылка (не протухает)
@@ -1068,6 +1089,7 @@ data: {"type":"zone_review","content":{
 | Входной кадастр (`pzz_check` / `classify_only`) | `input_cadastral` | Исходные участки | `input_parcels.geojson` |
 | Входные объекты (`building_pzz_check`) | `input_cadastral` | Исходные здания и сервисы | `input_buildings_and_services.geojson` |
 | Входные зоны | `input_zones` | Зоны ПЗЗ | `pzz_zones.geojson` |
+| Входные границы МО (если загружены) | `input_mo_boundaries` | Границы муниципальных образований | `mo_boundaries.geojson` |
 
 > Раньше `filename` был опаковым хешем (`<external_id>.geojson`). Теперь он человекочитаемый и
 > зависит от режима; `title` — новое поле. Если раньше вы показывали в чипе `filename`, он сам

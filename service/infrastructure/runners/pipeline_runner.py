@@ -46,6 +46,11 @@ class InProcessPipelineRunner(PipelineRunner):
         module = importlib.import_module(module_name)
         pipeline_callable = getattr(module, callable_name)
 
+        # Passed only when present, so callables that predate the optional
+        # municipal boundary layer keep working.
+        extra_kwargs = {}
+        if request.mo_boundaries_data_path:
+            extra_kwargs["mo_boundaries_features_path"] = request.mo_boundaries_data_path
         pipeline_callable(
             cadastral_features_path=request.cadastral_data_path,
             pzz_zones_features_path=request.pzz_zones_data_path,
@@ -57,6 +62,7 @@ class InProcessPipelineRunner(PipelineRunner):
             pzz_zone_name_col=request.pzz_zone_name_col,
             task_external_id=request.task_external_id,
             outputs_dir=str(output_dir),
+            **extra_kwargs,
         )
 
         return _build_output_glob(output_dir, request.task_external_id)
@@ -89,6 +95,7 @@ class SubprocessPipelineRunner(PipelineRunner):
         env = os.environ.copy()
         env["CADASTRAL_FEATURES_PATH"] = request.cadastral_data_path
         env["PZZ_ZONES_FEATURES_PATH"] = request.pzz_zones_data_path
+        env["MO_BOUNDARIES_FEATURES_PATH"] = request.mo_boundaries_data_path
         env["PZZ_ZONE_VRI_LABELS_PATH"] = request.pzz_zone_vri_labels_path
         env["VRI_CLASSIFIER_PATH"] = request.vri_classifier_path
         env["INCLUDE_PZZ_CHECK"] = "1" if request.include_pzz_check else "0"
@@ -183,6 +190,9 @@ class StorageAwarePipelineRunner(PipelineRunner):
             ),
             pzz_zones_data_path=materialise(
                 request.pzz_zones_data_path, "pzz_zones_feature_collection.geojson"
+            ),
+            mo_boundaries_data_path=materialise(
+                request.mo_boundaries_data_path, "mo_boundaries_feature_collection.geojson"
             ),
             pzz_zone_vri_labels_path=materialise(
                 request.pzz_zone_vri_labels_path, "pzz_zone_vri_labels.json"

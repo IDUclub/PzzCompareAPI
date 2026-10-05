@@ -181,6 +181,7 @@ _PZZ_ONLY_SOURCE_COLUMNS = (
     'OVERLAP_INTERSECT_ZONES',      # Пересекаемые_зоны
     'OVERLAP_ACTUAL_ZONE_SHARE_PCT',  # Доля_в_фактической_зоне_%
     'OVERLAP_NOTES',                # Наложения
+    'OVERLAP_MO',                   # Муниципальные_образования
 )
 
 
@@ -210,7 +211,7 @@ def select_and_rename_result_columns(gdf: gpd.GeoDataFrame, cadastral_vri_col: s
     # which is intentionally not exposed. Classifier-only runs never touch PZZ
     # zones at all, so the same column is exposed as ``Статус_классификации``
     # instead — a field literally named "ПЗЗ" with no PZZ involved is misleading.
-    column_mapping: Dict[str, str] = {cadastral_vri_col: 'ВРИ_ЕГРН', 'PZZ_ACTUAL_CODE_x': 'Код фактической зоны нахождения кадастра', 'PZZ_ACTUAL_NAME_x': 'Название фактической зоны нахождения кадастра', 'OVERLAP_INTERSECT_ZONES': 'Пересекаемые_зоны', 'OVERLAP_ACTUAL_ZONE_SHARE_PCT': 'Доля_в_фактической_зоне_%', 'OVERLAP_NOTES': 'Наложения', 'CHECK_SCOPE': 'Область_проверки', 'Статус': 'Вердикт_ПЗЗ' if include_pzz_check else 'Статус_классификации', 'PZZ_REASON': 'Причина', 'MATCH_METHOD': 'Метод_сопоставления', 'MATCHED_VRI_NAME': 'Подобранный_ВРИ', 'MATCHED_VRI_CODE': 'Код_подобранного_ВРИ', 'ALLOWED_TOP_CANDIDATE_CODES': 'Код_возможного_подобранного_ВРИ', 'PZZ_NOT_ALLOWED_TOP1_CANDIDATE': 'Топ1_возможный_ВРИ', 'PZZ_NOT_ALLOWED_TOP5_CANDIDATES': 'Топ5_возможных_ВРИ'}
+    column_mapping: Dict[str, str] = {cadastral_vri_col: 'ВРИ_ЕГРН', 'PZZ_ACTUAL_CODE_x': 'Код фактической зоны нахождения кадастра', 'PZZ_ACTUAL_NAME_x': 'Название фактической зоны нахождения кадастра', 'OVERLAP_INTERSECT_ZONES': 'Пересекаемые_зоны', 'OVERLAP_ACTUAL_ZONE_SHARE_PCT': 'Доля_в_фактической_зоне_%', 'OVERLAP_NOTES': 'Наложения', 'OVERLAP_MO': 'Муниципальные_образования', 'CHECK_SCOPE': 'Область_проверки', 'Статус': 'Вердикт_ПЗЗ' if include_pzz_check else 'Статус_классификации', 'PZZ_REASON': 'Причина', 'MATCH_METHOD': 'Метод_сопоставления', 'MATCHED_VRI_NAME': 'Подобранный_ВРИ', 'MATCHED_VRI_CODE': 'Код_подобранного_ВРИ', 'ALLOWED_TOP_CANDIDATE_CODES': 'Код_возможного_подобранного_ВРИ', 'PZZ_NOT_ALLOWED_TOP1_CANDIDATE': 'Топ1_возможный_ВРИ', 'PZZ_NOT_ALLOWED_TOP5_CANDIDATES': 'Топ5_возможных_ВРИ'}
     if not include_pzz_check:
         for pzz_only_column in _PZZ_ONLY_SOURCE_COLUMNS:
             column_mapping.pop(pzz_only_column, None)
