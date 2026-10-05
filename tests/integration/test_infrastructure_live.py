@@ -113,9 +113,7 @@ def test_migrations_build_the_models_and_roll_back(pg_engine, monkeypatch):
     _alembic(monkeypatch, url, "downgrade", "base")
     _alembic(monkeypatch, url, "upgrade", "head")
     with pg_engine.connect() as connection:
-        context = MigrationContext.configure(
-            connection, opts={"compare_type": True}
-        )
+        context = MigrationContext.configure(connection, opts={"compare_type": True})
         drift = compare_metadata(context, Base.metadata)
     # Every model change ships with its migration. Uniqueness is compared by the column
     # sets it covers: the migrations declare a unique constraint beside a plain index
