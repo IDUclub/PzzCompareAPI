@@ -34,6 +34,7 @@ from ..domain.ports.event_repository import EventRepository
 from ..domain.ports.task_repository import TaskRepository
 from ..domain.task_state import ensure_transition
 from ..infrastructure.chat_llm_client import build_chat_llm_client
+from ..infrastructure.geo_ingest import iter_geojson_features
 from ..infrastructure.pzz_mapping import lookup_zone_summary
 from ..infrastructure.storage import get_object_storage, is_remote_path
 from ..models import PipelineTask, TaskEvent, TaskStatus
@@ -381,7 +382,9 @@ async def task_stream_with_report_generator(
       - ``task_event``  per new pipeline event;
       - ``status``      on each status change;
       - ``geojson``     the classified result FeatureCollection (geometry +
-                        verdict properties) when the task finishes;
+                        verdict properties) when the task finishes — only up
+                        to ``SSE_INLINE_GEOJSON_MAX_BYTES``; a larger result
+                        comes only as the ``file`` link;
       - ``report``      the object-zone-fit summary when finished (skipped when
                         ``include_report`` is False, e.g. classify-only runs
                         that have no zones);
@@ -447,14 +450,20 @@ async def task_stream_with_report_generator(
                 if current_status == TaskStatus.finished:
                     try:
                         if task.result_path:
-                            geojson = _load_result_geojson(
-                                task.result_path, app_settings.outputs_dir
+                            # A large result is not inlined: the ``file`` event
+                            # below links to it and the client downloads it.
+                            geojson_text = await asyncio.to_thread(
+                                _read_inline_result_geojson,
+                                task.result_path,
+                                app_settings,
                             )
-                            yield ServerSentEvent(
-                                data=json.dumps(geojson), event="geojson"
-                            )
+                            if geojson_text is not None:
+                                yield ServerSentEvent(
+                                    data=geojson_text, event="geojson"
+                                )
                         if include_report:
-                            report = build_object_zone_fit_response(
+                            report = await asyncio.to_thread(
+                                build_object_zone_fit_response,
                                 task,
                                 external_id,
                                 group_by,
@@ -468,8 +477,8 @@ async def task_stream_with_report_generator(
                         yield ServerSentEvent(
                             data=json.dumps({"error": exc.detail}), event="error"
                         )
-                    # Durable link(s) to the result layer(s) (alongside inline geojson,
-                    # so the frontend can switch to download-by-link for big files).
+                    # Durable link(s) to the result layer(s): alongside the inline
+                    # geojson, and the only way to get a result too big to inline.
                     # building_pzz_check yields two — здания + сервисы.
                     for layer in build_result_geo_layers(
                         task, external_id, app_settings, request, scenario=scenario
@@ -856,12 +865,16 @@ async def task_stream_with_chat_generator(
                     if include_report:
                         try:
                             if report_kind == "classify":
-                                report = build_classify_summary_response(
-                                    task, external_id, app_settings
+                                report = await asyncio.to_thread(
+                                    build_classify_summary_response,
+                                    task,
+                                    external_id,
+                                    app_settings,
                                 )
                                 report_event = "classify_summary"
                             else:
-                                report = build_object_zone_fit_response(
+                                report = await asyncio.to_thread(
+                                    build_object_zone_fit_response,
                                     task,
                                     external_id,
                                     group_by,
@@ -1501,21 +1514,49 @@ _STATUS_CORRECT = {"Разрешен", "Условно разрешен", "Ра�
 _STATUS_WRONG = {"Не разрешен"}
 
 
-def _load_result_geojson(result_path: str, outputs_dir: str) -> dict[str, Any]:
-    """Read a task result (local or MinIO) and return parsed GeoJSON dict."""
+def _local_result_path(result_path: str, outputs_dir: str) -> Path:
+    """Local file of a task result, downloading a MinIO result into the cache."""
     if is_remote_path(result_path):
         cache_root = Path(outputs_dir)
         cache_root.mkdir(parents=True, exist_ok=True)
         cache_path = cache_root / result_path.split("/")[-1]
         if not cache_path.is_file():
             get_object_storage().download_file(result_path, str(cache_path))
-        local_path = cache_path
-    else:
-        local_path = Path(result_path).resolve()
-        if not local_path.is_file():
-            raise HTTPException(status_code=404, detail="Task result file not found")
-    with local_path.open("rb") as fh:
+        return cache_path
+    local_path = Path(result_path).resolve()
+    if not local_path.is_file():
+        raise HTTPException(status_code=404, detail="Task result file not found")
+    return local_path
+
+
+def _load_result_geojson(result_path: str, outputs_dir: str) -> dict[str, Any]:
+    """Read a task result (local or MinIO) and return parsed GeoJSON dict.
+
+    Holds the whole layer in memory. The reports walk the result with
+    :func:`iter_geojson_features` instead, so they stay cheap on big results.
+    """
+    with _local_result_path(result_path, outputs_dir).open("rb") as fh:
         return json.load(fh)
+
+
+def _read_inline_result_geojson(result_path: str, app_settings: Settings) -> str | None:
+    """The result GeoJSON as one SSE-safe line, or None when it is too large.
+
+    The file is sent as-is instead of ``json.load`` + ``json.dumps``. Raw CR/LF
+    can only sit between JSON tokens (never inside a string), so dropping them
+    keeps the document valid and the SSE event a single ``data:`` line.
+    """
+    local_path = _local_result_path(result_path, app_settings.outputs_dir)
+    size = local_path.stat().st_size
+    if size > app_settings.sse_inline_geojson_max_bytes:
+        logger.info(
+            "Result %s is %d bytes; not inlining it into the SSE stream",
+            result_path,
+            size,
+        )
+        return None
+    text = local_path.read_text(encoding="utf-8-sig")
+    return text.replace("\r", "").replace("\n", "")
 
 
 def _classify_verdict(status: str | None) -> str:
@@ -1794,22 +1835,57 @@ def build_object_zone_fit_response(
     if not task.result_path:
         raise HTTPException(status_code=404, detail="Task has no result")
 
+    # One streaming pass over the result: the report needs feature properties
+    # only, and parsing a large result whole costs gigabytes of API memory.
+    members: dict[str, Any] = {}
+    rows: list[dict[str, Any]] = []
+    # Building checks mark every result feature explicitly. Prefer that artifact
+    # marker over task metadata so reports for older/reloaded task objects still
+    # use the right terminology.
+    building_marked = False
     try:
-        geojson = _load_result_geojson(task.result_path, app_settings.outputs_dir)
+        result_file = _local_result_path(task.result_path, app_settings.outputs_dir)
+        for idx, feature in enumerate(iter_geojson_features(result_file, members)):
+            props = feature.get("properties") or {}
+            if props.get(_COL_CATEGORY) in {"Здание", "Сервис"}:
+                building_marked = True
+            verdict = props.get(_COL_VERDICT)
+            fit = _classify_verdict(verdict)
+            rows.append(
+                {
+                    "feature_index": idx,
+                    "vri_text": _first_prop(
+                        props, _COL_OBJECT_TYPE_TEXT, _COL_VRI_TEXT
+                    ),
+                    "zone_type_id": props.get(_COL_ZONE_CODE),
+                    "zone_name": props.get(_COL_ZONE_NAME),
+                    "verdict": verdict,
+                    "is_in_correct_zone": fit == "correct",
+                    "fit": fit,
+                    "reason": props.get(_COL_REASON),
+                    "matched_vri_name": _first_prop(
+                        props, _COL_OBJECT_USE_NAME, _COL_MATCHED_VRI_NAME
+                    ),
+                    "matched_vri_code": _first_prop(
+                        props, _COL_OBJECT_USE_CODE, _COL_MATCHED_VRI_CODE
+                    ),
+                    "resolution_basis": _first_prop(
+                        props, _COL_RESOLUTION_BASIS, _COL_RESOLUTION_BASIS_LEGACY
+                    ),
+                    # Dropped below unless this turns out to be a building check.
+                    "category": _building_feature_category(props),
+                }
+            )
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to load result GeoJSON for task %s", task.external_id)
         raise HTTPException(status_code=503, detail=RESULT_LOAD_FAILED_MESSAGE) from exc
 
-    # Building checks mark every result feature explicitly. Prefer that artifact
-    # marker over task metadata so reports for older/reloaded task objects still
-    # use the right terminology.
-    result_features = geojson.get("features") or []
-    building_mode = _is_building_task(task) or any(
-        (feature.get("properties") or {}).get(_COL_CATEGORY) in {"Здание", "Сервис"}
-        for feature in result_features
-    )
+    building_mode = _is_building_task(task) or building_marked
+    if not building_mode:
+        for row in rows:
+            del row["category"]
     # A scenario check is also a building check (buildings + services) but keeps
     # its own «объекты сценария» wording.
     if scenario:
@@ -1818,34 +1894,6 @@ def build_object_zone_fit_response(
         subject = SUBJECT_BUILDING
     else:
         subject = SUBJECT_PARCEL
-
-    rows: list[dict[str, Any]] = []
-    for idx, feature in enumerate(result_features):
-        props = feature.get("properties") or {}
-        verdict = props.get(_COL_VERDICT)
-        fit = _classify_verdict(verdict)
-        row = {
-            "feature_index": idx,
-            "vri_text": _first_prop(props, _COL_OBJECT_TYPE_TEXT, _COL_VRI_TEXT),
-            "zone_type_id": props.get(_COL_ZONE_CODE),
-            "zone_name": props.get(_COL_ZONE_NAME),
-            "verdict": verdict,
-            "is_in_correct_zone": fit == "correct",
-            "fit": fit,
-            "reason": props.get(_COL_REASON),
-            "matched_vri_name": _first_prop(
-                props, _COL_OBJECT_USE_NAME, _COL_MATCHED_VRI_NAME
-            ),
-            "matched_vri_code": _first_prop(
-                props, _COL_OBJECT_USE_CODE, _COL_MATCHED_VRI_CODE
-            ),
-            "resolution_basis": _first_prop(
-                props, _COL_RESOLUTION_BASIS, _COL_RESOLUTION_BASIS_LEGACY
-            ),
-        }
-        if building_mode:
-            row["category"] = _building_feature_category(props)
-        rows.append(row)
 
     by_verdict: dict[str, int] = {}
     for r in rows:
@@ -1865,7 +1913,7 @@ def build_object_zone_fit_response(
         # "требуют ручной проверки" by reason without recomputing.
         "by_verdict": by_verdict,
     }
-    zone_polygons_count = (geojson.get(_ZONE_STATS_KEY) or {}).get("zones_count")
+    zone_polygons_count = (members.get(_ZONE_STATS_KEY) or {}).get("zones_count")
     if isinstance(zone_polygons_count, int):
         summary["zone_polygons_count"] = zone_polygons_count
     if building_mode:
@@ -1989,32 +2037,36 @@ def build_classify_summary_response(
     if not task.result_path:
         raise HTTPException(status_code=404, detail="Task has no result")
 
+    rows: list[dict[str, Any]] = []
     try:
-        geojson = _load_result_geojson(task.result_path, app_settings.outputs_dir)
+        result_file = _local_result_path(task.result_path, app_settings.outputs_dir)
+        for idx, feature in enumerate(iter_geojson_features(result_file, {})):
+            props = feature.get("properties") or {}
+            top1 = props.get(_COL_TOP1_CANDIDATE)
+            top5 = props.get(_COL_TOP5_CANDIDATES)
+            matched_vri = (
+                top1.strip() if isinstance(top1, str) and top1.strip() else None
+            )
+            rows.append(
+                {
+                    "feature_index": idx,
+                    "vri_text": props.get(_COL_VRI_TEXT),
+                    "matched_vri": matched_vri,
+                    "candidates": (
+                        top5 if isinstance(top5, str) and top5.strip() else None
+                    ),
+                    "reason": props.get(_COL_REASON),
+                    # Reuse the object-zone-fit "fit" vocabulary so the shared
+                    # grounding context builder can surface the no-candidate
+                    # objects on big runs.
+                    "fit": "matched" if matched_vri else "unclear",
+                }
+            )
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to load result GeoJSON for task %s", task.external_id)
         raise HTTPException(status_code=503, detail=RESULT_LOAD_FAILED_MESSAGE) from exc
-
-    rows: list[dict[str, Any]] = []
-    for idx, feature in enumerate(geojson.get("features") or []):
-        props = feature.get("properties") or {}
-        top1 = props.get(_COL_TOP1_CANDIDATE)
-        top5 = props.get(_COL_TOP5_CANDIDATES)
-        matched_vri = top1.strip() if isinstance(top1, str) and top1.strip() else None
-        rows.append(
-            {
-                "feature_index": idx,
-                "vri_text": props.get(_COL_VRI_TEXT),
-                "matched_vri": matched_vri,
-                "candidates": top5 if isinstance(top5, str) and top5.strip() else None,
-                "reason": props.get(_COL_REASON),
-                # Reuse the object-zone-fit "fit" vocabulary so the shared grounding
-                # context builder can surface the no-candidate objects on big runs.
-                "fit": "matched" if matched_vri else "unclear",
-            }
-        )
 
     summary = {
         "total": len(rows),

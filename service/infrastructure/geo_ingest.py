@@ -11,6 +11,7 @@ cost unless a non-GeoJSON upload actually needs conversion.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -125,6 +126,195 @@ def ensure_wgs84(feature_collection: dict[str, Any]) -> None:
     for x, y in positions:
         if abs(x) > _LON_LIMIT or abs(y) > _LAT_LIMIT:
             return _raise_out_of_range(x, y)
+
+
+# Reading a FeatureCollection head instead of the whole file: ``json.load`` of a
+# 400 MB layer builds several GB of Python objects in the API process just to
+# check its CRS, which only looks at the first ``_CRS_SCAN_FEATURES`` features.
+_HEAD_CHUNK_CHARS = 1 << 20
+# One feature larger than this is not a layer we can process anyway.
+_HEAD_MAX_BUFFER_CHARS = 64 << 20
+
+
+class _HeadReader:
+    """Incremental JSON value reader over a text file (no full parse)."""
+
+    def __init__(self, fh) -> None:
+        self._fh = fh
+        self._buf = ""
+        self._pos = 0
+        self._eof = False
+        self._decoder = json.JSONDecoder()
+
+    def _fill(self) -> bool:
+        if self._eof:
+            return False
+        try:
+            chunk = self._fh.read(_HEAD_CHUNK_CHARS)
+        except UnicodeDecodeError as exc:
+            raise GeoIngestError("file is not UTF-8 JSON") from exc
+        if not chunk:
+            self._eof = True
+            return False
+        self._buf = self._buf[self._pos:] + chunk
+        self._pos = 0
+        if len(self._buf) > _HEAD_MAX_BUFFER_CHARS:
+            raise GeoIngestError("a single GeoJSON value is too large")
+        return True
+
+    def peek(self) -> str:
+        """Next non-whitespace character ('' at end of file)."""
+        while True:
+            while self._pos < len(self._buf) and self._buf[self._pos] in " \t\r\n":
+                self._pos += 1
+            if self._pos < len(self._buf):
+                return self._buf[self._pos]
+            if not self._fill():
+                return ""
+
+    def expect(self, char: str) -> None:
+        if self.peek() != char:
+            raise GeoIngestError(f"expected {char!r} in GeoJSON")
+        self._pos += 1
+
+    def value(self) -> Any:
+        self.peek()
+        while True:
+            try:
+                value, end = self._decoder.raw_decode(self._buf, self._pos)
+            except json.JSONDecodeError as exc:
+                # Truncated by the chunk boundary: read more and retry.
+                if not self._fill():
+                    raise GeoIngestError("invalid JSON") from exc
+                continue
+            if end == len(self._buf) and not self._eof and not isinstance(value, (dict, list, str)):
+                # A number may continue in the next chunk.
+                if self._fill():
+                    continue
+            self._pos = end
+            return value
+
+
+def _last_char(path: Path) -> str:
+    with path.open("rb") as fh:
+        fh.seek(0, 2)
+        size = fh.tell()
+        fh.seek(max(0, size - 1024))
+        return fh.read().decode("utf-8", "ignore").rstrip()[-1:]
+
+
+def read_geojson_light(
+    path: Path,
+    *,
+    max_features: int | None = _CRS_SCAN_FEATURES,
+    geometry_features: int = _CRS_SCAN_FEATURES,
+) -> Any:
+    """Parse a GeoJSON file without holding the whole layer in memory.
+
+    The members around ``features`` (``type``, ``crs``, ``name``) are read in
+    full. Of the feature array only the first ``max_features`` features are
+    kept (``None`` = all of them; the rest of the file is then only checked to
+    end with ``}``), and only the first ``geometry_features`` of those keep
+    their geometry — the rest get ``geometry: None``. That is enough for the
+    top-level type, ``crs`` and :func:`ensure_wgs84` (the head), or for column
+    profiling (all properties, no coordinates). A non-object top level is
+    returned parsed as-is. Raises :class:`GeoIngestError` on malformed JSON.
+    """
+    with path.open("r", encoding="utf-8-sig") as fh:
+        reader = _HeadReader(fh)
+        if reader.peek() != "{":
+            return reader.value()
+        reader.expect("{")
+        result: dict[str, Any] = {}
+        truncated = False
+        if reader.peek() == "}":
+            return result
+        while True:
+            key = reader.value()
+            if not isinstance(key, str):
+                raise GeoIngestError("invalid JSON object key")
+            reader.expect(":")
+            if key == "features" and reader.peek() == "[":
+                reader.expect("[")
+                features: list[Any] = []
+                result[key] = features
+                if reader.peek() == "]":
+                    reader.expect("]")
+                else:
+                    while True:
+                        if max_features is not None and len(features) >= max_features:
+                            truncated = True
+                            break
+                        feature = reader.value()
+                        if len(features) >= geometry_features and isinstance(feature, dict):
+                            feature["geometry"] = None
+                        features.append(feature)
+                        if reader.peek() == ",":
+                            reader.expect(",")
+                            continue
+                        reader.expect("]")
+                        break
+                if truncated:
+                    break
+            else:
+                result[key] = reader.value()
+            if reader.peek() == ",":
+                reader.expect(",")
+                continue
+            reader.expect("}")
+            if reader.peek() != "":
+                raise GeoIngestError("trailing data after JSON")
+            return result
+    if _last_char(path) != "}":
+        raise GeoIngestError("GeoJSON is truncated")
+    return result
+
+
+def iter_geojson_features(
+    path: Path, members: dict[str, Any]
+) -> Iterator[dict[str, Any]]:
+    """Yield a FeatureCollection's features one at a time.
+
+    Only one feature is held in memory at once, so a report over a 1 GB result
+    costs what it keeps, not several GB of parsed geometry. The other top-level
+    members (``type``, ``zone_stats``, …) are stored into ``members``; they are
+    complete only once the iterator is exhausted, since a writer may put them
+    after ``features``. Raises :class:`GeoIngestError` on malformed JSON.
+    """
+    with path.open("r", encoding="utf-8-sig") as fh:
+        reader = _HeadReader(fh)
+        reader.expect("{")
+        if reader.peek() == "}":
+            reader.expect("}")
+        else:
+            while True:
+                key = reader.value()
+                if not isinstance(key, str):
+                    raise GeoIngestError("invalid JSON object key")
+                reader.expect(":")
+                if key == "features" and reader.peek() == "[":
+                    reader.expect("[")
+                    if reader.peek() == "]":
+                        reader.expect("]")
+                    else:
+                        while True:
+                            feature = reader.value()
+                            if isinstance(feature, dict):
+                                yield feature
+                            if reader.peek() == ",":
+                                reader.expect(",")
+                                continue
+                            reader.expect("]")
+                            break
+                else:
+                    members[key] = reader.value()
+                if reader.peek() == ",":
+                    reader.expect(",")
+                    continue
+                reader.expect("}")
+                break
+        if reader.peek() != "":
+            raise GeoIngestError("trailing data after JSON")
 
 
 def _raise_out_of_range(x: float, y: float) -> None:

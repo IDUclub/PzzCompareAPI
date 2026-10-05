@@ -29,6 +29,8 @@ SPATIAL_MIN_INTERSECTION_SHARE = max(
     0.0,
     float(os.getenv("SPATIAL_MIN_INTERSECTION_SHARE", "0.000001")),
 )
+# Threads for the parcel/zone overlay on large layers (GEOS releases the GIL).
+SPATIAL_JOIN_WORKERS = max(1, int(os.getenv("SPATIAL_JOIN_WORKERS", "4")))
 NOT_ALLOWED_LLM_RERANK_ENABLED = _env_bool("NOT_ALLOWED_LLM_RERANK_ENABLED", True)
 NOT_ALLOWED_LLM_RERANK_THINK = os.getenv("NOT_ALLOWED_LLM_RERANK_THINK", "false").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -92,3 +94,6 @@ LLM_MODEL = os.getenv("LLM_MODEL", os.getenv("GENERATE_MODEL", "gpt-oss-20b" if 
 # same zone shares a long token prefix, which the backend's prefix cache reuses
 # instead of prefilling the whole regulation text again.
 ZONE_CHECK_PROMPT_ZONE_FIRST = _env_bool("ZONE_CHECK_PROMPT_ZONE_FIRST", False)
+# The .xlsx copy of the result table is a debugging aid the service never serves;
+# openpyxl needs ~80 s per 200k rows, so larger results skip it (0 = never write).
+RESULT_XLSX_MAX_ROWS = max(0, int(os.getenv("RESULT_XLSX_MAX_ROWS", "50000")))

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 
 from .common import *
@@ -185,6 +188,122 @@ def _empty_spatial_result(parcels: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+# Below this many parcels a single overlay call is faster than chunking.
+_PARALLEL_OVERLAY_MIN_PARCELS = 20_000
+
+
+def _overlay_intersection(parcels: gpd.GeoDataFrame, zones: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Intersect parcels with zones, splitting large layers across threads.
+
+    Each parcel is intersected independently, so chunking the parcels gives the
+    same pieces as one call; GEOS releases the GIL, so threads scale.
+    """
+    workers = min(SPATIAL_JOIN_WORKERS, os.cpu_count() or 1)
+    if workers < 2 or len(parcels) < _PARALLEL_OVERLAY_MIN_PARCELS:
+        return gpd.overlay(parcels, zones, how='intersection', keep_geom_type=False)
+    chunks = np.array_split(np.arange(len(parcels)), workers * 4)
+
+    def _run(positions: np.ndarray) -> gpd.GeoDataFrame:
+        return gpd.overlay(parcels.iloc[positions], zones, how='intersection', keep_geom_type=False)
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        parts = [part for part in executor.map(_run, chunks) if not part.empty]
+    if not parts:
+        return _run(chunks[0])
+    return pd.concat(parts, ignore_index=True)
+
+
+def _merge_pieces_per_zone(
+    overlay_part: gpd.GeoDataFrame,
+    zone_code_col: str,
+    zone_name_col: Optional[str],
+) -> gpd.GeoDataFrame:
+    """Collapse overlay pieces to one geometry per (parcel, zone code).
+
+    Only pairs split into several pieces need a geometric union (overlapping
+    features of one zone must not be counted twice); dissolving every pair
+    runs a Python-level union per group and dominates large inputs.
+    """
+    keep_cols = ['__cad_id__', zone_code_col, 'geometry', '__parcel_size__']
+    if zone_name_col and zone_name_col in overlay_part.columns:
+        keep_cols.append(zone_name_col)
+    overlay_part = overlay_part[keep_cols]
+    split = overlay_part.duplicated(['__cad_id__', zone_code_col], keep=False)
+    if not split.any():
+        return overlay_part.copy()
+    dissolve_agg = {col: 'first' for col in keep_cols[3:]}
+    merged = overlay_part.loc[split].dissolve(
+        by=['__cad_id__', zone_code_col],
+        as_index=False,
+        aggfunc=dissolve_agg,
+    )
+    return pd.concat(
+        [overlay_part.loc[~split], merged[keep_cols]],
+        ignore_index=True,
+    )
+
+
+def _summarize_dominant_zones(
+    overlay: pd.DataFrame,
+    zone_code_col: str,
+    zone_name_col: Optional[str],
+) -> pd.DataFrame:
+    """Pick each parcel's dominant zone from its per-zone intersection sizes.
+
+    Zones are ranked by total intersection size; ties keep zone-code order.
+    """
+    has_name = bool(zone_name_col and zone_name_col in overlay.columns)
+    agg: dict[str, str] = {'__intersection_size__': 'sum', '__parcel_size__': 'first'}
+    if has_name:
+        agg[zone_name_col] = 'first'
+    sizes = overlay.groupby(['__cad_id__', zone_code_col], sort=True, as_index=False).agg(agg)
+    sizes = sizes.sort_values(
+        ['__cad_id__', '__intersection_size__'],
+        ascending=[True, False],
+        kind='stable',
+    )
+    dominant = sizes.drop_duplicates('__cad_id__', keep='first').set_index('__cad_id__')
+    # Most parcels lie in one zone: collect code lists only where there are several.
+    zone_count = sizes.groupby('__cad_id__', sort=False).size()
+    intersect_codes = dominant[zone_code_col].map(lambda code: collect_unique_codes([code]))
+    several = sizes.loc[sizes['__cad_id__'].map(zone_count) > 1]
+    if not several.empty:
+        lists = several.groupby('__cad_id__', sort=False)[zone_code_col].agg(list)
+        intersect_codes.loc[lists.index] = lists.map(collect_unique_codes)
+
+    dominant_area = dominant['__intersection_size__'].astype(float)
+    parcel_area = dominant['__parcel_size__'].astype(float)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        dominant_share = (dominant_area / parcel_area).where(parcel_area > 0)
+    code_count = intersect_codes.map(len)
+    multiple = code_count > 1
+    note = np.select(
+        [multiple & (dominant_share < DOMINANT_PZZ_MIN_SHARE), multiple],
+        [
+            'Dominant zone share is below threshold; parcel intersects multiple PZZ zones.',
+            'Parcel intersects multiple PZZ zones.',
+        ],
+        default='',
+    )
+
+    def _or_na(values: Any) -> np.ndarray:
+        return np.array([value or pd.NA for value in values], dtype=object)
+
+    actual_names = dominant[zone_name_col].map(normalize_text) if has_name else pd.Series('', index=dominant.index)
+    return pd.DataFrame(
+        {
+            '__cad_id__': dominant.index.to_numpy(),
+            'PZZ_ACTUAL_CODE': _or_na(dominant[zone_code_col].map(normalize_text)),
+            'PZZ_ACTUAL_NAME': _or_na(actual_names),
+            'PZZ_INTERSECT_CODES': _or_na(intersect_codes.map(' | '.join)),
+            'PZZ_INTERSECT_COUNT': code_count.to_numpy(),
+            'PZZ_ACTUAL_INTERSECTION_AREA': dominant_area.to_numpy(),
+            'PZZ_ACTUAL_SHARE': dominant_share.to_numpy(),
+            'PZZ_SPATIAL_NOTE': _or_na(note.tolist()),
+        }
+    )
+
+
 def attach_spatial_pzz_attributes(parcels_gdf: gpd.GeoDataFrame, pzz_gdf: gpd.GeoDataFrame, zone_code_col: str='PZZ', zone_name_col: Optional[str]=None) -> pd.DataFrame:
     """Attach dominant factual PZZ attributes to parcels.
 
@@ -232,17 +351,10 @@ def attach_spatial_pzz_attributes(parcels_gdf: gpd.GeoDataFrame, pzz_gdf: gpd.Ge
             parcels_part.geometry,
             geom_family,
         ).to_numpy()
-        overlay_part = gpd.overlay(parcels_part, pzz_metric, how='intersection', keep_geom_type=False)
+        overlay_part = _overlay_intersection(parcels_part, pzz_metric)
         if overlay_part.empty:
             continue
-        dissolve_agg: dict[str, str] = {'__parcel_size__': 'first'}
-        if zone_name_col and zone_name_col in overlay_part.columns:
-            dissolve_agg[zone_name_col] = 'first'
-        overlay_part = overlay_part.dissolve(
-            by=['__cad_id__', zone_code_col],
-            as_index=False,
-            aggfunc=dissolve_agg,
-        )
+        overlay_part = _merge_pieces_per_zone(overlay_part, zone_code_col, zone_name_col)
         overlay_part['__intersection_size__'] = _measure_geometries(
             overlay_part.geometry,
             geom_family,
@@ -257,27 +369,7 @@ def attach_spatial_pzz_attributes(parcels_gdf: gpd.GeoDataFrame, pzz_gdf: gpd.Ge
     if not overlay_frames:
         return _empty_spatial_result(parcels)
     overlay = pd.concat(overlay_frames, ignore_index=True)
-    rows: list[dict[str, Any]] = []
-    for cad_id, group_df in overlay.groupby('__cad_id__'):
-        size_by_zone = group_df.groupby(zone_code_col, sort=False)['__intersection_size__'].sum().sort_values(ascending=False, kind='stable')
-        dominant_code = size_by_zone.index[0]
-        actual_code = normalize_text(dominant_code)
-        dominant_area = float(size_by_zone.iloc[0])
-        if zone_name_col and zone_name_col in group_df.columns:
-            dominant_rows = group_df.loc[group_df[zone_code_col] == dominant_code].sort_values('__intersection_size__', ascending=False)
-            actual_name = normalize_text(dominant_rows.iloc[0].get(zone_name_col))
-        else:
-            actual_name = ''
-        parcel_area = float(group_df['__parcel_size__'].iloc[0])
-        dominant_share = dominant_area / parcel_area if parcel_area and (not np.isnan(parcel_area)) and (parcel_area > 0) else np.nan
-        intersect_codes = collect_unique_codes(size_by_zone.index.tolist())
-        note = ''
-        if len(intersect_codes) > 1 and pd.notna(dominant_share) and (dominant_share < DOMINANT_PZZ_MIN_SHARE):
-            note = 'Dominant zone share is below threshold; parcel intersects multiple PZZ zones.'
-        elif len(intersect_codes) > 1:
-            note = 'Parcel intersects multiple PZZ zones.'
-        rows.append({'__cad_id__': cad_id, 'PZZ_ACTUAL_CODE': actual_code or pd.NA, 'PZZ_ACTUAL_NAME': actual_name or pd.NA, 'PZZ_INTERSECT_CODES': ' | '.join(intersect_codes) if intersect_codes else pd.NA, 'PZZ_INTERSECT_COUNT': len(intersect_codes), 'PZZ_ACTUAL_INTERSECTION_AREA': dominant_area, 'PZZ_ACTUAL_SHARE': dominant_share, 'PZZ_SPATIAL_NOTE': note or pd.NA})
-    result_df = pd.DataFrame(rows)
+    result_df = _summarize_dominant_zones(overlay, zone_code_col, zone_name_col)
     all_parcels_df = parcels[['__cad_id__']].copy()
     result_df = all_parcels_df.merge(result_df, on='__cad_id__', how='left')
     result_df['PZZ_INTERSECT_COUNT'] = result_df['PZZ_INTERSECT_COUNT'].fillna(0).astype(int)
@@ -304,17 +396,20 @@ def build_source_with_spatial_attributes(
     source_with_spatial_gdf["__cad_id__"] = np.arange(len(source_with_spatial_gdf))
     source_with_spatial_gdf = source_with_spatial_gdf.merge(spatial_attributes_df, on="__cad_id__", how="left")
     source_with_spatial_gdf = source_with_spatial_gdf.drop(columns=["__cad_id__"])
-    source_with_spatial_gdf["__actual_zone_key__"] = source_with_spatial_gdf.apply(
-        lambda row: build_actual_zone_key(vri_text=row.get(vri_col), actual_code=row.get("PZZ_ACTUAL_CODE")),
-        axis=1,
+    vri_values = (
+        source_with_spatial_gdf[vri_col].tolist()
+        if vri_col in source_with_spatial_gdf.columns
+        else [None] * len(source_with_spatial_gdf)
     )
-    source_with_spatial_gdf["__fallback_key__"] = source_with_spatial_gdf.apply(
-        lambda row: build_fallback_key(
-            vri_text=row.get(vri_col),
-            actual_code=row.get("PZZ_ACTUAL_CODE"),
-            intersect_codes=row.get("PZZ_INTERSECT_CODES"),
-        ),
-        axis=1,
-    )
+    actual_codes = source_with_spatial_gdf["PZZ_ACTUAL_CODE"].tolist()
+    intersect_codes = source_with_spatial_gdf["PZZ_INTERSECT_CODES"].tolist()
+    source_with_spatial_gdf["__actual_zone_key__"] = [
+        build_actual_zone_key(vri_text=vri, actual_code=code)
+        for vri, code in zip(vri_values, actual_codes)
+    ]
+    source_with_spatial_gdf["__fallback_key__"] = [
+        build_fallback_key(vri_text=vri, actual_code=code, intersect_codes=codes)
+        for vri, code, codes in zip(vri_values, actual_codes, intersect_codes)
+    ]
     source_with_spatial_gdf["__comparison_key__"] = source_with_spatial_gdf["__fallback_key__"]
     return source_with_spatial_gdf

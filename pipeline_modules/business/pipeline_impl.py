@@ -15,6 +15,7 @@ from .runtime_settings import (
     ENABLE_EMBED_FAST_MATCH as _ENABLE_EMBED_FAST_MATCH,
     ENABLE_LLM as _ENABLE_LLM,
     ENABLE_ZONE_ITEM_EMBED_MATCH as _ENABLE_ZONE_ITEM_EMBED_MATCH,
+    RESULT_XLSX_MAX_ROWS,
 )
 from . import llm_cache, llm_stats
 from .classification_layer import ensure_classification_columns
@@ -773,7 +774,9 @@ def run_pipeline(
     output_gdf.to_file(output_path, driver="GeoJSON")
 
     output_table = pd.DataFrame(output_gdf.drop(columns="geometry", errors="ignore"))
-    output_table.to_excel(unique_results_xlsx_path, index=False)
+    xlsx_written = len(output_table) <= RESULT_XLSX_MAX_ROWS
+    if xlsx_written:
+        output_table.to_excel(unique_results_xlsx_path, index=False)
     output_table.to_json(
         unique_results_json_path, orient="records", force_ascii=False, indent=2
     )
@@ -782,7 +785,11 @@ def run_pipeline(
         "finished",
         duration_ms=int((perf_counter() - write_started) * 1000),
         output_geojson_path=Path(output_geojson_path).name,
-        unique_results_xlsx_path=Path(unique_results_xlsx_path).name,
+        unique_results_xlsx_path=(
+            Path(unique_results_xlsx_path).name
+            if xlsx_written
+            else f"skipped ({len(output_table)} rows > RESULT_XLSX_MAX_ROWS)"
+        ),
         unique_results_json_path=Path(unique_results_json_path).name,
     )
     _log_stage("llm_calls", "finished", summary=llm_stats.format_summary())
