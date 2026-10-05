@@ -92,6 +92,9 @@ jobs:
           fi
 
       # If the first check found mismatches, commit the auto-fixes to the PR branch.
+      # No "[skip ci]" in the message: a push with GITHUB_TOKEN starts no workflows
+      # anyway, while "[skip ci]" on the PR head also skips the version bump that
+      # "Enable auto-merge" starts later, so the required `version` status never came.
       - name: Commit auto-format
         if: steps.check.outputs.clean == 'false'
         run: |
@@ -102,7 +105,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "style: auto-format with black [skip ci]"
+          git commit -m "style: auto-format with black"
           git push origin HEAD:${{ github.head_ref }}
 
       - name: Comment on PR
