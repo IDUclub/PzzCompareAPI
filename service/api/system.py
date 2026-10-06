@@ -47,9 +47,7 @@ def readiness(app_settings: Settings = Depends(get_app_settings)) -> dict[str, s
         broker.close()
     except Exception as exc:  # noqa: BLE001
         logger.exception("Broker ping failed")
-        raise HTTPException(
-            status_code=503, detail=BROKER_UNAVAILABLE_MESSAGE
-        ) from exc
+        raise HTTPException(status_code=503, detail=BROKER_UNAVAILABLE_MESSAGE) from exc
     return {"status": "ready"}
 
 
@@ -84,9 +82,7 @@ def get_logs(
         raw_entries = r.lrange(LOG_STREAM_KEY, 0, fetch_n - 1)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Reading the aggregated log stream from Redis failed")
-        raise HTTPException(
-            status_code=503, detail=REDIS_UNAVAILABLE_MESSAGE
-        ) from exc
+        raise HTTPException(status_code=503, detail=REDIS_UNAVAILABLE_MESSAGE) from exc
 
     result: list[dict[str, Any]] = []
     level_upper = level.upper() if level else None

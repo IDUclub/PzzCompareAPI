@@ -50,7 +50,9 @@ class InProcessPipelineRunner(PipelineRunner):
         # municipal boundary layer keep working.
         extra_kwargs = {}
         if request.mo_boundaries_data_path:
-            extra_kwargs["mo_boundaries_features_path"] = request.mo_boundaries_data_path
+            extra_kwargs["mo_boundaries_features_path"] = (
+                request.mo_boundaries_data_path
+            )
         pipeline_callable(
             cadastral_features_path=request.cadastral_data_path,
             pzz_zones_features_path=request.pzz_zones_data_path,
@@ -192,7 +194,8 @@ class StorageAwarePipelineRunner(PipelineRunner):
                 request.pzz_zones_data_path, "pzz_zones_feature_collection.geojson"
             ),
             mo_boundaries_data_path=materialise(
-                request.mo_boundaries_data_path, "mo_boundaries_feature_collection.geojson"
+                request.mo_boundaries_data_path,
+                "mo_boundaries_feature_collection.geojson",
             ),
             pzz_zone_vri_labels_path=materialise(
                 request.pzz_zone_vri_labels_path, "pzz_zone_vri_labels.json"

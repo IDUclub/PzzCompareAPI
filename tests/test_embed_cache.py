@@ -30,7 +30,10 @@ class FetchSpy:
 
     def __call__(self, texts: list[str]) -> list[list[float]]:
         self.calls.append(list(texts))
-        return [[float(len(text) + index)] * self.dimension for index, text in enumerate(texts)]
+        return [
+            [float(len(text) + index)] * self.dimension
+            for index, text in enumerate(texts)
+        ]
 
     @property
     def embedded(self) -> list[str]:
@@ -134,9 +137,13 @@ def test_vectorizer_client_embeds_each_text_once(tmp_path, monkeypatch) -> None:
     from pipeline_modules.business.clients import VectorizerClient
 
     fetch = FetchSpy()
-    client = VectorizerClient(url="http://vectorizer.test/v1/embeddings", model="model-a")
+    client = VectorizerClient(
+        url="http://vectorizer.test/v1/embeddings", model="model-a"
+    )
     monkeypatch.setattr(
-        VectorizerClient, "_embed_in_batches", lambda self, texts, batch_size: fetch(texts)
+        VectorizerClient,
+        "_embed_in_batches",
+        lambda self, texts, batch_size: fetch(texts),
     )
 
     first = client.embed_many(["магазины", "склады"])
