@@ -29,7 +29,12 @@ SPATIAL_MIN_INTERSECTION_SHARE = max(
     0.0,
     float(os.getenv("SPATIAL_MIN_INTERSECTION_SHARE", "0.000001")),
 )
-NOT_ALLOWED_LLM_RERANK_ENABLED = _env_bool("NOT_ALLOWED_LLM_RERANK_ENABLED", True)
+# Overlap checks (overlap_layer): an overlap of parcels, of zones, or a parcel's
+# piece in a second zone is reported only when it exceeds BOTH thresholds —
+# smaller ones are digitising noise, not a defect of the data.
+OVERLAP_MIN_AREA_M2 = max(0.0, float(os.getenv("OVERLAP_MIN_AREA_M2", "1.0")))
+OVERLAP_MIN_SHARE = max(0.0, float(os.getenv("OVERLAP_MIN_SHARE", "0.001")))
+NOT_ALLOWED_LLM_RERANK_ENABLED =_env_bool("NOT_ALLOWED_LLM_RERANK_ENABLED", True)
 NOT_ALLOWED_LLM_RERANK_THINK = os.getenv("NOT_ALLOWED_LLM_RERANK_THINK", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 FAST_NAME_STRONG_THRESHOLD = float(os.getenv("FAST_NAME_STRONG_THRESHOLD", "0.93"))

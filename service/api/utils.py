@@ -19,6 +19,7 @@ _FIELD_TITLES = {
     "pzz_zone_vri_labels_file": "описания зон ПЗЗ",
     "pzz_descriptions_file": "описания зон ПЗЗ",
     "vri_classifier_file": "классификатор ВРИ",
+    "mo_boundaries_feature_collection_file": "слой границ МО",
     "file": "файл",
 }
 

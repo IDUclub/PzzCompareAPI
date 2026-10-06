@@ -28,6 +28,7 @@ class TaskOut(BaseModel):
     external_id: str
     cadastral_data_path: str
     pzz_zones_data_path: str
+    mo_boundaries_data_path: str | None = None
     priority: int
     status: TaskStatus
     include_pzz_check: bool

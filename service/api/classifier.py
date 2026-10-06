@@ -504,6 +504,7 @@ def _create_pipeline_task(
     building_type_col: str | None = None,
     building_service_col: str | None = None,
     building_floors_col: str | None = None,
+    mo_boundaries_file: UploadFile | None = None,
 ) -> TaskOut:
     """Shared logic for both submission endpoints.
 
@@ -537,6 +538,21 @@ def _create_pipeline_task(
         )
     else:
         stored_pzz_zones = ""
+
+    # Optional municipal boundary layer: only feeds the overlap diagnostics, so
+    # it is accepted in any mode but never required.
+    if mo_boundaries_file is not None:
+        stored_mo_boundaries = _ingest_geo_upload(
+            mo_boundaries_file,
+            task_dir,
+            "mo_boundaries_feature_collection.geojson",
+            "mo_boundaries_feature_collection_file",
+            app_settings.max_upload_bytes,
+            external_id,
+            storage,
+        )
+    else:
+        stored_mo_boundaries = ""
 
     if building_upload:
         # The building flow's optional "descriptions" file is a zone→permitted-VRI
@@ -599,6 +615,8 @@ def _create_pipeline_task(
         "pzz_zone_vri_labels_path": stored_labels,
         "vri_classifier_path": stored_classifier,
     }
+    if stored_mo_boundaries:
+        input_paths["mo_boundaries_data_path"] = stored_mo_boundaries
 
     payload = TaskCreate(
         include_pzz_check=include_pzz_check,
@@ -681,10 +699,12 @@ def create_pzz_check_task_endpoint(
     pzz_zones_feature_collection_file: UploadFile | None = File(default=None),
     pzz_zone_vri_labels_file: UploadFile | None = File(default=None),
     vri_classifier_file: UploadFile | None = File(default=None),
+    mo_boundaries_feature_collection_file: UploadFile | None = File(default=None),
     cadastral_feature_collection_upload_id: str | None = Form(default=None),
     pzz_zones_feature_collection_upload_id: str | None = Form(default=None),
     pzz_zone_vri_labels_upload_id: str | None = Form(default=None),
     vri_classifier_upload_id: str | None = Form(default=None),
+    mo_boundaries_feature_collection_upload_id: str | None = Form(default=None),
     cadastral_vri_col: str = Form(..., min_length=1),
     pzz_zone_code_col: str = Form(..., min_length=1),
     pzz_zone_name_col: str = Form(..., min_length=1),
@@ -706,6 +726,10 @@ def create_pzz_check_task_endpoint(
     validates the cadastral VRI text against the PZZ zone definition.
 
     Each layer arrives either as a body part or as the id of a prior ``POST /uploads``.
+
+    ``mo_boundaries_feature_collection_file`` (optional) is a municipal
+    boundary layer: when given, the overlap report also flags parcels and zones
+    crossing or lying outside МО boundaries and МО polygons overlapping each other.
     """
     scratch = uploads_root(app_settings) / f"resolve-{uuid4().hex}"
     owner_id = user.user_id if user else ""
@@ -746,11 +770,21 @@ def create_pzz_check_task_endpoint(
             app_settings=app_settings,
             scratch=scratch,
         )
+        mo_boundaries_file = _resolve_file_slot(
+            mo_boundaries_feature_collection_file,
+            mo_boundaries_feature_collection_upload_id,
+            "mo_boundaries_feature_collection_file",
+            required=False,
+            owner_id=owner_id,
+            app_settings=app_settings,
+            scratch=scratch,
+        )
         return _create_pipeline_task(
             cadastral_file=cadastral_file,
             pzz_zones_file=pzz_zones_file,
             labels_file=labels_file,
             classifier_file=classifier_file,
+            mo_boundaries_file=mo_boundaries_file,
             include_pzz_check=True,
             cadastral_vri_col=cadastral_vri_col,
             pzz_zone_code_col=pzz_zone_code_col,
@@ -966,6 +1000,7 @@ async def create_pzz_check_stream_endpoint(
     pzz_zones_feature_collection_file: UploadFile = File(...),
     pzz_zone_vri_labels_file: UploadFile | None = File(default=None),
     vri_classifier_file: UploadFile | None = File(default=None),
+    mo_boundaries_feature_collection_file: UploadFile | None = File(default=None),
     cadastral_vri_col: str = Form(..., min_length=1),
     pzz_zone_code_col: str = Form(..., min_length=1),
     pzz_zone_name_col: str = Form(..., min_length=1),
@@ -998,6 +1033,7 @@ async def create_pzz_check_stream_endpoint(
         pzz_zones_file=pzz_zones_feature_collection_file,
         labels_file=pzz_zone_vri_labels_file,
         classifier_file=vri_classifier_file,
+        mo_boundaries_file=mo_boundaries_feature_collection_file,
         include_pzz_check=True,
         cadastral_vri_col=cadastral_vri_col,
         pzz_zone_code_col=pzz_zone_code_col,
@@ -1102,6 +1138,7 @@ async def create_pzz_check_chat_stream_endpoint(
     pzz_zones_feature_collection_file: UploadFile = File(...),
     pzz_zone_vri_labels_file: UploadFile | None = File(default=None),
     vri_classifier_file: UploadFile | None = File(default=None),
+    mo_boundaries_feature_collection_file: UploadFile | None = File(default=None),
     user_query: str = Form(..., min_length=1),
     cadastral_vri_col: str = Form(..., min_length=1),
     pzz_zone_code_col: str = Form(..., min_length=1),
@@ -1148,6 +1185,7 @@ async def create_pzz_check_chat_stream_endpoint(
         pzz_zones_file=pzz_zones_feature_collection_file,
         labels_file=pzz_zone_vri_labels_file,
         classifier_file=vri_classifier_file,
+        mo_boundaries_file=mo_boundaries_feature_collection_file,
         include_pzz_check=True,
         cadastral_vri_col=cadastral_vri_col,
         pzz_zone_code_col=pzz_zone_code_col,
@@ -1744,6 +1782,7 @@ async def create_auto_chat_stream_endpoint(
     pzz_zone_vri_labels_file: UploadFile | None = File(default=None),
     pzz_descriptions_file: UploadFile | None = File(default=None),
     vri_classifier_file: UploadFile | None = File(default=None),
+    mo_boundaries_feature_collection_file: UploadFile | None = File(default=None),
     mode: str = Form("pzz_check"),
     user_query: str | None = Form(default=None),
     chat_id: str | None = Form(default=None),
@@ -1917,6 +1956,9 @@ async def create_auto_chat_stream_endpoint(
         pzz_zones_file=pzz_zones_feature_collection_file if include_pzz_check else None,
         labels_file=pzz_zone_vri_labels_file,
         classifier_file=vri_classifier_file,
+        mo_boundaries_file=(
+            mo_boundaries_feature_collection_file if include_pzz_check else None
+        ),
         include_pzz_check=include_pzz_check,
         cadastral_vri_col=suggestions["cadastral_vri_col"].value,
         pzz_zone_code_col=(
