@@ -128,6 +128,9 @@ def create_task(
                 if input_paths is not None:
                     existing.cadastral_data_path = input_paths["cadastral_data_path"]
                     existing.pzz_zones_data_path = input_paths["pzz_zones_data_path"]
+                    existing.mo_boundaries_data_path = (
+                        input_paths.get("mo_boundaries_data_path") or None
+                    )
                     existing.pzz_zone_vri_labels_path = input_paths[
                         "pzz_zone_vri_labels_path"
                     ]
@@ -172,6 +175,7 @@ def create_task(
         external_id=external_id,
         cadastral_data_path=input_paths["cadastral_data_path"],
         pzz_zones_data_path=input_paths["pzz_zones_data_path"],
+        mo_boundaries_data_path=input_paths.get("mo_boundaries_data_path") or None,
         pzz_zone_vri_labels_path=input_paths["pzz_zone_vri_labels_path"],
         vri_classifier_path=input_paths["vri_classifier_path"],
         include_pzz_check=payload.include_pzz_check,

@@ -26,3 +26,5 @@ class PipelineRequest:
     building_type_col: str = ""
     building_service_col: str = ""
     building_floors_col: str = ""
+    # Optional municipal boundary layer for the overlap checks; "" when absent.
+    mo_boundaries_data_path: str = ""

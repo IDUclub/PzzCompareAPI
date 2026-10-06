@@ -24,6 +24,7 @@ def _task(
     include_pzz_check=True,
     building_type_col=None,
     building_service_col=None,
+    mo_boundaries_data_path=None,
 ):
     return SimpleNamespace(
         status=status,
@@ -33,6 +34,7 @@ def _task(
         include_pzz_check=include_pzz_check,
         building_type_col=building_type_col,
         building_service_col=building_service_col,
+        mo_boundaries_data_path=mo_boundaries_data_path,
     )
 
 
@@ -430,3 +432,22 @@ def test_files_result_404_for_unknown_task() -> None:
         assert resp.status_code == 404
     finally:
         app_module.app.dependency_overrides.clear()
+
+
+def test_input_layers_include_uploaded_mo_boundaries(monkeypatch) -> None:
+    monkeypatch.setattr(tasks_mod, "get_object_storage", lambda: _StubStorage())
+    task = _task(
+        mo_boundaries_data_path="minio://inputs/abc/mo_boundaries_feature_collection.geojson"
+    )
+
+    layers = build_input_geo_layers(task, "abc123", get_settings())
+
+    assert [layer["name"] for layer in layers] == [
+        "input_cadastral",
+        "input_zones",
+        "input_mo_boundaries",
+    ]
+    mo = layers[-1]
+    assert mo["url"] == "/files/mo_boundaries/abc123"
+    assert mo["title"] == "Границы муниципальных образований"
+    assert mo["filename"] == "mo_boundaries.geojson"

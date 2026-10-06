@@ -26,6 +26,7 @@ from ..dependencies import get_app_settings
 from ..infrastructure.chat_llm_client import build_chat_llm_client
 from ..infrastructure.table_reader import TableReadError, read_table
 from ..settings import Settings
+from .utils import upload_too_large_error
 
 router = APIRouter(prefix="/pzz/zone-descriptions", tags=["zone-descriptions"])
 logger = logging.getLogger("service.api.zone_descriptions")
@@ -59,9 +60,8 @@ async def convert_zone_descriptions(
     """
     data = await file.read()
     if len(data) > app_settings.max_upload_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail=f"file exceeds limit of {app_settings.max_upload_bytes} bytes",
+        raise upload_too_large_error(
+            "file", app_settings.max_upload_bytes, file.filename
         )
     try:
         rows, headers = read_table(data, file.filename or "", sheet=sheet)

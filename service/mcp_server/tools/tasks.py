@@ -132,6 +132,7 @@ USE WHEN: user has BOTH cadastral parcels AND the PZZ zone polygons for the same
 PARAMETERS
 - cadastral_upload_id (string, preferred): id from POST /uploads for the cadastral layer.
 - pzz_zones_upload_id (string, preferred): id from POST /uploads for the zones layer.
+- mo_boundaries_upload_id (string, optional): id from POST /uploads for a municipal (МО) boundary layer. When given, the result's overlap report also flags parcels and zones crossing or lying outside МО boundaries, and МО polygons overlapping each other.
 - cadastral_geojson / pzz_zones_geojson (object, DEPRECATED): inline GeoJSON in EPSG:4326, kept for existing callers.
 - cadastral_vri_col (string, required): name of the property holding the cadastral VRI text in cadastral features.
 - pzz_zone_code_col (string, required): name of the property in PZZ features holding the zone code (e.g. "Индекс_зоны").
@@ -171,6 +172,10 @@ async def submit_pzz_check_task(
     pzz_zones_upload_id: Annotated[
         str | None, "Id from POST /uploads for the PZZ zones layer. Preferred."
     ] = None,
+    mo_boundaries_upload_id: Annotated[
+        str | None,
+        "Optional id from POST /uploads for a municipal (МО) boundary layer.",
+    ] = None,
     cadastral_geojson: Annotated[
         dict[str, Any] | None,
         "DEPRECATED: inline cadastral GeoJSON. Prefer cadastral_upload_id.",
@@ -190,6 +195,7 @@ async def submit_pzz_check_task(
         pzz_zones_geojson=pzz_zones_geojson,
         cadastral_upload_id=cadastral_upload_id,
         pzz_zones_upload_id=pzz_zones_upload_id,
+        mo_boundaries_upload_id=mo_boundaries_upload_id,
         cadastral_vri_col=cadastral_vri_col,
         pzz_zone_code_col=pzz_zone_code_col,
         pzz_zone_name_col=pzz_zone_name_col,
