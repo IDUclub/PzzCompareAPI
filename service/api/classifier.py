@@ -71,6 +71,7 @@ from ..infrastructure.geo_ingest import (
     ensure_wgs84,
     geo_file_to_geojson_dict,
     is_geojson_filename,
+    multifile_part_hint,
     supported_extensions,
 )
 from ..infrastructure.storage import get_object_storage
@@ -88,7 +89,12 @@ from .tasks import (
     task_stream_with_report_generator,
     zone_review_generator,
 )
-from .utils import api_log, stream_upload_to_file
+from .utils import (
+    api_log,
+    field_title,
+    stream_upload_to_file,
+    upload_too_large_error,
+)
 
 router = APIRouter(prefix="/tasks", tags=["classifier"])
 logger = logging.getLogger("service.api.classifier")
@@ -116,9 +122,7 @@ def _resolve_file_slot(
                 upload_id, owner_id=owner_id, settings=app_settings
             )
         except UploadError as exc:
-            raise HTTPException(
-                status_code=exc.status_code, detail=f"{field_name}: {exc.detail}"
-            ) from exc
+            raise _slot_http_error(exc.status_code, field_name, exc.detail) from exc
         # Copied into the request scratch dir so the ingest path may consume, rewind
         # and delete it without touching the stored upload, which outlives this task.
         scratch.mkdir(parents=True, exist_ok=True)
@@ -130,9 +134,11 @@ def _resolve_file_slot(
         return upload
 
     if required:
-        raise HTTPException(
-            status_code=422,
-            detail=f"{field_name}: provide either the file or {field_name}_upload_id",
+        raise _slot_http_error(
+            422,
+            field_name,
+            f"файл не приложен: передайте его в поле «{field_name}» "
+            f"или укажите «{field_name}_upload_id».",
         )
     return None
 
@@ -195,22 +201,39 @@ def _crs_http_error(
     The slot title alone ("слой земельных участков") is ambiguous once several
     layers are attached, so the uploaded file name is quoted when we have it.
     """
-    title = _FIELD_TITLES.get(field_name, field_name)
+    return _slot_http_error(422, field_name, exc, filename)
+
+
+def _geo_unreadable_error(
+    field_name: str, exc: GeoIngestError, filename: str | None = None
+) -> HTTPException:
+    """400 for a layer that cannot be read at all: a broken or ambiguous ZIP, an
+    empty layer, a table without geometry. Worded like the CRS refusal."""
+    return _slot_http_error(400, field_name, exc, filename)
+
+
+def _slot_http_error(
+    status_code: int,
+    field_name: str,
+    message: object,
+    filename: str | None = None,
+) -> HTTPException:
+    """An upload refusal addressed to an end user: the layer as the UI names it,
+    the file when known, then what is wrong with it."""
+    title = field_title(field_name)
     where = f"{title} («{filename}»)" if filename else title
-    return HTTPException(status_code=422, detail=f"{where}: {exc}")
+    return HTTPException(status_code=status_code, detail=f"{where}: {message}")
 
 
-# Field names are the multipart keys; the message goes to an end user, so name the
-# layer the way the UI does.
-_FIELD_TITLES = {
-    "cadastral_feature_collection_file": "слой земельных участков",
-    "buildings_feature_collection_file": "слой зданий и сервисов",
-    "pzz_zones_feature_collection_file": "слой зон ПЗЗ",
-    "pzz_zone_vri_labels_file": "описания зон ПЗЗ",
-    "pzz_descriptions_file": "описания зон ПЗЗ",
-    "vri_classifier_file": "классификатор ВРИ",
-    "mo_boundaries_feature_collection_file": "слой границ МО",
-}
+_INVALID_JSON_MESSAGE = "файл не является корректным JSON/GeoJSON."
+_JSON_TYPE_NAMES = {dict: "объектом", list: "массивом"}
+
+
+def _wrong_json_type_message(expected: type[Any] | tuple[type[Any], ...]) -> str:
+    types = expected if isinstance(expected, tuple) else (expected,)
+    names = " или ".join(_JSON_TYPE_NAMES.get(t, t.__name__) for t in types)
+    return f"содержимое файла должно быть JSON-{names}."
+
 
 # The structured-data slots accept only what the service actually has a reader
 # for. Without an explicit gate an unreadable file (the ПЗЗ regulations as .docx,
@@ -228,10 +251,11 @@ def _unsupported_geo_format_error(field_name: str, suffix: str) -> HTTPException
     return HTTPException(
         status_code=415,
         detail=(
-            f"{_FIELD_TITLES.get(field_name, field_name)}: формат «{suffix}» "
+            f"{field_title(field_name)}: формат «{suffix}» "
             "не поддерживается, принимаются только "
             + ", ".join(sorted(supported_extensions()))
             + "."
+            + multifile_part_hint(suffix)
         ),
     )
 
@@ -248,7 +272,7 @@ def _ensure_supported_extension(
     suffix = Path(upload.filename or "").suffix.lower()
     if suffix == "" or suffix in allowed:
         return
-    title = _FIELD_TITLES.get(field_name, field_name)
+    title = field_title(field_name)
     accepted = ", ".join(sorted(allowed))
     hint = ""
     if allowed == _JSON_SLOT_EXTENSIONS:
@@ -281,20 +305,11 @@ def _validate_json_file(
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         path.unlink(missing_ok=True)
         api_log("create_task", "invalid_json", field=field_name)
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field_name} must contain valid JSON/GeoJSON",
-        ) from exc
+        raise _slot_http_error(400, field_name, _INVALID_JSON_MESSAGE) from exc
     if not isinstance(data, expected_type):
-        expected_type_name = (
-            ", ".join(t.__name__ for t in expected_type)
-            if isinstance(expected_type, tuple)
-            else expected_type.__name__
-        )
         path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field_name} must be a JSON {expected_type_name}",
+        raise _slot_http_error(
+            400, field_name, _wrong_json_type_message(expected_type)
         )
     return data
 
@@ -344,8 +359,9 @@ def _ingest_geo_upload(
 
     GeoJSON (``.geojson`` / ``.json`` / no extension) takes the existing
     stream → validate-as-dict → persist path. Other vector formats
-    (GeoPackage, GML, KML, GeoParquet) are streamed to a temp file, read via
-    geopandas, reprojected to EPSG:4326, and persisted as GeoJSON — so the
+    (GeoPackage, GML, KML, GeoParquet, and Shapefile/MapInfo in a ZIP) are
+    streamed to a temp file, read via geopandas, reprojected to EPSG:4326, and
+    persisted as GeoJSON — so the
     stored artefact and the worker path are identical to the upload case.
     """
     if is_geojson_filename(upload.filename):
@@ -375,7 +391,7 @@ def _ingest_geo_upload(
         raise _crs_http_error(field_name, exc, upload.filename) from exc
     except GeoIngestError as exc:
         raw_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail=f"{field_name}: {exc}") from exc
+        raise _geo_unreadable_error(field_name, exc, upload.filename) from exc
     finally:
         raw_path.unlink(missing_ok=True)
 
@@ -400,20 +416,17 @@ def _upload_to_feature_collection(
         if is_geojson_filename(upload.filename):
             raw = upload.file.read(max_bytes + 1)
             if len(raw) > max_bytes:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"{field_name} exceeds limit of {max_bytes} bytes",
-                )
+                raise upload_too_large_error(field_name, max_bytes, upload.filename)
             try:
                 data = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{field_name} must contain valid JSON/GeoJSON",
+            # Not-UTF-8 bytes fail to decode before they fail to parse.
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise _slot_http_error(
+                    400, field_name, _INVALID_JSON_MESSAGE, upload.filename
                 ) from exc
             if not isinstance(data, dict):
-                raise HTTPException(
-                    status_code=400, detail=f"{field_name} must be a GeoJSON object"
+                raise _slot_http_error(
+                    400, field_name, _wrong_json_type_message(dict), upload.filename
                 )
             try:
                 ensure_wgs84(data)
@@ -438,7 +451,7 @@ def _upload_to_feature_collection(
             api_log("detect_columns", "bad_crs", field=field_name, file=upload.filename)
             raise _crs_http_error(field_name, exc, upload.filename) from exc
         except GeoIngestError as exc:
-            raise HTTPException(status_code=400, detail=f"{field_name}: {exc}") from exc
+            raise _geo_unreadable_error(field_name, exc, upload.filename) from exc
         finally:
             raw_path.unlink(missing_ok=True)
     finally:
@@ -1150,7 +1163,8 @@ async def create_pzz_check_chat_stream_endpoint(
     The file-upload counterpart of ``POST /scenarios/{id}/chat/stream``. Both
     cadastral parcels and PZZ zones are required (the answer is grounded in the
     object-zone-fit report). Uploads may be any supported geo format (GeoJSON,
-    GeoPackage, GML, KML, GeoParquet); they're stored as GeoJSON.
+    GeoPackage, GML, KML, GeoParquet, Shapefile/MapInfo in a ZIP); they're
+    stored as GeoJSON.
 
     A Bearer token is REQUIRED — chat history is persisted to ChatStorage under
     the token's user. ``chat_id`` is optional: when omitted a new chat is

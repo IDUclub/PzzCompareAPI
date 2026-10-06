@@ -105,17 +105,24 @@ def register_upload(
     return record
 
 
+def _unknown_upload(upload_id: str) -> UploadError:
+    return UploadError(
+        f"файл с upload_id «{upload_id}» не найден: загрузите его заново.",
+        status_code=404,
+    )
+
+
 def _read_meta(upload_id: str, settings: Settings) -> tuple[dict[str, Any], Path]:
     root = uploads_root(settings).resolve()
     directory = (root / upload_id).resolve()
     if directory.parent != root or not directory.is_dir():
-        raise UploadError(f"Unknown upload_id: {upload_id}", status_code=404)
+        raise _unknown_upload(upload_id)
     try:
         meta = json.loads((directory / _META_NAME).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise UploadError(f"Unknown upload_id: {upload_id}", status_code=404) from exc
+        raise _unknown_upload(upload_id) from exc
     if not isinstance(meta, dict):
-        raise UploadError(f"Unknown upload_id: {upload_id}", status_code=404)
+        raise _unknown_upload(upload_id)
     return meta, directory
 
 
@@ -170,16 +177,24 @@ def describe_upload(
 
     stored_owner = str(meta.get("owner_id") or "")
     if owner_id and stored_owner and stored_owner != owner_id:
-        raise UploadError("Upload belongs to another user", status_code=403)
+        raise UploadError(
+            "файл загружен другим пользователем.", status_code=403
+        )
 
     expires_at = meta.get("expires_at")
     if isinstance(expires_at, (int, float)) and expires_at < time.time():
-        raise UploadError(f"Upload {upload_id} has expired", status_code=410)
+        raise UploadError(
+            f"срок хранения файла с upload_id «{upload_id}» истёк: загрузите его заново.",
+            status_code=410,
+        )
 
     filename = str(meta.get("filename") or _PAYLOAD_FALLBACK)
     payload = directory / filename
     if not payload.is_file():
-        raise UploadError(f"Upload {upload_id} is no longer stored", status_code=410)
+        raise UploadError(
+            f"файл с upload_id «{upload_id}» больше не хранится: загрузите его заново.",
+            status_code=410,
+        )
 
     record = StoredUpload(
         upload_id=upload_id,
