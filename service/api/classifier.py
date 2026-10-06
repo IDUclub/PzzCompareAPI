@@ -70,6 +70,7 @@ from ..infrastructure.geo_ingest import (
     GeoIngestError,
     ensure_wgs84,
     geo_file_to_geojson_dict,
+    read_geojson_light,
     is_geojson_filename,
     multifile_part_hint,
     supported_extensions,
@@ -77,7 +78,7 @@ from ..infrastructure.geo_ingest import (
 from ..infrastructure.storage import get_object_storage
 from ..schemas import BuildingPzzCheckOut, TaskCreate, TaskOut
 from ..output_version import PIPELINE_OUTPUT_VERSION
-from ..settings import Settings
+from ..settings import Settings, get_settings
 from ..tasks import celery_app, enqueue_pipeline_task, execute_pipeline_task
 from .security import AuthUser, get_current_user, get_optional_user
 from ..infrastructure.chat_llm_client import ChatLlmError, build_chat_llm_client
@@ -293,16 +294,25 @@ def _validate_json_file(
     path: Path,
     expected_type: type[Any] | tuple[type[Any], ...],
     field_name: str,
+    head_only: bool = False,
 ) -> Any:
-    """Load ``path`` as JSON, assert its top-level type, return the parsed data."""
+    """Load ``path`` as JSON, assert its top-level type, return the parsed data.
+
+    ``head_only`` parses just the GeoJSON head (top-level members and the first
+    features, see ``read_geojson_light``) — enough for the type and CRS checks
+    of a large layer without building it in memory; the worker reads it in full.
+    """
     try:
-        with path.open("rb") as fh:
-            data = json.load(fh)
+        if head_only:
+            data = read_geojson_light(path)
+        else:
+            with path.open("rb") as fh:
+                data = json.load(fh)
     # A binary in a JSON slot (a .docx dropped on the labels/classifier field is
     # a ZIP) fails to decode BEFORE it fails to parse, and UnicodeDecodeError is
     # not a JSONDecodeError — uncaught, it left the caller with a 500 instead of
     # the 400 this branch exists to produce. Both are ValueError.
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError, GeoIngestError) as exc:
         path.unlink(missing_ok=True)
         api_log("create_task", "invalid_json", field=field_name)
         raise _slot_http_error(400, field_name, _INVALID_JSON_MESSAGE) from exc
@@ -331,7 +341,13 @@ def _ingest_upload(
         _ensure_supported_extension(upload, field_name, allowed_extensions)
     local_path = task_dir / filename
     stream_upload_to_file(upload, local_path, max_bytes, field_name)
-    data = _validate_json_file(local_path, expected_json_type, field_name)
+    data = _validate_json_file(
+        local_path,
+        expected_json_type,
+        field_name,
+        head_only=require_wgs84
+        and local_path.stat().st_size > get_settings().full_json_validation_max_bytes,
+    )
     if require_wgs84:
         try:
             ensure_wgs84(data)
@@ -414,16 +430,19 @@ def _upload_to_feature_collection(
     """
     try:
         if is_geojson_filename(upload.filename):
-            raw = upload.file.read(max_bytes + 1)
-            if len(raw) > max_bytes:
-                raise upload_too_large_error(field_name, max_bytes, upload.filename)
+            # Detection needs every feature's properties but no coordinates:
+            # streamed to disk and parsed without geometry, a large layer costs
+            # a fraction of the raw bytes + full ``json.loads`` it used to.
+            raw_path = task_dir / "detect.geojson"
+            stream_upload_to_file(upload, raw_path, max_bytes, field_name)
             try:
-                data = json.loads(raw)
-            # Not-UTF-8 bytes fail to decode before they fail to parse.
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                data = read_geojson_light(raw_path, max_features=None)
+            except GeoIngestError as exc:
                 raise _slot_http_error(
                     400, field_name, _INVALID_JSON_MESSAGE, upload.filename
                 ) from exc
+            finally:
+                raw_path.unlink(missing_ok=True)
             if not isinstance(data, dict):
                 raise _slot_http_error(
                     400, field_name, _wrong_json_type_message(dict), upload.filename
@@ -1019,7 +1038,8 @@ async def create_pzz_check_stream_endpoint(
 
     Same inputs as POST /tasks/pzz-check. One call uploads, creates the task,
     then streams: ``task`` -> ``task_event``/``status`` -> ``geojson`` (the
-    classified FeatureCollection with zone verdicts) -> ``done``.
+    classified FeatureCollection with zone verdicts; omitted above
+    ``SSE_INLINE_GEOJSON_MAX_BYTES``) -> ``file`` (result links) -> ``done``.
 
     The upload flow returns the classified layer only; the object-zone-fit
     summary is a scenario/chatbot concern and is available separately via
@@ -1083,7 +1103,8 @@ async def create_classify_only_stream_endpoint(
 
     Same inputs as POST /tasks/classify-only (no PZZ zones). Streams:
     ``task`` -> ``task_event``/``status`` -> ``geojson`` (classified
-    FeatureCollection with VRI candidate properties) -> ``done``.
+    FeatureCollection with VRI candidate properties; omitted above
+    ``SSE_INLINE_GEOJSON_MAX_BYTES``) -> ``file`` (result links) -> ``done``.
 
     No ``report`` event: classify-only has no zones, so the object-zone-fit
     summary is not applicable. Use a fetch-based SSE client.
