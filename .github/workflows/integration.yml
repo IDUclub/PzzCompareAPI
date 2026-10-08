@@ -50,11 +50,13 @@ jobs:
 
       # MinIO no longer publishes public images; Chainguard builds the same server from source.
       # Started here, not as a service: a service container cannot be given `server /data`.
+      # Chainguard publishes only `latest`, so the image is pinned by digest (2026-10-08) to keep
+      # the tests from breaking on their own; refresh the digest deliberately.
       - name: Start MinIO
         run: |
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-            chainguard/minio:latest server /data
+            chainguard/minio:latest@sha256:59667194421209c2c1eacbe761e24787e047985c5dfa96b15da9b59fe9b55cd0 server /data
           for i in $(seq 1 30); do
             curl -sf http://localhost:9000/minio/health/live && break
             sleep 2
