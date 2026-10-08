@@ -308,7 +308,8 @@ uv run pytest -m integration tests/integration
 - `tests.yml` — на каждый PR в `dev`/`main`: юнит-тесты, интеграционные тесты (`integration.yml`,
   ещё и по ночам) и проверка black (несоответствия правятся коммитом в ветку PR).
 - `pr-autofill.yml` — заголовок PR `vX.Y.Z (ветка)` (версия, с которой он вольётся) и список
-  коммитов в описании.
+  коммитов в секции «Commits» в конце описания. Текст, написанный автором PR, не меняется:
+  обновляется только эта секция.
 - `version-bump.yml` — версия поднимается в ветке PR перед мерджем в `dev`: включите **Enable
   auto-merge**, и коммит `bump:` обновит `pyproject.toml`, `service/__version__.py`, `uv.lock` и
   `CHANGELOG.md` (метка `major` → major, ветки `feat/*`/`feature/*` → minor, остальные → patch),
