@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Optional
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 
@@ -15,6 +17,7 @@ from .runtime_settings import (
     ENABLE_EMBED_FAST_MATCH as _ENABLE_EMBED_FAST_MATCH,
     ENABLE_LLM as _ENABLE_LLM,
     ENABLE_ZONE_ITEM_EMBED_MATCH as _ENABLE_ZONE_ITEM_EMBED_MATCH,
+    RESULT_XLSX_MAX_ROWS,
 )
 from . import llm_cache, llm_stats
 from .classification_layer import ensure_classification_columns
@@ -52,6 +55,7 @@ from .rerank_layer import (
     should_run_not_allowed_llm_rerank,
     NOT_ALLOWED_LLM_RERANK_RECALL_TOP_N,
 )
+from .overlap_layer import OVERLAPS_KEY, run_overlap_checks
 from .spatial_layer import build_source_with_spatial_attributes
 from .text_utils import (
     build_actual_zone_key,
@@ -220,6 +224,77 @@ def _prefill_query_vectors(
         context.not_allowed_query_vector_cache[get_not_allowed_query_key(text)] = vec
 
 
+def _attach_overlap_checks(
+    classified_gdf: gpd.GeoDataFrame,
+    *,
+    source_gdf: gpd.GeoDataFrame,
+    pzz_zones_gdf: gpd.GeoDataFrame,
+    pzz_zone_code_col: str,
+    pzz_zone_name_col: str,
+    mo_gdf: Optional[gpd.GeoDataFrame] = None,
+) -> tuple[gpd.GeoDataFrame, Optional[dict[str, Any]]]:
+    """Add the overlap columns to the parcels and build the overlap report.
+
+    A failure here must not cost the user the ВРИ check it rides along with:
+    it is logged and the result simply has no overlap data.
+    """
+    started = perf_counter()
+    if len(classified_gdf) != len(source_gdf):
+        # Row positions are how the check addresses parcels; a merge that
+        # changed the row count would misattribute every note.
+        _log_stage(
+            "overlap_checks",
+            "skipped",
+            reason="row_count_mismatch",
+            rows=len(classified_gdf),
+            source_rows=len(source_gdf),
+        )
+        return classified_gdf, None
+    try:
+        result = run_overlap_checks(
+            source_gdf,
+            pzz_zones_gdf,
+            zone_code_col=pzz_zone_code_col,
+            zone_name_col=pzz_zone_name_col,
+            mo_gdf=mo_gdf,
+        )
+    except Exception as exc:  # noqa: BLE001 — optional diagnostics
+        logger.exception("overlap checks failed")
+        _log_stage("overlap_checks", "failed", error=str(exc)[:300])
+        return classified_gdf, None
+    classified_gdf = classified_gdf.reset_index(drop=True)
+    for column in result.parcel_columns.columns:
+        classified_gdf[column] = result.parcel_columns[column].to_numpy()
+    _log_stage(
+        "overlap_checks",
+        "finished",
+        duration_ms=int((perf_counter() - started) * 1000),
+        **result.summary,
+    )
+    return classified_gdf, result.report
+
+
+def _load_mo_boundaries(path: str) -> Optional[gpd.GeoDataFrame]:
+    """The optional МО boundaries layer; ``None`` when absent or unreadable."""
+    if not (path or "").strip():
+        return None
+    try:
+        return InputDataLoader.load_geojson_to_gdf(path)
+    except Exception as exc:  # noqa: BLE001 — optional diagnostics
+        logger.exception("МО boundaries layer could not be loaded")
+        _log_stage("overlap_checks", "mo_layer_failed", error=str(exc)[:300])
+        return None
+
+
+def _write_overlap_report(output_path: Path, report: dict[str, Any]) -> None:
+    """Store the report as a top-level ``overlaps`` member of the result."""
+    with output_path.open(encoding="utf-8") as fh:
+        result = json.load(fh)
+    result[OVERLAPS_KEY] = report
+    with output_path.open("w", encoding="utf-8") as fh:
+        json.dump(result, fh, ensure_ascii=False)
+
+
 def run_pipeline(
     pzz_codes_path: str,
     cadastral_geojson_path: str,
@@ -238,6 +313,7 @@ def run_pipeline(
     generate_model: str,
     top_k: int,
     batch_size: int,
+    mo_boundaries_geojson_path: str = "",
 ) -> None:
     """Service-safe orchestrator that mirrors spatial-first notebook logic."""
     _ = (pzz_codes_path, base_url, embed_model, generate_model, top_k, batch_size)
@@ -759,6 +835,17 @@ def run_pipeline(
         overwrite=False,
     )
 
+    overlap_report = None
+    if include_pzz_check:
+        classified_gdf, overlap_report = _attach_overlap_checks(
+            classified_gdf,
+            source_gdf=source_gdf,
+            pzz_zones_gdf=pzz_zones_gdf,
+            pzz_zone_code_col=pzz_zone_code_col,
+            pzz_zone_name_col=pzz_zone_name_col,
+            mo_gdf=_load_mo_boundaries(mo_boundaries_geojson_path),
+        )
+
     classified_gdf["PZZ_ACTUAL_CODE_x"] = classified_gdf["PZZ_ACTUAL_CODE"]
     classified_gdf["PZZ_ACTUAL_NAME_x"] = classified_gdf["PZZ_ACTUAL_NAME"]
     output_gdf = select_and_rename_result_columns(
@@ -771,9 +858,13 @@ def run_pipeline(
     output_path = Path(output_geojson_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_gdf.to_file(output_path, driver="GeoJSON")
+    if overlap_report is not None:
+        _write_overlap_report(output_path, overlap_report)
 
     output_table = pd.DataFrame(output_gdf.drop(columns="geometry", errors="ignore"))
-    output_table.to_excel(unique_results_xlsx_path, index=False)
+    xlsx_written = len(output_table) <= RESULT_XLSX_MAX_ROWS
+    if xlsx_written:
+        output_table.to_excel(unique_results_xlsx_path, index=False)
     output_table.to_json(
         unique_results_json_path, orient="records", force_ascii=False, indent=2
     )
@@ -782,7 +873,11 @@ def run_pipeline(
         "finished",
         duration_ms=int((perf_counter() - write_started) * 1000),
         output_geojson_path=Path(output_geojson_path).name,
-        unique_results_xlsx_path=Path(unique_results_xlsx_path).name,
+        unique_results_xlsx_path=(
+            Path(unique_results_xlsx_path).name
+            if xlsx_written
+            else f"skipped ({len(output_table)} rows > RESULT_XLSX_MAX_ROWS)"
+        ),
         unique_results_json_path=Path(unique_results_json_path).name,
     )
     _log_stage("llm_calls", "finished", summary=llm_stats.format_summary())

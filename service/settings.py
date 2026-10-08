@@ -45,7 +45,15 @@ class Settings(BaseSettings):
     reconcile_interval_seconds: int = Field(default=60)
     task_soft_time_limit_seconds: int = Field(default=6600)
     task_time_limit_seconds: int = Field(default=7200)
-    max_upload_bytes: int = Field(default=200 * 1024 * 1024)
+    # Behind nginx: ``client_max_body_size`` must allow at least this much.
+    max_upload_bytes: int = Field(default=1024 * 1024 * 1024)
+    # GeoJSON layers above this size are checked by their head only (type, CRS,
+    # first features) at upload: a full ``json.load`` of a 1 GB layer costs
+    # several GB of API memory. The worker still parses them in full.
+    full_json_validation_max_bytes: int = Field(default=50 * 1024 * 1024)
+    # Result GeoJSON above this size is not inlined into the SSE ``geojson``
+    # event; the client downloads it by the link in the ``file`` event.
+    sse_inline_geojson_max_bytes: int = Field(default=50 * 1024 * 1024)
     task_inputs_dir: str = Field(default="task_inputs")
     uploads_dir: str = Field(default="uploads")
     uploads_max_age_hours: int = Field(default=24)

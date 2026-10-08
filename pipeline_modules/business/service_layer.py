@@ -15,6 +15,7 @@ def run_for_task(
     task_external_id: str,
     outputs_dir: str,
     pipeline_settings: PipelineSettings,
+    mo_boundaries_features_path: str = "",
 ) -> PipelineArtifacts:
     """Run pipeline for a prepared task payload.
 
@@ -31,6 +32,7 @@ def run_for_task(
         pzz_zone_name_col=pzz_zone_name_col,
         task_external_id=task_external_id,
         outputs_dir=outputs_dir,
+        mo_boundaries_geojson=mo_boundaries_features_path,
     )
 
     return run_pipeline_with_typed_interfaces(paths=paths, settings=pipeline_settings)

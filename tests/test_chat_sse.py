@@ -238,16 +238,15 @@ def _classify_geojson():
     }
 
 
-def test_build_classify_summary_response(monkeypatch) -> None:
+def test_build_classify_summary_response(tmp_path) -> None:
     from types import SimpleNamespace
 
     from service.api import tasks as tasks_module
 
-    monkeypatch.setattr(
-        tasks_module, "_load_result_geojson", lambda *a, **k: _classify_geojson()
-    )
-    task = SimpleNamespace(status="finished", result_path="result.geojson")
-    app_settings = SimpleNamespace(outputs_dir="/tmp")
+    result = tmp_path / "result.geojson"
+    result.write_text(json.dumps(_classify_geojson(), ensure_ascii=False), "utf-8")
+    task = SimpleNamespace(status="finished", result_path=str(result))
+    app_settings = SimpleNamespace(outputs_dir=str(tmp_path))
 
     report = tasks_module.build_classify_summary_response(task, "ext-1", app_settings)
 

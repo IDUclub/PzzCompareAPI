@@ -17,12 +17,13 @@
 
 **Общее для всех гео-файлов:**
 - CRS **всегда EPSG:4326**.
-- Форматы: `.geojson` / `.json`, либо GeoPackage `.gpkg` / `.gml` / `.kml` / GeoParquet `.parquet`
+- Форматы: `.geojson` / `.json`, либо GeoPackage `.gpkg` / `.gml` / `.kml` / GeoParquet `.parquet`,
+  либо `.zip` с одним слоем Shapefile (`.shp/.shx/.dbf/.prj/.cpg`) или MapInfo (`.tab/.dat/.map/.id`, `.mif/.mid`)
   (репроецируются в EPSG:4326 на приёме).
 - У ручек `/tasks/pzz-check` и `/tasks/classify-only` имена колонок задаются **явно**
   (`cadastral_vri_col`, `pzz_zone_code_col`, `pzz_zone_name_col`). В `auto/chat/stream` колонки
   **определяются автоматически** по содержимому и известным именам.
-- Лимит файла — 200 МБ.
+- Лимит файла — 1 ГБ (настраивается `MAX_UPLOAD_BYTES`).
 
 ---
 

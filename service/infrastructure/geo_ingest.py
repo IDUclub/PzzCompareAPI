@@ -4,6 +4,10 @@ The pipeline consumes GeoJSON FeatureCollections in EPSG:4326. We accept any
 geopandas/pyogrio-readable vector format on upload (GeoPackage, GML, KML,
 GeoParquet, …) but always persist GeoJSON, so the worker path is unchanged.
 
+Multi-file formats — ESRI Shapefile (.shp + .shx + .dbf + .prj + .cpg) and
+MapInfo (.tab + .dat + .map + .id, or .mif + .mid) — cannot travel as one
+multipart field, so they arrive as a ZIP archive holding a single layer.
+
 ``geopandas`` is imported lazily so the API process doesn't pay its import
 cost unless a non-GeoJSON upload actually needs conversion.
 """
@@ -11,13 +15,35 @@ cost unless a non-GeoJSON upload actually needs conversion.
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import shutil
+import tempfile
+import zipfile
+from collections.abc import Iterator
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 # Already GeoJSON — streamed + validated as JSON, no conversion.
 GEOJSON_EXTENSIONS = {".geojson", ".json"}
 # Converted to GeoJSON via geopandas.
 GEO_VECTOR_EXTENSIONS = {".gpkg", ".gml", ".kml", ".parquet", ".geoparquet"}
+# A ZIP holding one layer: Shapefile, MapInfo, or any single-file format above.
+ARCHIVE_EXTENSIONS = {".zip"}
+# The main file of each multi-file layer, in preference order: MapInfo users
+# often keep the same layer as both .TAB and .MIF side by side, and the native
+# .tab is the one to read.
+_ARCHIVE_LAYER_EXTENSIONS = (".tab", ".shp", ".mif")
+# Parts of multi-file layers. Uploaded on their own they are unreadable — the
+# geometry and the attributes live in different files — so they get a hint to
+# zip the whole set instead of a bare "not supported".
+MULTIFILE_PART_EXTENSIONS = {
+    ".shp", ".shx", ".dbf", ".prj", ".cpg", ".qix", ".sbn", ".sbx",
+    ".tab", ".dat", ".map", ".id", ".ind", ".mif", ".mid",
+}
+
+# Zip-bomb guard: the upload size is capped before we get here, but a few MB of
+# compressed zeros can expand to tens of GB. Real layers compress ~3-10x.
+_MAX_UNZIPPED_BYTES = 4 * 1024 * 1024 * 1024
+_MAX_ARCHIVE_MEMBERS = 10_000
 
 _TARGET_CRS = "EPSG:4326"
 
@@ -127,6 +153,195 @@ def ensure_wgs84(feature_collection: dict[str, Any]) -> None:
             return _raise_out_of_range(x, y)
 
 
+# Reading a FeatureCollection head instead of the whole file: ``json.load`` of a
+# 400 MB layer builds several GB of Python objects in the API process just to
+# check its CRS, which only looks at the first ``_CRS_SCAN_FEATURES`` features.
+_HEAD_CHUNK_CHARS = 1 << 20
+# One feature larger than this is not a layer we can process anyway.
+_HEAD_MAX_BUFFER_CHARS = 64 << 20
+
+
+class _HeadReader:
+    """Incremental JSON value reader over a text file (no full parse)."""
+
+    def __init__(self, fh) -> None:
+        self._fh = fh
+        self._buf = ""
+        self._pos = 0
+        self._eof = False
+        self._decoder = json.JSONDecoder()
+
+    def _fill(self) -> bool:
+        if self._eof:
+            return False
+        try:
+            chunk = self._fh.read(_HEAD_CHUNK_CHARS)
+        except UnicodeDecodeError as exc:
+            raise GeoIngestError("file is not UTF-8 JSON") from exc
+        if not chunk:
+            self._eof = True
+            return False
+        self._buf = self._buf[self._pos:] + chunk
+        self._pos = 0
+        if len(self._buf) > _HEAD_MAX_BUFFER_CHARS:
+            raise GeoIngestError("a single GeoJSON value is too large")
+        return True
+
+    def peek(self) -> str:
+        """Next non-whitespace character ('' at end of file)."""
+        while True:
+            while self._pos < len(self._buf) and self._buf[self._pos] in " \t\r\n":
+                self._pos += 1
+            if self._pos < len(self._buf):
+                return self._buf[self._pos]
+            if not self._fill():
+                return ""
+
+    def expect(self, char: str) -> None:
+        if self.peek() != char:
+            raise GeoIngestError(f"expected {char!r} in GeoJSON")
+        self._pos += 1
+
+    def value(self) -> Any:
+        self.peek()
+        while True:
+            try:
+                value, end = self._decoder.raw_decode(self._buf, self._pos)
+            except json.JSONDecodeError as exc:
+                # Truncated by the chunk boundary: read more and retry.
+                if not self._fill():
+                    raise GeoIngestError("invalid JSON") from exc
+                continue
+            if end == len(self._buf) and not self._eof and not isinstance(value, (dict, list, str)):
+                # A number may continue in the next chunk.
+                if self._fill():
+                    continue
+            self._pos = end
+            return value
+
+
+def _last_char(path: Path) -> str:
+    with path.open("rb") as fh:
+        fh.seek(0, 2)
+        size = fh.tell()
+        fh.seek(max(0, size - 1024))
+        return fh.read().decode("utf-8", "ignore").rstrip()[-1:]
+
+
+def read_geojson_light(
+    path: Path,
+    *,
+    max_features: int | None = _CRS_SCAN_FEATURES,
+    geometry_features: int = _CRS_SCAN_FEATURES,
+) -> Any:
+    """Parse a GeoJSON file without holding the whole layer in memory.
+
+    The members around ``features`` (``type``, ``crs``, ``name``) are read in
+    full. Of the feature array only the first ``max_features`` features are
+    kept (``None`` = all of them; the rest of the file is then only checked to
+    end with ``}``), and only the first ``geometry_features`` of those keep
+    their geometry — the rest get ``geometry: None``. That is enough for the
+    top-level type, ``crs`` and :func:`ensure_wgs84` (the head), or for column
+    profiling (all properties, no coordinates). A non-object top level is
+    returned parsed as-is. Raises :class:`GeoIngestError` on malformed JSON.
+    """
+    with path.open("r", encoding="utf-8-sig") as fh:
+        reader = _HeadReader(fh)
+        if reader.peek() != "{":
+            return reader.value()
+        reader.expect("{")
+        result: dict[str, Any] = {}
+        truncated = False
+        if reader.peek() == "}":
+            return result
+        while True:
+            key = reader.value()
+            if not isinstance(key, str):
+                raise GeoIngestError("invalid JSON object key")
+            reader.expect(":")
+            if key == "features" and reader.peek() == "[":
+                reader.expect("[")
+                features: list[Any] = []
+                result[key] = features
+                if reader.peek() == "]":
+                    reader.expect("]")
+                else:
+                    while True:
+                        if max_features is not None and len(features) >= max_features:
+                            truncated = True
+                            break
+                        feature = reader.value()
+                        if len(features) >= geometry_features and isinstance(feature, dict):
+                            feature["geometry"] = None
+                        features.append(feature)
+                        if reader.peek() == ",":
+                            reader.expect(",")
+                            continue
+                        reader.expect("]")
+                        break
+                if truncated:
+                    break
+            else:
+                result[key] = reader.value()
+            if reader.peek() == ",":
+                reader.expect(",")
+                continue
+            reader.expect("}")
+            if reader.peek() != "":
+                raise GeoIngestError("trailing data after JSON")
+            return result
+    if _last_char(path) != "}":
+        raise GeoIngestError("GeoJSON is truncated")
+    return result
+
+
+def iter_geojson_features(
+    path: Path, members: dict[str, Any]
+) -> Iterator[dict[str, Any]]:
+    """Yield a FeatureCollection's features one at a time.
+
+    Only one feature is held in memory at once, so a report over a 1 GB result
+    costs what it keeps, not several GB of parsed geometry. The other top-level
+    members (``type``, ``zone_stats``, …) are stored into ``members``; they are
+    complete only once the iterator is exhausted, since a writer may put them
+    after ``features``. Raises :class:`GeoIngestError` on malformed JSON.
+    """
+    with path.open("r", encoding="utf-8-sig") as fh:
+        reader = _HeadReader(fh)
+        reader.expect("{")
+        if reader.peek() == "}":
+            reader.expect("}")
+        else:
+            while True:
+                key = reader.value()
+                if not isinstance(key, str):
+                    raise GeoIngestError("invalid JSON object key")
+                reader.expect(":")
+                if key == "features" and reader.peek() == "[":
+                    reader.expect("[")
+                    if reader.peek() == "]":
+                        reader.expect("]")
+                    else:
+                        while True:
+                            feature = reader.value()
+                            if isinstance(feature, dict):
+                                yield feature
+                            if reader.peek() == ",":
+                                reader.expect(",")
+                                continue
+                            reader.expect("]")
+                            break
+                else:
+                    members[key] = reader.value()
+                if reader.peek() == ",":
+                    reader.expect(",")
+                    continue
+                reader.expect("}")
+                break
+        if reader.peek() != "":
+            raise GeoIngestError("trailing data after JSON")
+
+
 def _raise_out_of_range(x: float, y: float) -> None:
     raise GeoCrsError(
         "координаты записаны не в WGS 84 (EPSG:4326), а в метрах: встречена "
@@ -142,7 +357,18 @@ def _raise_out_of_range(x: float, y: float) -> None:
 
 def supported_extensions() -> set[str]:
     """All upload extensions we accept (GeoJSON + convertible vector formats)."""
-    return GEOJSON_EXTENSIONS | GEO_VECTOR_EXTENSIONS
+    return GEOJSON_EXTENSIONS | GEO_VECTOR_EXTENSIONS | ARCHIVE_EXTENSIONS
+
+
+def multifile_part_hint(suffix: str) -> str:
+    """User-facing hint for a lone part of a multi-file layer, else ``""``."""
+    if suffix.lower() not in MULTIFILE_PART_EXTENSIONS:
+        return ""
+    return (
+        " Shapefile (.shp, .shx, .dbf, .prj, .cpg) и MapInfo (.tab, .dat, .map, "
+        ".id или .mif, .mid) состоят из нескольких файлов: заархивируйте все "
+        "файлы слоя в один ZIP и загрузите архив."
+    )
 
 
 def is_geojson_filename(filename: str | None) -> bool:
@@ -155,25 +381,195 @@ def is_geojson_filename(filename: str | None) -> bool:
     return suffix == "" or suffix in GEOJSON_EXTENSIONS
 
 
-def geo_file_to_geojson_dict(path: Path) -> dict[str, Any]:
-    """Read a geo vector file and return a GeoJSON FeatureCollection (EPSG:4326)."""
+def _extract_archive(archive: Path, target: Path) -> None:
+    """Unpack ``archive`` into ``target``, refusing anything unsafe or huge."""
+    try:
+        zf = zipfile.ZipFile(archive)
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise GeoIngestError(f"файл не является корректным ZIP-архивом: {exc}") from exc
+    with zf:
+        members = [info for info in zf.infolist() if not info.is_dir()]
+        if len(members) > _MAX_ARCHIVE_MEMBERS:
+            raise GeoIngestError(
+                f"в архиве слишком много файлов ({len(members)}), ожидается один слой."
+            )
+        if sum(info.file_size for info in members) > _MAX_UNZIPPED_BYTES:
+            raise GeoIngestError(
+                "архив слишком велик в распакованном виде "
+                f"(больше {_MAX_UNZIPPED_BYTES // 1024 ** 3} ГБ)."
+            )
+        root = target.resolve()
+        for info in members:
+            name = PurePosixPath(info.filename.replace("\\", "/"))
+            destination = (root / Path(*name.parts)).resolve()
+            if not destination.is_relative_to(root):  # zip-slip
+                raise GeoIngestError(
+                    f"архив содержит недопустимый путь «{info.filename}»."
+                )
+            # macOS resource forks and hidden files are never part of a layer.
+            if any(part == "__MACOSX" or part.startswith(".") for part in name.parts):
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with zf.open(info) as src, destination.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+            except (zipfile.BadZipFile, NotImplementedError, RuntimeError) as exc:
+                # Corrupt data, an unsupported compression method, or encryption.
+                raise GeoIngestError(
+                    f"не удалось распаковать «{info.filename}»: {exc}"
+                ) from exc
+
+
+def _layer_rank(suffix: str) -> int:
+    try:
+        return _ARCHIVE_LAYER_EXTENSIONS.index(suffix)
+    except ValueError:
+        return len(_ARCHIVE_LAYER_EXTENSIONS)
+
+
+def _find_archive_layer(root: Path) -> Path:
+    """The single layer file inside an unpacked archive."""
+    readable = (
+        set(_ARCHIVE_LAYER_EXTENSIONS) | GEO_VECTOR_EXTENSIONS | GEOJSON_EXTENSIONS
+    )
+    layers: dict[tuple[Path, str], Path] = {}
+    for path in sorted(root.rglob("*")):
+        suffix = path.suffix.lower()
+        if not path.is_file() or suffix not in readable:
+            continue
+        # The same layer saved as .TAB and .MIF counts once, preferring .tab.
+        key = (path.parent, path.stem.lower())
+        current = layers.get(key)
+        if current is None or _layer_rank(suffix) < _layer_rank(current.suffix.lower()):
+            layers[key] = path
+
+    if not layers:
+        raise GeoIngestError(
+            "в архиве не найден слой: ожидается Shapefile (.shp с .shx, .dbf, "
+            ".prj), MapInfo (.tab с .dat, .map, .id или .mif с .mid) либо файл "
+            + ", ".join(sorted(GEO_VECTOR_EXTENSIONS | GEOJSON_EXTENSIONS))
+            + "."
+        )
+    if len(layers) > 1:
+        names = ", ".join(
+            f"«{path.relative_to(root).as_posix()}»" for path in layers.values()
+        )
+        raise GeoIngestError(
+            f"в архиве несколько слоёв ({names}), а загружать нужно по одному "
+            "слою на архив."
+        )
+    return next(iter(layers.values()))
+
+
+def _sibling(path: Path, suffix: str) -> Path | None:
+    """``path`` with another extension, matched case-insensitively (.DBF/.dbf)."""
+    wanted = f"{path.stem}{suffix}".lower()
+    for candidate in path.parent.iterdir():
+        if candidate.name.lower() == wanted:
+            return candidate
+    return None
+
+
+# How much DBF record data to sample when guessing the encoding.
+_DBF_SAMPLE_BYTES = 1024 * 1024
+
+
+def _shapefile_encoding(shp: Path) -> str | None:
+    """Encoding to force for a Shapefile whose DBF does not declare one.
+
+    GDAL honours a ``.cpg`` file and the DBF language-driver byte; with neither
+    it falls back to ISO-8859-1, which turns Russian attributes (zone codes,
+    ВРИ) into mojibake. Russian Shapefiles without a ``.cpg`` are almost always
+    cp1251 (MapInfo/ArcGIS/QGIS on Windows) or UTF-8 (recent QGIS), and the two
+    are easy to tell apart: cp1251 Cyrillic is practically never valid UTF-8.
+    """
+    if _sibling(shp, ".cpg") is not None:
+        return None
+    dbf = _sibling(shp, ".dbf")
+    if dbf is None:
+        return None
+    with dbf.open("rb") as fh:
+        header = fh.read(32)
+        if len(header) < 32 or header[29] != 0:
+            return None  # a language driver is declared — let GDAL apply it
+        fh.seek(int.from_bytes(header[8:10], "little"))
+        sample = fh.read(_DBF_SAMPLE_BYTES)
+    if sample.isascii():
+        return None
+    try:
+        sample.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        # The sample may cut a multi-byte character in half at the very end.
+        if exc.start < len(sample) - 3:
+            return "cp1251"
+    return "utf-8"
+
+
+def _read_vector(path: Path):
     import geopandas as gpd  # lazy: heavy import
 
     suffix = path.suffix.lower()
+    if suffix in {".parquet", ".geoparquet"}:
+        return gpd.read_parquet(path)
+    if suffix == ".shp":
+        encoding = _shapefile_encoding(path)
+        if encoding is not None:
+            return gpd.read_file(path, encoding=encoding)
+    return gpd.read_file(path)
+
+
+_LOCAL_CRS_MESSAGE = (
+    "слой записан в условной системе координат «{name}» (MapInfo NonEarth и "
+    "подобные), которую нельзя автоматически пересчитать в WGS 84 (EPSG:4326): "
+    "в файле нет привязки к земному эллипсоиду. Что сделать: открыть слой в "
+    "QGIS, указать его настоящую СК («Свойства слоя» → «Источник» → «Задать "
+    "СК», например нужную зону МСК), затем «Экспорт» → «Сохранить объекты "
+    "как…» → «СК»: EPSG:4326 (WGS 84). Если настоящая СК неизвестна, запросите "
+    "у поставщика данных выгрузку в WGS 84 или в МСК с параметрами."
+)
+
+
+def geo_file_to_geojson_dict(path: Path) -> dict[str, Any]:
+    """Read a geo vector file and return a GeoJSON FeatureCollection (EPSG:4326).
+
+    A ``.zip`` is unpacked next to ``path`` and its single layer is read; the
+    unpacked files are removed before returning.
+    """
+    if path.suffix.lower() in ARCHIVE_EXTENSIONS:
+        unpack_dir = Path(tempfile.mkdtemp(prefix=f"{path.stem}_", dir=path.parent))
+        try:
+            _extract_archive(path, unpack_dir)
+            return geo_file_to_geojson_dict(_find_archive_layer(unpack_dir))
+        finally:
+            shutil.rmtree(unpack_dir, ignore_errors=True)
+
+    import geopandas as gpd  # lazy: heavy import
+
     try:
-        if suffix in {".parquet", ".geoparquet"}:
-            gdf = gpd.read_parquet(path)
-        else:
-            gdf = gpd.read_file(path)
+        gdf = _read_vector(path)
     except Exception as exc:  # noqa: BLE001 — surface a clean 4xx upstream
-        raise GeoIngestError(f"could not read geo file: {exc}") from exc
+        raise GeoIngestError(f"не удалось прочитать файл слоя: {exc}") from exc
+
+    # An empty layer (typical for MapInfo template sets) or an attribute-only
+    # table comes back as a plain DataFrame with no geometry column at all.
+    if not isinstance(gdf, gpd.GeoDataFrame):
+        if gdf.empty:
+            raise GeoIngestError(
+                f"слой «{path.name}» пустой: в нём нет ни одного объекта."
+            )
+        raise GeoIngestError(
+            f"в слое «{path.name}» нет геометрии — это таблица атрибутов без карты."
+        )
 
     if gdf.crs is not None:
+        if gdf.crs.is_engineering:
+            raise GeoCrsError(_LOCAL_CRS_MESSAGE.format(name=gdf.crs.name))
         try:
             gdf = gdf.to_crs(_TARGET_CRS)
         except Exception as exc:  # noqa: BLE001
-            raise GeoIngestError(
-                f"could not reproject to {_TARGET_CRS}: {exc}"
+            raise GeoCrsError(
+                _LOCAL_CRS_MESSAGE.format(name=gdf.crs.name)
+                + f" Ошибка пересчёта: {exc}"
             ) from exc
 
     feature_collection = json.loads(gdf.to_json())

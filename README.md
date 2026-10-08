@@ -120,8 +120,9 @@ docker compose -f docker-compose.yml up -d --build
 - `GET /tasks/{id}/object-zone-fit?group_by=zone|object` — структурированный отчёт + `chat_message`
 - `GET /tasks/{id}/events` · `DELETE /tasks/{id}` · `POST /tasks/{id}/recompute`
 
-Загрузки кадастра/зон принимают GeoJSON, а также GeoPackage `.gpkg`, GML, KML и
-GeoParquet — не-GeoJSON форматы конвертируются в GeoJSON (EPSG:4326) на входе.
+Загрузки кадастра/зон принимают GeoJSON, а также GeoPackage `.gpkg`, GML, KML,
+GeoParquet и ZIP-архив со слоем Shapefile (`.shp`) или MapInfo (`.tab` / `.mif`) —
+не-GeoJSON форматы конвертируются в GeoJSON (EPSG:4326) на входе.
 Каждый слой передаётся либо файлом в теле запроса, либо полем `<слой>_upload_id`
 с идентификатором из `POST /uploads` — второй вариант нужен MCP-клиентам, где
 слой не помещается в аргумент инструмента.

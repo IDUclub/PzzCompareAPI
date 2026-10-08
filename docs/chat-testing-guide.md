@@ -89,7 +89,8 @@ curl -N -X POST "http://localhost:8000/tasks/pzz-check/chat/stream" \
   -F "cadastral_vri_col=<col>" -F "pzz_zone_code_col=<col>" -F "pzz_zone_name_col=<col>"
 ```
 
-Принимаются: `.geojson/.json/.gpkg/.gml/.kml/.geoparquet/.parquet`. Неподдерживаемое расширение →
+Принимаются: `.geojson/.json/.gpkg/.gml/.kml/.geoparquet/.parquet`, а также `.zip` со слоем
+Shapefile или MapInfo (TAB, MIF/MID). Неподдерживаемое расширение →
 `415`, битый файл → `400`.
 
 ### 4d. Граничные случаи

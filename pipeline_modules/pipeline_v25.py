@@ -28,6 +28,7 @@ def run_pipeline_job(
     task_external_id: str,
     outputs_dir: str,
     pipeline_settings: PipelineSettings,
+    mo_boundaries_features_path: str = "",
 ) -> PipelineArtifacts:
     if not cadastral_features_path:
         raise ValueError("cadastral_features_path must be provided")
@@ -46,6 +47,7 @@ def run_pipeline_job(
         task_external_id=task_external_id,
         outputs_dir=outputs_dir,
         pipeline_settings=pipeline_settings,
+        mo_boundaries_features_path=mo_boundaries_features_path,
     )
 
 
@@ -98,6 +100,7 @@ def run_pipeline() -> PipelineArtifacts:
         task_external_id=os.getenv("TASK_EXTERNAL_ID", "manual").strip() or "manual",
         outputs_dir=os.getenv("OUTPUTS_DIR", "results").strip() or "results",
         pipeline_settings=pipeline_settings,
+        mo_boundaries_features_path=os.getenv("MO_BOUNDARIES_FEATURES_PATH", "").strip(),
     )
 
 

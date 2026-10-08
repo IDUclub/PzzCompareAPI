@@ -543,7 +543,8 @@ async def classify_scenario_stream_endpoint(
                         reconnect to /stream if the connection drops);
       - ``task_event``  per pipeline event;
       - ``status``      on status changes;
-      - ``geojson``     the classified result FeatureCollection when finished;
+      - ``geojson``     the classified result FeatureCollection when finished
+                        (omitted above ``SSE_INLINE_GEOJSON_MAX_BYTES``);
       - ``report``      the object-zone-fit summary when finished;
       - ``done``        terminal marker; the stream then closes.
 

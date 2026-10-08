@@ -26,6 +26,7 @@ def run_pipeline_with_typed_interfaces(paths: PipelinePaths, settings: PipelineS
         generate_model=settings.generate_model,
         top_k=settings.top_k,
         batch_size=settings.batch_size,
+        mo_boundaries_geojson_path=str(paths.mo_boundaries_geojson_path or ""),
     )
 
     return PipelineArtifacts(

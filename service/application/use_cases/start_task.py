@@ -97,6 +97,7 @@ def start_task(
         building_type_col=task.building_type_col or "",
         building_service_col=task.building_service_col or "",
         building_floors_col=task.building_floors_col or "",
+        mo_boundaries_data_path=task.mo_boundaries_data_path or "",
     )
 
     return StartTaskResult(

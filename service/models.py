@@ -30,6 +30,9 @@ class PipelineTask(Base):
     external_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     cadastral_data_path: Mapped[str] = mapped_column(String(512))
     pzz_zones_data_path: Mapped[str] = mapped_column(String(512))
+    mo_boundaries_data_path: Mapped[str | None] = mapped_column(
+        String(512), nullable=True
+    )
     pzz_zone_vri_labels_path: Mapped[str] = mapped_column(String(512))
     vri_classifier_path: Mapped[str] = mapped_column(String(512))
     include_pzz_check: Mapped[bool] = mapped_column(default=True)

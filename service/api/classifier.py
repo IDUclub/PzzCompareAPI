@@ -70,13 +70,15 @@ from ..infrastructure.geo_ingest import (
     GeoIngestError,
     ensure_wgs84,
     geo_file_to_geojson_dict,
+    read_geojson_light,
     is_geojson_filename,
+    multifile_part_hint,
     supported_extensions,
 )
 from ..infrastructure.storage import get_object_storage
 from ..schemas import BuildingPzzCheckOut, TaskCreate, TaskOut
 from ..output_version import PIPELINE_OUTPUT_VERSION
-from ..settings import Settings
+from ..settings import Settings, get_settings
 from ..tasks import celery_app, enqueue_pipeline_task, execute_pipeline_task
 from .security import AuthUser, get_current_user, get_optional_user
 from ..infrastructure.chat_llm_client import ChatLlmError, build_chat_llm_client
@@ -88,7 +90,12 @@ from .tasks import (
     task_stream_with_report_generator,
     zone_review_generator,
 )
-from .utils import api_log, stream_upload_to_file
+from .utils import (
+    api_log,
+    field_title,
+    stream_upload_to_file,
+    upload_too_large_error,
+)
 
 router = APIRouter(prefix="/tasks", tags=["classifier"])
 logger = logging.getLogger("service.api.classifier")
@@ -116,9 +123,7 @@ def _resolve_file_slot(
                 upload_id, owner_id=owner_id, settings=app_settings
             )
         except UploadError as exc:
-            raise HTTPException(
-                status_code=exc.status_code, detail=f"{field_name}: {exc.detail}"
-            ) from exc
+            raise _slot_http_error(exc.status_code, field_name, exc.detail) from exc
         # Copied into the request scratch dir so the ingest path may consume, rewind
         # and delete it without touching the stored upload, which outlives this task.
         scratch.mkdir(parents=True, exist_ok=True)
@@ -130,9 +135,11 @@ def _resolve_file_slot(
         return upload
 
     if required:
-        raise HTTPException(
-            status_code=422,
-            detail=f"{field_name}: provide either the file or {field_name}_upload_id",
+        raise _slot_http_error(
+            422,
+            field_name,
+            f"файл не приложен: передайте его в поле «{field_name}» "
+            f"или укажите «{field_name}_upload_id».",
         )
     return None
 
@@ -195,21 +202,39 @@ def _crs_http_error(
     The slot title alone ("слой земельных участков") is ambiguous once several
     layers are attached, so the uploaded file name is quoted when we have it.
     """
-    title = _FIELD_TITLES.get(field_name, field_name)
+    return _slot_http_error(422, field_name, exc, filename)
+
+
+def _geo_unreadable_error(
+    field_name: str, exc: GeoIngestError, filename: str | None = None
+) -> HTTPException:
+    """400 for a layer that cannot be read at all: a broken or ambiguous ZIP, an
+    empty layer, a table without geometry. Worded like the CRS refusal."""
+    return _slot_http_error(400, field_name, exc, filename)
+
+
+def _slot_http_error(
+    status_code: int,
+    field_name: str,
+    message: object,
+    filename: str | None = None,
+) -> HTTPException:
+    """An upload refusal addressed to an end user: the layer as the UI names it,
+    the file when known, then what is wrong with it."""
+    title = field_title(field_name)
     where = f"{title} («{filename}»)" if filename else title
-    return HTTPException(status_code=422, detail=f"{where}: {exc}")
+    return HTTPException(status_code=status_code, detail=f"{where}: {message}")
 
 
-# Field names are the multipart keys; the message goes to an end user, so name the
-# layer the way the UI does.
-_FIELD_TITLES = {
-    "cadastral_feature_collection_file": "слой земельных участков",
-    "buildings_feature_collection_file": "слой зданий и сервисов",
-    "pzz_zones_feature_collection_file": "слой зон ПЗЗ",
-    "pzz_zone_vri_labels_file": "описания зон ПЗЗ",
-    "pzz_descriptions_file": "описания зон ПЗЗ",
-    "vri_classifier_file": "классификатор ВРИ",
-}
+_INVALID_JSON_MESSAGE = "файл не является корректным JSON/GeoJSON."
+_JSON_TYPE_NAMES = {dict: "объектом", list: "массивом"}
+
+
+def _wrong_json_type_message(expected: type[Any] | tuple[type[Any], ...]) -> str:
+    types = expected if isinstance(expected, tuple) else (expected,)
+    names = " или ".join(_JSON_TYPE_NAMES.get(t, t.__name__) for t in types)
+    return f"содержимое файла должно быть JSON-{names}."
+
 
 # The structured-data slots accept only what the service actually has a reader
 # for. Without an explicit gate an unreadable file (the ПЗЗ regulations as .docx,
@@ -227,10 +252,11 @@ def _unsupported_geo_format_error(field_name: str, suffix: str) -> HTTPException
     return HTTPException(
         status_code=415,
         detail=(
-            f"{_FIELD_TITLES.get(field_name, field_name)}: формат «{suffix}» "
+            f"{field_title(field_name)}: формат «{suffix}» "
             "не поддерживается, принимаются только "
             + ", ".join(sorted(supported_extensions()))
             + "."
+            + multifile_part_hint(suffix)
         ),
     )
 
@@ -247,7 +273,7 @@ def _ensure_supported_extension(
     suffix = Path(upload.filename or "").suffix.lower()
     if suffix == "" or suffix in allowed:
         return
-    title = _FIELD_TITLES.get(field_name, field_name)
+    title = field_title(field_name)
     accepted = ", ".join(sorted(allowed))
     hint = ""
     if allowed == _JSON_SLOT_EXTENSIONS:
@@ -268,32 +294,32 @@ def _validate_json_file(
     path: Path,
     expected_type: type[Any] | tuple[type[Any], ...],
     field_name: str,
+    head_only: bool = False,
 ) -> Any:
-    """Load ``path`` as JSON, assert its top-level type, return the parsed data."""
+    """Load ``path`` as JSON, assert its top-level type, return the parsed data.
+
+    ``head_only`` parses just the GeoJSON head (top-level members and the first
+    features, see ``read_geojson_light``) — enough for the type and CRS checks
+    of a large layer without building it in memory; the worker reads it in full.
+    """
     try:
-        with path.open("rb") as fh:
-            data = json.load(fh)
+        if head_only:
+            data = read_geojson_light(path)
+        else:
+            with path.open("rb") as fh:
+                data = json.load(fh)
     # A binary in a JSON slot (a .docx dropped on the labels/classifier field is
     # a ZIP) fails to decode BEFORE it fails to parse, and UnicodeDecodeError is
     # not a JSONDecodeError — uncaught, it left the caller with a 500 instead of
     # the 400 this branch exists to produce. Both are ValueError.
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError, GeoIngestError) as exc:
         path.unlink(missing_ok=True)
         api_log("create_task", "invalid_json", field=field_name)
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field_name} must contain valid JSON/GeoJSON",
-        ) from exc
+        raise _slot_http_error(400, field_name, _INVALID_JSON_MESSAGE) from exc
     if not isinstance(data, expected_type):
-        expected_type_name = (
-            ", ".join(t.__name__ for t in expected_type)
-            if isinstance(expected_type, tuple)
-            else expected_type.__name__
-        )
         path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field_name} must be a JSON {expected_type_name}",
+        raise _slot_http_error(
+            400, field_name, _wrong_json_type_message(expected_type)
         )
     return data
 
@@ -315,7 +341,13 @@ def _ingest_upload(
         _ensure_supported_extension(upload, field_name, allowed_extensions)
     local_path = task_dir / filename
     stream_upload_to_file(upload, local_path, max_bytes, field_name)
-    data = _validate_json_file(local_path, expected_json_type, field_name)
+    data = _validate_json_file(
+        local_path,
+        expected_json_type,
+        field_name,
+        head_only=require_wgs84
+        and local_path.stat().st_size > get_settings().full_json_validation_max_bytes,
+    )
     if require_wgs84:
         try:
             ensure_wgs84(data)
@@ -343,8 +375,9 @@ def _ingest_geo_upload(
 
     GeoJSON (``.geojson`` / ``.json`` / no extension) takes the existing
     stream → validate-as-dict → persist path. Other vector formats
-    (GeoPackage, GML, KML, GeoParquet) are streamed to a temp file, read via
-    geopandas, reprojected to EPSG:4326, and persisted as GeoJSON — so the
+    (GeoPackage, GML, KML, GeoParquet, and Shapefile/MapInfo in a ZIP) are
+    streamed to a temp file, read via geopandas, reprojected to EPSG:4326, and
+    persisted as GeoJSON — so the
     stored artefact and the worker path are identical to the upload case.
     """
     if is_geojson_filename(upload.filename):
@@ -374,7 +407,7 @@ def _ingest_geo_upload(
         raise _crs_http_error(field_name, exc, upload.filename) from exc
     except GeoIngestError as exc:
         raw_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail=f"{field_name}: {exc}") from exc
+        raise _geo_unreadable_error(field_name, exc, upload.filename) from exc
     finally:
         raw_path.unlink(missing_ok=True)
 
@@ -397,22 +430,22 @@ def _upload_to_feature_collection(
     """
     try:
         if is_geojson_filename(upload.filename):
-            raw = upload.file.read(max_bytes + 1)
-            if len(raw) > max_bytes:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"{field_name} exceeds limit of {max_bytes} bytes",
-                )
+            # Detection needs every feature's properties but no coordinates:
+            # streamed to disk and parsed without geometry, a large layer costs
+            # a fraction of the raw bytes + full ``json.loads`` it used to.
+            raw_path = task_dir / "detect.geojson"
+            stream_upload_to_file(upload, raw_path, max_bytes, field_name)
             try:
-                data = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{field_name} must contain valid JSON/GeoJSON",
+                data = read_geojson_light(raw_path, max_features=None)
+            except GeoIngestError as exc:
+                raise _slot_http_error(
+                    400, field_name, _INVALID_JSON_MESSAGE, upload.filename
                 ) from exc
+            finally:
+                raw_path.unlink(missing_ok=True)
             if not isinstance(data, dict):
-                raise HTTPException(
-                    status_code=400, detail=f"{field_name} must be a GeoJSON object"
+                raise _slot_http_error(
+                    400, field_name, _wrong_json_type_message(dict), upload.filename
                 )
             try:
                 ensure_wgs84(data)
@@ -437,7 +470,7 @@ def _upload_to_feature_collection(
             api_log("detect_columns", "bad_crs", field=field_name, file=upload.filename)
             raise _crs_http_error(field_name, exc, upload.filename) from exc
         except GeoIngestError as exc:
-            raise HTTPException(status_code=400, detail=f"{field_name}: {exc}") from exc
+            raise _geo_unreadable_error(field_name, exc, upload.filename) from exc
         finally:
             raw_path.unlink(missing_ok=True)
     finally:
@@ -490,6 +523,7 @@ def _create_pipeline_task(
     building_type_col: str | None = None,
     building_service_col: str | None = None,
     building_floors_col: str | None = None,
+    mo_boundaries_file: UploadFile | None = None,
 ) -> TaskOut:
     """Shared logic for both submission endpoints.
 
@@ -523,6 +557,21 @@ def _create_pipeline_task(
         )
     else:
         stored_pzz_zones = ""
+
+    # Optional municipal boundary layer: only feeds the overlap diagnostics, so
+    # it is accepted in any mode but never required.
+    if mo_boundaries_file is not None:
+        stored_mo_boundaries = _ingest_geo_upload(
+            mo_boundaries_file,
+            task_dir,
+            "mo_boundaries_feature_collection.geojson",
+            "mo_boundaries_feature_collection_file",
+            app_settings.max_upload_bytes,
+            external_id,
+            storage,
+        )
+    else:
+        stored_mo_boundaries = ""
 
     if building_upload:
         # The building flow's optional "descriptions" file is a zone→permitted-VRI
@@ -585,6 +634,8 @@ def _create_pipeline_task(
         "pzz_zone_vri_labels_path": stored_labels,
         "vri_classifier_path": stored_classifier,
     }
+    if stored_mo_boundaries:
+        input_paths["mo_boundaries_data_path"] = stored_mo_boundaries
 
     payload = TaskCreate(
         include_pzz_check=include_pzz_check,
@@ -667,10 +718,12 @@ def create_pzz_check_task_endpoint(
     pzz_zones_feature_collection_file: UploadFile | None = File(default=None),
     pzz_zone_vri_labels_file: UploadFile | None = File(default=None),
     vri_classifier_file: UploadFile | None = File(default=None),
+    mo_boundaries_feature_collection_file: UploadFile | None = File(default=None),
     cadastral_feature_collection_upload_id: str | None = Form(default=None),
     pzz_zones_feature_collection_upload_id: str | None = Form(default=None),
     pzz_zone_vri_labels_upload_id: str | None = Form(default=None),
     vri_classifier_upload_id: str | None = Form(default=None),
+    mo_boundaries_feature_collection_upload_id: str | None = Form(default=None),
     cadastral_vri_col: str = Form(..., min_length=1),
     pzz_zone_code_col: str = Form(..., min_length=1),
     pzz_zone_name_col: str = Form(..., min_length=1),
@@ -692,6 +745,10 @@ def create_pzz_check_task_endpoint(
     validates the cadastral VRI text against the PZZ zone definition.
 
     Each layer arrives either as a body part or as the id of a prior ``POST /uploads``.
+
+    ``mo_boundaries_feature_collection_file`` (optional) is a municipal
+    boundary layer: when given, the overlap report also flags parcels and zones
+    crossing or lying outside МО boundaries and МО polygons overlapping each other.
     """
     scratch = uploads_root(app_settings) / f"resolve-{uuid4().hex}"
     owner_id = user.user_id if user else ""
@@ -732,11 +789,21 @@ def create_pzz_check_task_endpoint(
             app_settings=app_settings,
             scratch=scratch,
         )
+        mo_boundaries_file = _resolve_file_slot(
+            mo_boundaries_feature_collection_file,
+            mo_boundaries_feature_collection_upload_id,
+            "mo_boundaries_feature_collection_file",
+            required=False,
+            owner_id=owner_id,
+            app_settings=app_settings,
+            scratch=scratch,
+        )
         return _create_pipeline_task(
             cadastral_file=cadastral_file,
             pzz_zones_file=pzz_zones_file,
             labels_file=labels_file,
             classifier_file=classifier_file,
+            mo_boundaries_file=mo_boundaries_file,
             include_pzz_check=True,
             cadastral_vri_col=cadastral_vri_col,
             pzz_zone_code_col=pzz_zone_code_col,
@@ -952,6 +1019,7 @@ async def create_pzz_check_stream_endpoint(
     pzz_zones_feature_collection_file: UploadFile = File(...),
     pzz_zone_vri_labels_file: UploadFile | None = File(default=None),
     vri_classifier_file: UploadFile | None = File(default=None),
+    mo_boundaries_feature_collection_file: UploadFile | None = File(default=None),
     cadastral_vri_col: str = Form(..., min_length=1),
     pzz_zone_code_col: str = Form(..., min_length=1),
     pzz_zone_name_col: str = Form(..., min_length=1),
@@ -970,7 +1038,8 @@ async def create_pzz_check_stream_endpoint(
 
     Same inputs as POST /tasks/pzz-check. One call uploads, creates the task,
     then streams: ``task`` -> ``task_event``/``status`` -> ``geojson`` (the
-    classified FeatureCollection with zone verdicts) -> ``done``.
+    classified FeatureCollection with zone verdicts; omitted above
+    ``SSE_INLINE_GEOJSON_MAX_BYTES``) -> ``file`` (result links) -> ``done``.
 
     The upload flow returns the classified layer only; the object-zone-fit
     summary is a scenario/chatbot concern and is available separately via
@@ -984,6 +1053,7 @@ async def create_pzz_check_stream_endpoint(
         pzz_zones_file=pzz_zones_feature_collection_file,
         labels_file=pzz_zone_vri_labels_file,
         classifier_file=vri_classifier_file,
+        mo_boundaries_file=mo_boundaries_feature_collection_file,
         include_pzz_check=True,
         cadastral_vri_col=cadastral_vri_col,
         pzz_zone_code_col=pzz_zone_code_col,
@@ -1033,7 +1103,8 @@ async def create_classify_only_stream_endpoint(
 
     Same inputs as POST /tasks/classify-only (no PZZ zones). Streams:
     ``task`` -> ``task_event``/``status`` -> ``geojson`` (classified
-    FeatureCollection with VRI candidate properties) -> ``done``.
+    FeatureCollection with VRI candidate properties; omitted above
+    ``SSE_INLINE_GEOJSON_MAX_BYTES``) -> ``file`` (result links) -> ``done``.
 
     No ``report`` event: classify-only has no zones, so the object-zone-fit
     summary is not applicable. Use a fetch-based SSE client.
@@ -1088,6 +1159,7 @@ async def create_pzz_check_chat_stream_endpoint(
     pzz_zones_feature_collection_file: UploadFile = File(...),
     pzz_zone_vri_labels_file: UploadFile | None = File(default=None),
     vri_classifier_file: UploadFile | None = File(default=None),
+    mo_boundaries_feature_collection_file: UploadFile | None = File(default=None),
     user_query: str = Form(..., min_length=1),
     cadastral_vri_col: str = Form(..., min_length=1),
     pzz_zone_code_col: str = Form(..., min_length=1),
@@ -1112,7 +1184,8 @@ async def create_pzz_check_chat_stream_endpoint(
     The file-upload counterpart of ``POST /scenarios/{id}/chat/stream``. Both
     cadastral parcels and PZZ zones are required (the answer is grounded in the
     object-zone-fit report). Uploads may be any supported geo format (GeoJSON,
-    GeoPackage, GML, KML, GeoParquet); they're stored as GeoJSON.
+    GeoPackage, GML, KML, GeoParquet, Shapefile/MapInfo in a ZIP); they're
+    stored as GeoJSON.
 
     A Bearer token is REQUIRED — chat history is persisted to ChatStorage under
     the token's user. ``chat_id`` is optional: when omitted a new chat is
@@ -1133,6 +1206,7 @@ async def create_pzz_check_chat_stream_endpoint(
         pzz_zones_file=pzz_zones_feature_collection_file,
         labels_file=pzz_zone_vri_labels_file,
         classifier_file=vri_classifier_file,
+        mo_boundaries_file=mo_boundaries_feature_collection_file,
         include_pzz_check=True,
         cadastral_vri_col=cadastral_vri_col,
         pzz_zone_code_col=pzz_zone_code_col,
@@ -1729,6 +1803,7 @@ async def create_auto_chat_stream_endpoint(
     pzz_zone_vri_labels_file: UploadFile | None = File(default=None),
     pzz_descriptions_file: UploadFile | None = File(default=None),
     vri_classifier_file: UploadFile | None = File(default=None),
+    mo_boundaries_feature_collection_file: UploadFile | None = File(default=None),
     mode: str = Form("pzz_check"),
     user_query: str | None = Form(default=None),
     chat_id: str | None = Form(default=None),
@@ -1902,6 +1977,9 @@ async def create_auto_chat_stream_endpoint(
         pzz_zones_file=pzz_zones_feature_collection_file if include_pzz_check else None,
         labels_file=pzz_zone_vri_labels_file,
         classifier_file=vri_classifier_file,
+        mo_boundaries_file=(
+            mo_boundaries_feature_collection_file if include_pzz_check else None
+        ),
         include_pzz_check=include_pzz_check,
         cadastral_vri_col=suggestions["cadastral_vri_col"].value,
         pzz_zone_code_col=(
