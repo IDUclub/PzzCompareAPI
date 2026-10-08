@@ -155,7 +155,12 @@ def test_object_zone_fit_without_report_is_unchanged(tmp_path: Path):
 
 def test_pipeline_attaches_columns_and_writes_report(tmp_path: Path):
     parcels = gpd.GeoDataFrame(
-        {"geometry": [box(0.001, 0.001, 0.002, 0.002), box(0.0015, 0.001, 0.0025, 0.002)]},
+        {
+            "geometry": [
+                box(0.001, 0.001, 0.002, 0.002),
+                box(0.0015, 0.001, 0.0025, 0.002),
+            ]
+        },
         crs="EPSG:4326",
     )
     zones = gpd.GeoDataFrame(
@@ -182,7 +187,9 @@ def test_pipeline_attaches_columns_and_writes_report(tmp_path: Path):
 
 def test_pipeline_skips_check_on_row_mismatch():
     parcels = gpd.GeoDataFrame({"geometry": [box(0, 0, 0.001, 0.001)]}, crs="EPSG:4326")
-    zones = gpd.GeoDataFrame({"code": ["Ж-1"], "geometry": [box(0, 0, 1, 1)]}, crs="EPSG:4326")
+    zones = gpd.GeoDataFrame(
+        {"code": ["Ж-1"], "geometry": [box(0, 0, 1, 1)]}, crs="EPSG:4326"
+    )
 
     classified, report = _attach_overlap_checks(
         parcels.iloc[0:0],
@@ -221,7 +228,9 @@ def test_overlaps_endpoint_reports_mo_counts(monkeypatch, tmp_path: Path):
 
 
 def test_overlaps_endpoint_without_mo_layer_has_no_mo_keys(monkeypatch, tmp_path: Path):
-    resp = _get_overlaps(monkeypatch, tmp_path, _Task(_result(tmp_path, overlaps=REPORT)))
+    resp = _get_overlaps(
+        monkeypatch, tmp_path, _Task(_result(tmp_path, overlaps=REPORT))
+    )
 
     assert "parcels_outside_mo" not in resp["summary"]
     assert "муниципальных" not in resp["chat_message"]

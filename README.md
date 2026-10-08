@@ -66,7 +66,7 @@ LLM). Сервис вызывает его через порт `PipelineRunner`
 
 ## Технологии
 
-- Python 3.11, FastAPI, Celery, SQLAlchemy + Alembic
+- Python 3.11, uv (зависимости в `pyproject.toml` + `uv.lock`), FastAPI, Celery, SQLAlchemy + Alembic
 - PostgreSQL, Redis, MinIO (S3-совместимое хранилище)
 - FastMCP 3.x (MCP-сервер), Prometheus-метрики
 - Docker / Docker Compose
@@ -277,13 +277,55 @@ stateless MCP-контракт для взаимодействия агенто�
 ## Тесты
 
 ```bash
-pip install -r requirements.txt
-pytest
+uv sync          # зависимости из uv.lock, вместе с dev-группой (pytest, black, pre-commit)
+uv run pytest
+uv run pre-commit install   # black на каждый коммит
 ```
+
+Зависимости меняются через `uv add` / `uv remove` (или правкой `pyproject.toml` и `uv lock`);
+`uv.lock` коммитится вместе с `pyproject.toml`. CI ставит их `uv sync --locked`, образ —
+`uv sync --frozen --no-dev`.
 
 Тесты герметичны (sqlite, dummy-окружение в `tests/conftest.py`) — живой
 Postgres/Redis не нужен. Пайплайн-тесты требуют установленных зависимостей
 пайплайна (geopandas, nltk и пр.).
+
+Интеграционные тесты (`tests/integration`, маркер `integration`) работают с настоящими
+PostgreSQL, Redis и MinIO: миграции Alembic строят схему моделей и откатываются, задача проходит
+свои статусы в базе, брокер Celery принимает сообщение, файлы задач проходят через MinIO. Без
+переменных `PZZ_TEST_*` они пропускаются:
+
+```bash
+PZZ_TEST_DATABASE_URL=postgresql+psycopg://pzz:pzz@localhost:5432/pzz \
+PZZ_TEST_REDIS_URL=redis://localhost:6379/0 \
+PZZ_TEST_MINIO_ENDPOINT=localhost:9000 PZZ_TEST_MINIO_ACCESS_KEY=minioadmin \
+PZZ_TEST_MINIO_SECRET_KEY=minioadmin \
+uv run pytest -m integration tests/integration
+```
+
+## CI и версии
+
+- `tests.yml` — на каждый PR в `dev`/`main`: юнит-тесты, интеграционные тесты (`integration.yml`,
+  ещё и по ночам) и проверка black (несоответствия правятся коммитом в ветку PR).
+- `pr-autofill.yml` — заголовок PR `vX.Y.Z (ветка)` (версия, с которой он вольётся) и список
+  коммитов в секции «Commits» в конце описания. Текст, написанный автором PR, не меняется:
+  обновляется только эта секция.
+- `version-bump.yml` — версия поднимается в ветке PR перед мерджем в `dev`: включите **Enable
+  auto-merge**, и коммит `bump:` обновит `pyproject.toml`, `service/__version__.py`, `uv.lock` и
+  `CHANGELOG.md` (метка `major` → major, ветки `feat/*`/`feature/*` → minor, остальные → patch),
+  после чего статус `version` пропустит мердж. Без auto-merge `version` ждёт.
+  - **Мердж в `dev` — только через Enable auto-merge.** Ruleset на `dev` требует статус
+    `version`, поэтому обычная кнопка Merge ждёт его. Каждый PR получает от бота коммит `bump:`;
+    когда `dev` уходит вперёд, бот заново вливает `dev` в ветки PR, стоящих в auto-merge, и
+    поднимает их версию.
+  - **Токен `VERSION_STATUS_TOKEN`.** Секрет репозитория с fine-grained PAT (доступ к этому
+    репозиторию, право Commit statuses: write) или classic PAT со scope `repo:status`. Им
+    ставится итоговый статус `version`: мердж, который auto-merge делает после проверки от
+    `GITHUB_TOKEN`, не запускает workflow, и релиз на dev бы не стартовал. Токен выпускает и
+    продлевает мейнтейнер репозитория; когда срок истекает, `version` перестаёт проходить, и
+    нужно выпустить новый токен и обновить секрет (Settings → Secrets and variables → Actions).
+- `release.yml` — мердж в `main` ставит тег версии из `dev` и черновик релиза из CHANGELOG.
+- Версия видна в `GET /health` и в OpenAPI.
 
 ---
 

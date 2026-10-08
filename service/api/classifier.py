@@ -318,9 +318,7 @@ def _validate_json_file(
         raise _slot_http_error(400, field_name, _INVALID_JSON_MESSAGE) from exc
     if not isinstance(data, expected_type):
         path.unlink(missing_ok=True)
-        raise _slot_http_error(
-            400, field_name, _wrong_json_type_message(expected_type)
-        )
+        raise _slot_http_error(400, field_name, _wrong_json_type_message(expected_type))
     return data
 
 

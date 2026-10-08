@@ -1,0 +1,65 @@
+# Release workflow - on every push to main (merging dev -> main) it tags the version that
+# came from dev and creates a draft pre-release whose notes are the CHANGELOG.md sections since the
+# previous release tag. The version is not bumped here: every merge into dev already bumped it
+# (see version-bump.yml). The draft can later be promoted to a full release manually in the GitHub UI.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# One release run at a time.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag version + draft release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # push the tag and create the release
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # all tags: the previous release bounds the notes
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # A push that brings no new version (the tag already exists) is a no-op.
+      - name: Tag the version
+        id: tag
+        run: |
+          script=.github/scripts/versioning.py
+          version="$(python3 "$script" current)"
+          tag="v${version}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "${tag} already released - nothing to do."
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          since="$(python3 "$script" latest-tag --below "$version")"
+          python3 "$script" notes --version "$version" ${since:+--since "$since"} \
+            > "${RUNNER_TEMP}/notes.md"
+          [ -s "${RUNNER_TEMP}/notes.md" ] || echo "- (no changelog entries)" > "${RUNNER_TEMP}/notes.md"
+          git tag -a "$tag" -m "release ${tag}"   # annotated, on the merge commit
+          git push origin "refs/tags/${tag}"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub draft pre-release
+        if: steps.tag.outputs.created == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Release ${{ steps.tag.outputs.tag }}
+          body_path: ${{ runner.temp }}/notes.md
+          draft: true          # keep it a draft so you can edit before publishing
+          prerelease: true     # mark as a pre-release until promoted
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

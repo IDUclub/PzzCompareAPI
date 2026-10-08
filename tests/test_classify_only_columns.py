@@ -45,7 +45,12 @@ def test_classify_only_drops_pzz_columns():
     cols = set(out.columns)
     assert _PZZ_ONLY_RENAMED.isdisjoint(cols), cols & _PZZ_ONLY_RENAMED
     # meaningful classify columns survive
-    assert {"ВРИ_ЕГРН", "Статус_классификации", "Область_проверки", "Топ5_возможных_ВРИ"} <= cols
+    assert {
+        "ВРИ_ЕГРН",
+        "Статус_классификации",
+        "Область_проверки",
+        "Топ5_возможных_ВРИ",
+    } <= cols
 
 
 def test_classify_only_never_exposes_pzz_verdict_field():

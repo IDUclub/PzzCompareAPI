@@ -44,9 +44,13 @@ def required_keys() -> dict[str, str]:
 
 def test_env_example_documents_every_required_key() -> None:
     documented = documented_keys()
-    missing = {key: where for key, where in required_keys().items() if key not in documented}
+    missing = {
+        key: where for key, where in required_keys().items() if key not in documented
+    }
 
-    assert not missing, "keys read without a default but absent from .env.example: " + ", ".join(
+    assert (
+        not missing
+    ), "keys read without a default but absent from .env.example: " + ", ".join(
         f"{key} ({where})" for key, where in sorted(missing.items())
     )
 
@@ -57,5 +61,7 @@ def test_required_key_is_not_left_empty(key: str) -> None:
     for line in EXAMPLE.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped.startswith(f"{key}="):
-            assert stripped.split("=", 1)[1].strip(), f"{key} is required but ships empty"
+            assert stripped.split("=", 1)[
+                1
+            ].strip(), f"{key} is required but ships empty"
             return
