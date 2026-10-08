@@ -313,8 +313,17 @@ uv run pytest -m integration tests/integration
 - `version-bump.yml` — версия поднимается в ветке PR перед мерджем в `dev`: включите **Enable
   auto-merge**, и коммит `bump:` обновит `pyproject.toml`, `service/__version__.py`, `uv.lock` и
   `CHANGELOG.md` (метка `major` → major, ветки `feat/*`/`feature/*` → minor, остальные → patch),
-  после чего статус `version` пропустит мердж. Без auto-merge `version` ждёт. Нужен секрет
-  `VERSION_STATUS_TOKEN` (токен с правом `repo:status`).
+  после чего статус `version` пропустит мердж. Без auto-merge `version` ждёт.
+  - **Мердж в `dev` — только через Enable auto-merge.** Ruleset на `dev` требует статус
+    `version`, поэтому обычная кнопка Merge ждёт его. Каждый PR получает от бота коммит `bump:`;
+    когда `dev` уходит вперёд, бот заново вливает `dev` в ветки PR, стоящих в auto-merge, и
+    поднимает их версию.
+  - **Токен `VERSION_STATUS_TOKEN`.** Секрет репозитория с fine-grained PAT (доступ к этому
+    репозиторию, право Commit statuses: write) или classic PAT со scope `repo:status`. Им
+    ставится итоговый статус `version`: мердж, который auto-merge делает после проверки от
+    `GITHUB_TOKEN`, не запускает workflow, и релиз на dev бы не стартовал. Токен выпускает и
+    продлевает мейнтейнер репозитория; когда срок истекает, `version` перестаёт проходить, и
+    нужно выпустить новый токен и обновить секрет (Settings → Secrets and variables → Actions).
 - `release.yml` — мердж в `main` ставит тег версии из `dev` и черновик релиза из CHANGELOG.
 - Версия видна в `GET /health` и в OpenAPI.
 
