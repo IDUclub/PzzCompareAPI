@@ -58,7 +58,9 @@ def test_zone_block_leads_when_enabled(zone_first):
 
 def test_reordering_preserves_every_word(monkeypatch):
     monkeypatch.setattr(matching_layer, "ZONE_CHECK_PROMPT_ZONE_FIRST", False)
-    matches = [{"section_name": "main", "matched_vri_code": "2.1", "matched_vri_name": "ИЖС"}]
+    matches = [
+        {"section_name": "main", "matched_vri_code": "2.1", "matched_vri_name": "ИЖС"}
+    ]
     default = _prompt(exact_matches=matches)
 
     monkeypatch.setattr(matching_layer, "ZONE_CHECK_PROMPT_ZONE_FIRST", True)

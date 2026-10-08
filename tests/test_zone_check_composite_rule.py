@@ -20,7 +20,9 @@ STEP = re.compile(r"^(\d+)\. ", re.MULTILINE)
 
 def section(heading: str, next_heading: str) -> str:
     start = ZONE_CHECK_SYSTEM_PROMPT.index(heading)
-    return ZONE_CHECK_SYSTEM_PROMPT[start : ZONE_CHECK_SYSTEM_PROMPT.index(next_heading, start)]
+    return ZONE_CHECK_SYSTEM_PROMPT[
+        start : ZONE_CHECK_SYSTEM_PROMPT.index(next_heading, start)
+    ]
 
 
 @pytest.fixture(scope="module")
@@ -36,7 +38,9 @@ def test_workflow_steps_are_numbered_without_gaps(workflow) -> None:
 
 def test_every_step_reference_points_at_a_real_step(workflow) -> None:
     steps = {int(match) for match in STEP.findall(workflow)}
-    referenced = {int(n) for n in re.findall(r"см\. пункт (\d+)", ZONE_CHECK_SYSTEM_PROMPT)}
+    referenced = {
+        int(n) for n in re.findall(r"см\. пункт (\d+)", ZONE_CHECK_SYSTEM_PROMPT)
+    }
 
     assert referenced, "expected the prompt to cross-reference its own steps"
     assert referenced <= steps, f"dangling references: {sorted(referenced - steps)}"
@@ -48,7 +52,9 @@ def test_enumerated_uses_must_all_be_checked(workflow) -> None:
 
 
 def test_descriptive_commas_are_not_an_enumeration(workflow) -> None:
-    assert "Описательные уточнения одного объекта перечислением не считаются" in workflow
+    assert (
+        "Описательные уточнения одного объекта перечислением не считаются" in workflow
+    )
 
 
 @pytest.mark.parametrize(

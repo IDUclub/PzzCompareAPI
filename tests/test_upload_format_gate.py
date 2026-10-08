@@ -133,7 +133,11 @@ def test_geojson_that_is_not_an_object_is_a_400_in_russian(tmp_path: Path) -> No
         (b"{oops", (dict, list), "файл не является корректным JSON/GeoJSON."),
         (b"\xff\xfe", (dict, list), "файл не является корректным JSON/GeoJSON."),
         (b"{}", list, "содержимое файла должно быть JSON-массивом."),
-        (b"42", (dict, list), "содержимое файла должно быть JSON-объектом или массивом."),
+        (
+            b"42",
+            (dict, list),
+            "содержимое файла должно быть JSON-объектом или массивом.",
+        ),
     ],
 )
 def test_json_slot_refusals_are_in_russian(
@@ -160,11 +164,14 @@ def test_too_large_upload_is_a_413_in_russian(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("max_bytes", "limit"), [(200 * 1024 * 1024, "200 МБ"), (1024 * 1024 // 2, "0.5 МБ")]
+    ("max_bytes", "limit"),
+    [(200 * 1024 * 1024, "200 МБ"), (1024 * 1024 // 2, "0.5 МБ")],
 )
 def test_size_limit_is_shown_in_megabytes(max_bytes: int, limit: str) -> None:
     exc = upload_too_large_error("file", max_bytes, "zones.xlsx")
-    assert exc.detail == f"файл («zones.xlsx»): файл больше допустимого размера {limit}."
+    assert (
+        exc.detail == f"файл («zones.xlsx»): файл больше допустимого размера {limit}."
+    )
 
 
 def test_missing_required_file_is_a_422_in_russian(tmp_path: Path) -> None:

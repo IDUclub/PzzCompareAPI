@@ -177,9 +177,7 @@ def describe_upload(
 
     stored_owner = str(meta.get("owner_id") or "")
     if owner_id and stored_owner and stored_owner != owner_id:
-        raise UploadError(
-            "файл загружен другим пользователем.", status_code=403
-        )
+        raise UploadError("файл загружен другим пользователем.", status_code=403)
 
     expires_at = meta.get("expires_at")
     if isinstance(expires_at, (int, float)) and expires_at < time.time():

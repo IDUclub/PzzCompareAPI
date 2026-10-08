@@ -2,3 +2,6 @@
 # Configure locally so git blame skips it:
 #   git config blame.ignoreRevsFile .git-blame-ignore-revs
 27c1d5ab6e14ebfaa1c4686436846280693b5ef1
+
+# Reformat with Black 26.5.1 (no logic changes).
+532e45c5dfdd89de47f3cf9081af7081d335a869

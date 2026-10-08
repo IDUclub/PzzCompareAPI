@@ -28,6 +28,11 @@ MCP-сервер для AI-агентов.
 - **Файловый флоу**: пользователь загружает GeoJSON напрямую
   (`/tasks/pzz-check`, `/tasks/classify-only`).
 
+Отдельно — **точечная проверка ВРИ по ПЗЗ территории** для агента проверки
+соответствия: допустим ли вид использования в зоне по настоящим ПЗЗ территории
+проекта (их читает NormGraph), с предельной этажностью и высотой
+(см. «Проверка ВРИ по ПЗЗ территории»). Сценарный и файловый флоу её не используют.
+
 ---
 
 ## Архитектура
@@ -66,7 +71,7 @@ LLM). Сервис вызывает его через порт `PipelineRunner`
 
 ## Технологии
 
-- Python 3.11, FastAPI, Celery, SQLAlchemy + Alembic
+- Python 3.11, uv (зависимости в `pyproject.toml` + `uv.lock`), FastAPI, Celery, SQLAlchemy + Alembic
 - PostgreSQL, Redis, MinIO (S3-совместимое хранилище)
 - FastMCP 3.x (MCP-сервер), Prometheus-метрики
 - Docker / Docker Compose
@@ -134,6 +139,10 @@ GeoParquet и ZIP-архив со слоем Shapefile (`.shp`) или MapInfo (
 - `GET /scenarios/{id}/tasks/{external_id}` (+ `/result`, `/object-zone-fit`, `/events`)
 - `DELETE` / `POST .../recompute`
 
+**Проверка ВРИ по ПЗЗ территории** (требует `Authorization: Bearer <jwt>`)
+- `POST /pzz/regulations/check-vri` — допустим ли вид использования в зоне по ПЗЗ
+  территории; см. «Проверка ВРИ по ПЗЗ территории»
+
 **Админ: рантайм-конфиг** (заголовок `X-Admin-Token: <ADMIN_API_TOKEN>`; пусто → 503)
 - `GET /admin/config/settings` — текущие эффективные настройки (секреты замаскированы)
 - `GET /admin/config/overrides` — активные оверрайды
@@ -190,6 +199,9 @@ MCP-сервер (`service/mcp_server/`) — отдельный процесс �
 **Файловые** (`tools/tasks.py`): `submit_pzz_check_task`,
 `submit_classify_only_task`, `get_task_status`, `list_tasks`,
 `get_task_events`, `get_task_result`, `cancel_task`, `recompute_task`.
+
+**ПЗЗ территории** (`tools/regulations.py`): `check_vri_in_pzz` — точечная
+проверка вида использования по ПЗЗ территории проекта (`POST /pzz/regulations/check-vri`).
 
 ### Параметры
 
@@ -277,13 +289,55 @@ stateless MCP-контракт для взаимодействия агенто�
 ## Тесты
 
 ```bash
-pip install -r requirements.txt
-pytest
+uv sync          # зависимости из uv.lock, вместе с dev-группой (pytest, black, pre-commit)
+uv run pytest
+uv run pre-commit install   # black на каждый коммит
 ```
+
+Зависимости меняются через `uv add` / `uv remove` (или правкой `pyproject.toml` и `uv lock`);
+`uv.lock` коммитится вместе с `pyproject.toml`. CI ставит их `uv sync --locked`, образ —
+`uv sync --frozen --no-dev`.
 
 Тесты герметичны (sqlite, dummy-окружение в `tests/conftest.py`) — живой
 Postgres/Redis не нужен. Пайплайн-тесты требуют установленных зависимостей
 пайплайна (geopandas, nltk и пр.).
+
+Интеграционные тесты (`tests/integration`, маркер `integration`) работают с настоящими
+PostgreSQL, Redis и MinIO: миграции Alembic строят схему моделей и откатываются, задача проходит
+свои статусы в базе, брокер Celery принимает сообщение, файлы задач проходят через MinIO. Без
+переменных `PZZ_TEST_*` они пропускаются:
+
+```bash
+PZZ_TEST_DATABASE_URL=postgresql+psycopg://pzz:pzz@localhost:5432/pzz \
+PZZ_TEST_REDIS_URL=redis://localhost:6379/0 \
+PZZ_TEST_MINIO_ENDPOINT=localhost:9000 PZZ_TEST_MINIO_ACCESS_KEY=minioadmin \
+PZZ_TEST_MINIO_SECRET_KEY=minioadmin \
+uv run pytest -m integration tests/integration
+```
+
+## CI и версии
+
+- `tests.yml` — на каждый PR в `dev`/`main`: юнит-тесты, интеграционные тесты (`integration.yml`,
+  ещё и по ночам) и проверка black (несоответствия правятся коммитом в ветку PR).
+- `pr-autofill.yml` — заголовок PR `vX.Y.Z (ветка)` (версия, с которой он вольётся) и список
+  коммитов в секции «Commits» в конце описания. Текст, написанный автором PR, не меняется:
+  обновляется только эта секция.
+- `version-bump.yml` — версия поднимается в ветке PR перед мерджем в `dev`: включите **Enable
+  auto-merge**, и коммит `bump:` обновит `pyproject.toml`, `service/__version__.py`, `uv.lock` и
+  `CHANGELOG.md` (метка `major` → major, ветки `feat/*`/`feature/*` → minor, остальные → patch),
+  после чего статус `version` пропустит мердж. Без auto-merge `version` ждёт.
+  - **Мердж в `dev` — только через Enable auto-merge.** Ruleset на `dev` требует статус
+    `version`, поэтому обычная кнопка Merge ждёт его. Каждый PR получает от бота коммит `bump:`;
+    когда `dev` уходит вперёд, бот заново вливает `dev` в ветки PR, стоящих в auto-merge, и
+    поднимает их версию.
+  - **Токен `VERSION_STATUS_TOKEN`.** Секрет репозитория с fine-grained PAT (доступ к этому
+    репозиторию, право Commit statuses: write) или classic PAT со scope `repo:status`. Им
+    ставится итоговый статус `version`: мердж, который auto-merge делает после проверки от
+    `GITHUB_TOKEN`, не запускает workflow, и релиз на dev бы не стартовал. Токен выпускает и
+    продлевает мейнтейнер репозитория; когда срок истекает, `version` перестаёт проходить, и
+    нужно выпустить новый токен и обновить секрет (Settings → Secrets and variables → Actions).
+- `release.yml` — мердж в `main` ставит тег версии из `dev` и черновик релиза из CHANGELOG.
+- Версия видна в `GET /health` и в OpenAPI.
 
 ---
 
@@ -299,6 +353,54 @@ CI-пайплайн [`.github/workflows/deploy.yml`](.github/workflows/deploy.ym
 
 ---
 
+## Проверка ВРИ по ПЗЗ территории
+
+`POST /pzz/regulations/check-vri` (MCP `check_vri_in_pzz`) отвечает агенту проверки
+соответствия, допустим ли вид использования в зоне по ПЗЗ территории. В запросе —
+по одному из каждой группы:
+
+- территория: `project_id` (территория проекта) или `territory_id` (urban_api);
+- вид использования: `vri_code` («2.1»), `physical_object_type_id` (тип объекта
+  urban_api; жилой дом — по этажности, как в сценарном флоу) или `service_type_id`;
+- зона: `pzz_zone_code` (точная зона ПЗЗ, «Ж-2.15») или `functional_zone_type_id`
+  (тип функциональной зоны urban_api);
+- необязательно `floors`, `height` — для проверки предельных параметров.
+
+**Откуда ПЗЗ.** Территорию даёт urban_api с токеном пользователя: геометрия проекта
+(`/projects/{id}/territory`) → самая глубокая территория, целиком её покрывающая
+(`/common_territory`), → её родители. NormGraph (`NORMGRAPH_BASE_URL`, сервисный токен
+`KEYCLOAK_*`) отдаёт ПЗЗ этих территорий (`/regulations/documents`,
+`/regulations/zones`) — берётся ПЗЗ самой глубокой (поселения, а не района).
+
+**Тип функциональной зоны → зоны ПЗЗ.** Типу urban_api соответствуют несколько зон
+ПЗЗ. Какие именно, решает языковая модель чата (`LLM_BACKEND`, `CHAT_MODEL`): по
+названию, группе и основным ВРИ каждой зоны документа и по описанию типов во
+встроенном шаблоне (`functional_zones_to_pzz_mapping.json`). Модель отвечает трижды
+параллельно, зона относится к типу по большинству ответов. Подзоны (Ж-1.10) следуют
+своей зоне (Ж-1), зона подтипа («Малоэтажная жилая зона») — и общему типу. Ответ
+кешируется на редакцию документа (хеш его зон). Без модели зоны подбираются по
+префиксу кода (Ж — жилые, О/ОИ/ОД — общественно-деловые, П/ПП/И — промышленные,
+Т/ТД/И — транспортные, …). Каким способом подобраны зоны, видно в
+`zone.mapping.method` (`llm` / `code_prefix`), сами зоны — в `zone.mapping.zone_codes`.
+
+**Вердикт** проверяется по каждой зоне (`zones[]`: вердикт, причина, предельные
+параметры) и сводится:
+
+- разрешён во всех зонах — `allowed_main` / `allowed_conditional` /
+  `allowed_auxiliary` по самому слабому разделу;
+- не разрешён ни в одной — `not_allowed`;
+- разрешён в части зон — `depends_on_zone` («Зависит от зоны ПЗЗ»): решает зона ПЗЗ,
+  в которой стоит объект;
+- нет ВРИ для объекта, нет зон этого типа в документе или не прочитаны ВРИ зон —
+  `unclear`.
+
+Этажность и высота сравниваются с предельными параметрами зоны (с учётом строк «для
+вида …», «кроме …», жилой / нежилой застройки; «не подлежит установлению» не
+ограничивает): `parameters.status` — «Соответствует» / «Превышены» / «Не проверено».
+
+Нет ПЗЗ у территории — 404; urban_api / NormGraph недоступны — 502; не настроены
+`NORMGRAPH_BASE_URL` или сервисный аккаунт — 503.
+
 ## Конфигурация
 
 Все настройки — через переменные окружения / `.env.development`
@@ -307,4 +409,6 @@ CI-пайплайн [`.github/workflows/deploy.yml`](.github/workflows/deploy.ym
 Для чат-ручек: `CHAT_STORAGE_BASE_URL` (история диалогов; пусто — персист выключен),
 `CHAT_MODEL` (дефолтная модель чата на хосте выбранного `LLM_BACKEND`), `CHAT_SYSTEM_PROMPT_PATH`,
 `KEYCLOAK_*` (сервисный токен для записи истории, см. «Аутентификация»).
+Проверка ВРИ по ПЗЗ территории: `NORMGRAPH_BASE_URL` (пусто — проверка недоступна),
+`NORMGRAPH_TIMEOUT_SECONDS`; NormGraph вызывается тем же сервисным токеном.
 Секреты в репозиторий не коммитятся.

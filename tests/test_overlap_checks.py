@@ -64,7 +64,9 @@ BIG_ZONE = [("Ж-1", box(0.0, 0.0, 0.01, 0.01))]
 
 
 def test_clean_layers_report_nothing():
-    parcels = _parcels([box(0.001, 0.001, 0.002, 0.002), box(0.002, 0.001, 0.003, 0.002)])
+    parcels = _parcels(
+        [box(0.001, 0.001, 0.002, 0.002), box(0.002, 0.001, 0.003, 0.002)]
+    )
     result = _check(parcels, _zones(BIG_ZONE))
 
     assert result.report["features"] == []
@@ -107,7 +109,9 @@ def test_sliver_overlap_is_digitising_noise():
 
 
 def test_overlapping_zones_are_reported():
-    zones = _zones([("Ж-1", box(0.0, 0.0, 0.01, 0.01)), ("ОД-1", box(0.008, 0.0, 0.02, 0.01))])
+    zones = _zones(
+        [("Ж-1", box(0.0, 0.0, 0.01, 0.01)), ("ОД-1", box(0.008, 0.0, 0.02, 0.01))]
+    )
     result = _check(_parcels([box(0.001, 0.001, 0.002, 0.002)]), zones)
 
     assert _kinds(result) == [KIND_ZONE_ZONE]
@@ -118,7 +122,9 @@ def test_overlapping_zones_are_reported():
 
 
 def test_parcel_cut_by_zone_boundary():
-    zones = _zones([("Ж-1", box(0.0, 0.0, 0.00175, 0.01)), ("ОД-1", box(0.00175, 0.0, 0.01, 0.01))])
+    zones = _zones(
+        [("Ж-1", box(0.0, 0.0, 0.00175, 0.01)), ("ОД-1", box(0.00175, 0.0, 0.01, 0.01))]
+    )
     result = _check(_parcels([box(0.001, 0.001, 0.002, 0.002)]), zones)
 
     assert _kinds(result) == [KIND_PARCEL_MULTI_ZONE]
@@ -137,7 +143,12 @@ def test_parcel_cut_by_zone_boundary():
 
 def test_parcel_grazing_a_neighbour_zone_stays_single_zone():
     # 0.05 % of the parcel lies across the boundary — below the 0.1 % threshold.
-    zones = _zones([("Ж-1", box(0.0, 0.0, 0.0019995, 0.01)), ("ОД-1", box(0.0019995, 0.0, 0.01, 0.01))])
+    zones = _zones(
+        [
+            ("Ж-1", box(0.0, 0.0, 0.0019995, 0.01)),
+            ("ОД-1", box(0.0019995, 0.0, 0.01, 0.01)),
+        ]
+    )
     result = _check(_parcels([box(0.001, 0.001, 0.002, 0.002)]), zones)
 
     assert result.summary["parcels_in_multiple_zones"] == 0
@@ -158,7 +169,9 @@ def test_cadastral_number_column_is_found_by_values():
     )
     frame["Примечание"] = ["47:01", "x", None]
     assert detect_cadastral_number_column(frame) == "Кадастровый_номер"
-    assert detect_cadastral_number_column(frame.drop(columns="Кадастровый_номер")) is None
+    assert (
+        detect_cadastral_number_column(frame.drop(columns="Кадастровый_номер")) is None
+    )
 
 
 def test_summary_lines_mention_every_kind():
@@ -177,8 +190,8 @@ def test_summary_lines_mention_every_kind():
     ]
 
 
-
 # --- Municipal boundaries (МО) ---------------------------------------------
+
 
 def _mo(shapes):
     return gpd.GeoDataFrame(
@@ -277,7 +290,12 @@ def test_parcel_partly_and_wholly_outside_mo():
 
 
 def test_zone_across_mo_boundary_and_outside_mo():
-    mo = _mo([("Западный", box(0.0, 0.0, 0.005, 0.01)), ("Восточный", box(0.005, 0.0, 0.01, 0.01))])
+    mo = _mo(
+        [
+            ("Западный", box(0.0, 0.0, 0.005, 0.01)),
+            ("Восточный", box(0.005, 0.0, 0.01, 0.01)),
+        ]
+    )
     zones = _zones(
         [("Ж-1", box(0.004, 0.0, 0.006, 0.01)), ("ОД-1", box(0.009, 0.0, 0.012, 0.01))]
     )
@@ -297,11 +315,18 @@ def test_zone_across_mo_boundary_and_outside_mo():
 
 
 def test_overlapping_mo_are_reported():
-    mo = _mo([("Западный", box(0.0, 0.0, 0.006, 0.01)), ("Восточный", box(0.005, 0.0, 0.01, 0.01))])
+    mo = _mo(
+        [
+            ("Западный", box(0.0, 0.0, 0.006, 0.01)),
+            ("Восточный", box(0.005, 0.0, 0.01, 0.01)),
+        ]
+    )
     result = _check_mo(_parcels([box(0.001, 0.001, 0.002, 0.002)]), _zones([]), mo)
 
     mo_features = [
-        f["properties"] for f in result.report["features"] if f["properties"]["kind"] == KIND_MO_MO
+        f["properties"]
+        for f in result.report["features"]
+        if f["properties"]["kind"] == KIND_MO_MO
     ]
     assert len(mo_features) == 1
     assert mo_features[0]["Объект_1"] == "МО «Западный»"
@@ -319,7 +344,9 @@ def test_mo_name_column_detection():
 
 def test_mo_without_names_gets_numbers():
     mo = _mo(WEST_EAST_MO)[["geometry"]]
-    result = _check_mo(_parcels([box(0.001, 0.001, 0.002, 0.002)]), _zones(BIG_ZONE), mo)
+    result = _check_mo(
+        _parcels([box(0.001, 0.001, 0.002, 0.002)]), _zones(BIG_ZONE), mo
+    )
 
     assert result.parcel_columns.iloc[0][COL_MO] == "МО № 0 (75 %), МО № 1 (25 %)"
 

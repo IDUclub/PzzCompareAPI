@@ -1,0 +1,100 @@
+# Auto-fill the title of pull requests and keep a generated section at the end of their body.
+#   PRs into dev:
+#     * title = "vX.Y.Z (branch)": the version the PR will be merged with
+#       (.github/scripts/versioning.py: label "major" -> major, feat/* or feature/* -> minor,
+#       any other branch -> patch) - predicted from dev until auto-merge bumps it in the branch
+#       (version-bump.yml), the bumped one after. GitHub uses the PR title as the merge commit
+#       title;
+#     * section "Commits" = the PR's commits.
+#   PRs into main (releases):
+#     * title = "vX.Y.Z": the version already on dev - a release does not bump it;
+#     * section "Release notes" = the CHANGELOG.md sections since the previous release tag (the
+#       PR's commits when there are none).
+# Re-runs on every push to the PR (synchronize) and on label changes, so the title and the section
+# always reflect the current state. The section sits between <!-- pr-autofill --> markers and is
+# the only part of the body rewritten: the author's description (why, test plan, risks) stays.
+# A manually edited title is overwritten. Runs only for same-repo branches (fork PRs get a
+# read-only token).
+
+name: PR autofill
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+    branches: [dev, main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  autofill:
+    name: Fill PR title and body
+    runs-on: ubuntu-latest
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history + tags: commit lists and the last release tag
+
+      - name: Compute and apply title + body section
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          script=.github/scripts/versioning.py
+          commits="$(git log --reverse --format='- %s' "${BASE_SHA}..${HEAD_SHA}")"
+          heading="Commits"
+          # The checkout is the PR merge ref: the version the merge would carry.
+          version="$(python3 "$script" current)"
+          if [ "$BASE_REF" = "main" ]; then
+            title="v${version}"
+            heading="Release notes"
+            since="$(python3 "$script" latest-tag --below "$version")"
+            section="$(python3 "$script" notes --version "$version" ${since:+--since "$since"})"
+            [ -z "$section" ] && section="$commits"
+          elif python3 "$script" bumped --ref "origin/${BASE_REF}"; then
+            # Already bumped in the branch (version-bump.yml): show that version.
+            title="v${version} (${HEAD_REF})"
+            section="$commits"
+          else
+            increment="$(python3 "$script" kind --branch "$HEAD_REF" --labels "$LABELS")"
+            next="$(python3 "$script" next --kind "$increment" --ref "origin/${BASE_REF}")"
+            title="v${next} (${HEAD_REF})"
+            section="$commits"
+          fi
+          [ -z "$section" ] && section="- (no commits)"
+
+          # A late run (approved after the merge, or for an older push) must not overwrite the
+          # title the PR was merged with.
+          current="$(gh pr view "$PR" --json state,headRefOid --jq '.state + " " + .headRefOid')"
+          if [ "$current" != "OPEN ${HEAD_SHA}" ]; then
+            echo "PR is merged, closed or has a newer head (${current}) - leaving it as is"
+            exit 0
+          fi
+
+          # Replace the generated section of the body (or append it); keep the rest as written.
+          gh pr view "$PR" --json body --jq .body > "${RUNNER_TEMP}/body.md"
+          printf '## %s\n\n%s\n' "$heading" "$section" > "${RUNNER_TEMP}/section.md"
+          python3 - "${RUNNER_TEMP}/body.md" "${RUNNER_TEMP}/section.md" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          start, end = "<!-- pr-autofill -->", "<!-- /pr-autofill -->"
+          body_path, section_path = Path(sys.argv[1]), Path(sys.argv[2])
+          body = body_path.read_text(encoding="utf-8").strip()
+          section = f"{start}\n{section_path.read_text(encoding='utf-8').strip()}\n{end}"
+          generated = re.compile(re.escape(start) + r".*?" + re.escape(end), re.DOTALL)
+          if generated.search(body):
+              body = generated.sub(lambda _: section, body, count=1)
+          else:
+              body = f"{body}\n\n{section}" if body else section
+          body_path.write_text(body + "\n", encoding="utf-8")
+          PY
+          gh pr edit "$PR" --title "$title" --body-file "${RUNNER_TEMP}/body.md"

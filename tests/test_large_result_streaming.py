@@ -71,7 +71,9 @@ def test_iter_features_collects_members_around_the_array(tmp_path: Path) -> None
 
 def test_iter_features_handles_empty_collections(tmp_path: Path) -> None:
     members: dict = {}
-    path = _write(tmp_path / "r.geojson", '{"type": "FeatureCollection", "features": []}')
+    path = _write(
+        tmp_path / "r.geojson", '{"type": "FeatureCollection", "features": []}'
+    )
     assert list(iter_geojson_features(path, members)) == []
     assert members == {"type": "FeatureCollection"}
     assert list(iter_geojson_features(_write(tmp_path / "e.json", "{}"), {})) == []
@@ -93,7 +95,9 @@ def test_iter_features_rejects_malformed_json(tmp_path: Path, text: str) -> None
 
 
 def _report(tmp_path: Path, collection: dict) -> dict:
-    path = _write(tmp_path / "result.geojson", json.dumps(collection, ensure_ascii=False))
+    path = _write(
+        tmp_path / "result.geojson", json.dumps(collection, ensure_ascii=False)
+    )
     return build_object_zone_fit_response(
         _Task(str(path)), "ext-1", "object", SimpleNamespace(outputs_dir=str(tmp_path))
     )
@@ -134,7 +138,10 @@ def test_report_on_malformed_result_is_503(tmp_path: Path) -> None:
     path = _write(tmp_path / "result.geojson", '{"features": [')
     with pytest.raises(HTTPException) as exc:
         build_object_zone_fit_response(
-            _Task(str(path)), "ext-1", "object", SimpleNamespace(outputs_dir=str(tmp_path))
+            _Task(str(path)),
+            "ext-1",
+            "object",
+            SimpleNamespace(outputs_dir=str(tmp_path)),
         )
     assert exc.value.status_code == 503
 
@@ -241,7 +248,9 @@ def test_stream_inlines_small_result(monkeypatch, tmp_path: Path) -> None:
     assert events.index("geojson") < events.index("file") < events.index("done")
 
 
-def test_stream_sends_only_the_link_for_large_result(monkeypatch, tmp_path: Path) -> None:
+def test_stream_sends_only_the_link_for_large_result(
+    monkeypatch, tmp_path: Path
+) -> None:
     events = _stream_events(monkeypatch, tmp_path, max_bytes=10)
     assert "geojson" not in events
     assert "error" not in events

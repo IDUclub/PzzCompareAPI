@@ -1,0 +1,87 @@
+name: Integration tests
+
+# Integration tests against disposable infrastructure — nightly, on demand, and on PRs via the
+# Tests workflow (workflow_call):
+#   - PostgreSQL: the Alembic migrations build the models' schema and roll back; a task goes
+#     through its states in the real database;
+#   - Redis: the Celery broker takes and gives back a message;
+#   - MinIO: task files round-trip through object storage.
+# Each test self-skips when its PZZ_TEST_* variable is unset, so a plain `pytest` stays hermetic.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: "41 3 * * *"
+
+env:
+  APP_ENV: development
+  URBAN_API_BASE_URL: http://localhost:9999
+  FILESERVER_ENDPOINT: localhost:9000
+  FILESERVER_ACCESS_KEY: test
+  FILESERVER_SECRET_KEY: test
+  FILESERVER_BUCKET_NAME: test
+
+jobs:
+  integration:
+    name: PostgreSQL + Redis + MinIO
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pzz
+          POSTGRES_PASSWORD: pzz
+          POSTGRES_DB: pzz
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pzz"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # MinIO no longer publishes public images; Chainguard builds the same server from source.
+      # Started here, not as a service: a service container cannot be given `server /data`.
+      # Chainguard publishes only `latest`, so the image is pinned by digest (2026-10-08) to keep
+      # the tests from breaking on their own; refresh the digest deliberately.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            chainguard/minio:latest@sha256:59667194421209c2c1eacbe761e24787e047985c5dfa96b15da9b59fe9b55cd0 server /data
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9000/minio/health/live && break
+            sleep 2
+          done
+          curl -sf http://localhost:9000/minio/health/live
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.10"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Run integration tests
+        env:
+          PZZ_TEST_DATABASE_URL: postgresql+psycopg://pzz:pzz@localhost:5432/pzz
+          PZZ_TEST_REDIS_URL: redis://localhost:6379/0
+          PZZ_TEST_MINIO_ENDPOINT: localhost:9000
+          PZZ_TEST_MINIO_ACCESS_KEY: minioadmin
+          PZZ_TEST_MINIO_SECRET_KEY: minioadmin
+        run: |
+          cp .env.example .env.development
+          uv run pytest tests/integration -m integration -rs

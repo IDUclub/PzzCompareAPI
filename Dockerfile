@@ -1,9 +1,15 @@
 FROM python:3.11-slim
 
+# uv installs the locked dependencies into /app/.venv with the image's Python.
+COPY --from=ghcr.io/astral-sh/uv:0.12.10 /uv /uvx /bin/
+ENV UV_PYTHON_DOWNLOADS=never \
+    UV_COMPILE_BYTECODE=1
+
 WORKDIR /app
 
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY pyproject.toml uv.lock /app/
+RUN uv sync --frozen --no-dev --no-install-project --no-cache
+ENV PATH="/app/.venv/bin:$PATH"
 
 COPY . /app
 
