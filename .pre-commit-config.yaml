@@ -1,7 +1,7 @@
 # Auto-format staged Python with Black on every commit.
 # One-time setup per clone:
-#   pip install -r requirements-dev.txt   # gives you `pre-commit` (and black for manual runs / editor)
-#   pre-commit install
+#   uv sync                       # the dev group gives you `pre-commit` (and black for manual runs / editor)
+#   uv run pre-commit install
 # The Black used by the hook runs in pre-commit's own isolated env (pinned by `rev`),
 # so it works regardless of your active virtualenv.
 repos:
