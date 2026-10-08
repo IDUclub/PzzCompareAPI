@@ -17,6 +17,7 @@ from starlette.routing import Route
 from ..log_sink import setup_redis_sink
 from ..logging_config import setup_logging
 from .dependencies import init_dependencies, shutdown_dependencies
+from .tools.regulations import regulations_mcp
 from .tools.scenarios import scenarios_mcp
 from .tools.tasks import tasks_mcp
 
@@ -39,6 +40,10 @@ TWO WAYS TO CLASSIFY:
    explain what may be built in a zone.
 2. File flow: the user provides raw GeoJSON (submit_pzz_check_task /
    submit_classify_only_task). Only for small inline datasets.
+
+ONE USE AGAINST THE REAL ПЗЗ: check_vri_in_pzz answers whether a ВРИ (or an
+object / service type) may stand in a zone under the ПЗЗ of the project's
+territory, with the floors / height limits of the zone.
 
 TYPICAL SCENARIO DIALOG:
   classify_scenario(scenario_id, year, source) -> external_id
@@ -65,6 +70,7 @@ main_mcp = FastMCP(
 )
 main_mcp.mount(scenarios_mcp)
 main_mcp.mount(tasks_mcp)
+main_mcp.mount(regulations_mcp)
 
 
 async def _health(request):  # noqa: ARG001 — Starlette signature

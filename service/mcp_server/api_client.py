@@ -292,6 +292,18 @@ class ApiClient:
         )
         return self._json_or_raise(resp)
 
+    async def check_vri(
+        self, *, body: dict[str, Any], token: str | None = None
+    ) -> dict[str, Any]:
+        # The first check against a ПЗЗ edition maps its zones with the LLM: wait longer.
+        resp = await self._client.post(
+            "/pzz/regulations/check-vri",
+            json=body,
+            headers=self._bearer(token),
+            timeout=300.0,
+        )
+        return self._json_or_raise(resp)
+
     def _json_or_raise(self, resp: httpx.Response) -> Any:
         if resp.status_code >= 400:
             raise ApiError(resp.status_code, self._safe_body(resp))

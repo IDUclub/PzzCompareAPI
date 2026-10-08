@@ -11,6 +11,10 @@ Wraps the three endpoints we consume from the ``/scenarios/*`` flow:
   plain ``/physical_objects`` endpoint does NOT return geometry, so we
   must use the ``_with_geometry`` variant for any spatial work.
 
+The territory of a scenario (whose ПЗЗ applies) comes from its project:
+``GET /projects/{id}/territory`` gives the geometry, ``POST /common_territory``
+the deepest territory covering it and ``GET /territory/{id}`` its parents.
+
 Auth: pass the incoming user's ``Authorization: Bearer ...`` header
 through unchanged.
 """
@@ -140,6 +144,37 @@ class UrbanApiClient:
         resp = await self._client.get(
             f"/api/v1/scenarios/{scenario_id}/services_with_geometry",
             params=params,
+            headers=self._auth_headers(token),
+        )
+        return self._json_or_raise(resp)
+
+    async def get_project_territory(
+        self, project_id: int, *, token: str | None = None
+    ) -> dict[str, Any]:
+        """Return the project territory: its ``geometry`` and properties."""
+        resp = await self._client.get(
+            f"/api/v1/projects/{project_id}/territory",
+            headers=self._auth_headers(token),
+        )
+        return self._json_or_raise(resp)
+
+    async def get_common_territory(
+        self, geometry: dict[str, Any], *, token: str | None = None
+    ) -> dict[str, Any]:
+        """Return the deepest territory that fully covers ``geometry`` (EPSG:4326)."""
+        resp = await self._client.post(
+            "/api/v1/common_territory",
+            json=geometry,
+            headers=self._auth_headers(token),
+        )
+        return self._json_or_raise(resp)
+
+    async def get_territory(
+        self, territory_id: int, *, token: str | None = None
+    ) -> dict[str, Any]:
+        """Return a territory with its ``parent`` (``{id, name}``)."""
+        resp = await self._client.get(
+            f"/api/v1/territory/{territory_id}",
             headers=self._auth_headers(token),
         )
         return self._json_or_raise(resp)

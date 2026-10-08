@@ -131,6 +131,13 @@ class Settings(BaseSettings):
     urban_api_base_url: str = Field(default="")
     urban_api_timeout_seconds: float = Field(default=30.0)
 
+    # ── NormGraph zone regulations ───────────────────────────────────────────
+    # The ВРИ check (POST /pzz/regulations/check-vri) takes the ПЗЗ of a territory
+    # from NormGraph, called with the Keycloak service token above. Empty => the
+    # check is unavailable (503); the scenario checks never use it.
+    normgraph_base_url: str = Field(default="")
+    normgraph_timeout_seconds: float = Field(default=30.0)
+
     fileserver_endpoint: str = Field(default="")
     fileserver_access_key: str = Field(default="")
     fileserver_secret_key: str = Field(default="")
@@ -243,6 +250,10 @@ def _build_settings_cached() -> Settings:
         ),
         urban_api_base_url=_get_optional_env(config, "URBAN_API_BASE_URL").rstrip("/"),
         urban_api_timeout_seconds=float("600"),
+        normgraph_base_url=_get_optional_env(config, "NORMGRAPH_BASE_URL").rstrip("/"),
+        normgraph_timeout_seconds=float(
+            _get_optional_env(config, "NORMGRAPH_TIMEOUT_SECONDS", "30")
+        ),
         chat_storage_base_url=_get_optional_env(config, "CHAT_STORAGE_BASE_URL").rstrip(
             "/"
         ),
