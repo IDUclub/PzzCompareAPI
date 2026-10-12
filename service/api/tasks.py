@@ -1613,10 +1613,22 @@ def _overlap_summary_lines(counts: dict[str, int] | None) -> list[str]:
         )
     mo_lines = (
         ("mo_overlaps", "Наложения границ муниципальных образований друг на друга"),
-        ("parcels_in_multiple_mo", "Участков, пересекающих границу муниципальных образований"),
-        ("parcels_outside_mo", "Участков, полностью или частично вне границ муниципальных образований"),
-        ("zones_in_multiple_mo", "Территориальных зон, пересекающих границу муниципальных образований"),
-        ("zones_outside_mo", "Территориальных зон, полностью или частично вне границ муниципальных образований"),
+        (
+            "parcels_in_multiple_mo",
+            "Участков, пересекающих границу муниципальных образований",
+        ),
+        (
+            "parcels_outside_mo",
+            "Участков, полностью или частично вне границ муниципальных образований",
+        ),
+        (
+            "zones_in_multiple_mo",
+            "Территориальных зон, пересекающих границу муниципальных образований",
+        ),
+        (
+            "zones_outside_mo",
+            "Территориальных зон, полностью или частично вне границ муниципальных образований",
+        ),
     )
     lines.extend(f"{text}: {counts[key]}." for key, text in mo_lines if counts.get(key))
     return lines
@@ -1636,7 +1648,12 @@ def _with_overlap_lines(chat_message: str, counts: dict[str, int] | None) -> str
     if not lines:
         return chat_message
     return "\n".join(
-        [chat_message, "", "Проверка наложений исходных слоёв:", *(f"- {l}" for l in lines)]
+        [
+            chat_message,
+            "",
+            "Проверка наложений исходных слоёв:",
+            *(f"- {l}" for l in lines),
+        ]
     )
 
 
@@ -2014,8 +2031,9 @@ def build_object_zone_fit_response(
             "group_by": "object",
             "summary": summary,
             "chat_message": _with_overlap_lines(
-            _build_chat_message_objects(rows, summary, subject=subject), overlap_counts
-        ),
+                _build_chat_message_objects(rows, summary, subject=subject),
+                overlap_counts,
+            ),
             "objects": rows,
         }
 
@@ -2057,7 +2075,8 @@ def build_object_zone_fit_response(
         "group_by": "zone",
         "summary": summary,
         "chat_message": _with_overlap_lines(
-            _build_chat_message_zones(zones_list, summary, subject=subject), overlap_counts
+            _build_chat_message_zones(zones_list, summary, subject=subject),
+            overlap_counts,
         ),
         "zones": zones_list,
     }

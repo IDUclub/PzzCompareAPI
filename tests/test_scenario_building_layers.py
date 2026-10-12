@@ -37,7 +37,10 @@ def test_scenario_runner_resolves_category_and_basis():
     )
     assert category == "Сервис"
     assert code == "4.7"
-    assert basis == "сервис (service_type_id=110) — тип использования подобран по типу сервиса"
+    assert (
+        basis
+        == "сервис (service_type_id=110) — тип использования подобран по типу сервиса"
+    )
 
     # Unknown service type → still a service (manual review), not a building.
     code, _, basis, category = runner._resolve(
@@ -110,9 +113,10 @@ def test_scenario_zone_fit_with_categories_keeps_scenario_subject(tmp_path: Path
     assert resp["subject"] == "scenario_object"
     assert resp["mode"] == "building_pzz_check"
     assert resp["summary"]["by_category"] == {"Здание": 2, "Сервис": 1}
-    assert "Проверено объектов сценария: 3 (зданий: 2, сервисов: 1)." in resp[
-        "chat_message"
-    ]
+    assert (
+        "Проверено объектов сценария: 3 (зданий: 2, сервисов: 1)."
+        in resp["chat_message"]
+    )
     # Objects have a usage type, not a land parcel's ВРИ.
     assert "ВРИ" not in resp["chat_message"]
     assert "Тип использования допустим" in resp["chat_message"]
