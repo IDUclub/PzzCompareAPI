@@ -87,13 +87,13 @@ def test_runners_return_same_result_contract(tmp_path, monkeypatch) -> None:
         runner_mod, "importlib", SimpleNamespace(import_module=lambda _: FakeModule)
     )
 
-    def fake_subprocess_run(*args, **kwargs):
+    def fake_run_process(args, env):
         (tmp_path / "pzz_compare_spatial_first_task-123_result.geojson").write_text(
             "{}"
         )
-        return SimpleNamespace(returncode=0, stderr="")
+        return 0, ""
 
-    monkeypatch.setattr(runner_mod.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(runner_mod, "_run_pipeline_process", fake_run_process)
 
     in_process_result = InProcessPipelineRunner(settings).run(request)
     subprocess_result = SubprocessPipelineRunner(settings).run(request)
@@ -161,14 +161,14 @@ def test_in_process_passes_mo_layer_only_when_present(tmp_path, monkeypatch) -> 
 def test_subprocess_passes_mo_layer_via_env(tmp_path, monkeypatch) -> None:
     envs = []
 
-    def fake_subprocess_run(*args, **kwargs):
-        envs.append(kwargs["env"])
+    def fake_run_process(args, env):
+        envs.append(env)
         (tmp_path / "pzz_compare_spatial_first_task-123_result.geojson").write_text(
             "{}"
         )
-        return SimpleNamespace(returncode=0, stderr="")
+        return 0, ""
 
-    monkeypatch.setattr(runner_mod.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(runner_mod, "_run_pipeline_process", fake_run_process)
     request = replace(_request(tmp_path), mo_boundaries_data_path="/tmp/mo.geojson")
     SubprocessPipelineRunner(_settings("subprocess")).run(request)
 
@@ -199,3 +199,59 @@ def test_storage_runner_downloads_mo_layer(tmp_path) -> None:
     # An absent МО layer stays absent.
     without_mo = runner._materialise_inputs(_request(tmp_path), tmp_path)
     assert without_mo.mo_boundaries_data_path == ""
+
+
+_CHILD_SCRIPT = r"""
+import logging, sys
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    stream=sys.stdout,
+)
+log = logging.getLogger("pipeline_modules.step")
+log.info("loaded 3 layers")
+print("plain print line")
+try:
+    1 / 0
+except ZeroDivisionError:
+    log.exception("step failed")
+sys.stderr.write(" 50%|#####     | 5/10 [00:01<00:01, 4.2it/s]\n")
+raise RuntimeError("pipeline boom")
+"""
+
+
+def test_run_pipeline_process_streams_logs_and_tracebacks() -> None:
+    import os
+    import sys
+
+    from loguru import logger
+
+    records: list[dict] = []
+    sink_id = logger.add(lambda m: records.append(m.record), level="DEBUG")
+    try:
+        returncode, stderr_tail = runner_mod._run_pipeline_process(
+            [sys.executable, "-c", _CHILD_SCRIPT], dict(os.environ)
+        )
+    finally:
+        logger.remove(sink_id)
+
+    assert returncode != 0
+    # Child's crash traceback is returned for CalledProcessError; tqdm is dropped.
+    assert stderr_tail.startswith("Traceback (most recent call last):")
+    assert "RuntimeError: pipeline boom" in stderr_tail
+    assert "it/s]" not in stderr_tail
+
+    by_message = {r["message"]: r for r in records}
+    info = by_message["loaded 3 layers"]
+    assert info["level"].name == "INFO"
+    assert info["extra"]["logger_name"] == "pipeline_modules.step"
+
+    assert by_message["plain print line"]["extra"]["logger_name"] == "pipeline.stdout"
+
+    failed = by_message["step failed"]
+    assert failed["level"].name == "ERROR"
+    assert "ZeroDivisionError" in failed["extra"]["exception_text"]
+
+    exit_record = by_message[f"pipeline subprocess exited with code {returncode}"]
+    assert exit_record["level"].name == "ERROR"
+    assert "RuntimeError: pipeline boom" in exit_record["extra"]["exception_text"]

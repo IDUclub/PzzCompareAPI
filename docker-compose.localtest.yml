@@ -48,6 +48,7 @@ services:
     build: .
     user: root
     environment:
+      SERVICE_NAME: api
       APP_ENV: development
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres_pzz:5432/pzz_pipeline
       REDIS_URL: redis://redis:6379/0
@@ -71,6 +72,7 @@ services:
     build: .
     user: root
     environment:
+      SERVICE_NAME: worker
       APP_ENV: development
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres_pzz:5432/pzz_pipeline
       REDIS_URL: redis://redis:6379/0
@@ -88,6 +90,7 @@ services:
     build: .
     user: root
     environment:
+      SERVICE_NAME: worker_llm
       APP_ENV: development
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres_pzz:5432/pzz_pipeline
       REDIS_URL: redis://redis:6379/0

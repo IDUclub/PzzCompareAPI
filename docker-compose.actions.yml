@@ -68,6 +68,7 @@ services:
     env_file: .env.development
     environment:
       <<: *app-env
+      SERVICE_NAME: api
       IMAGE: ${IMAGE}
     depends_on:
       postgres:
@@ -94,6 +95,7 @@ services:
     env_file: .env.development
     environment:
       <<: *app-env
+      SERVICE_NAME: worker
       IMAGE: ${IMAGE}
     depends_on:
       postgres:
@@ -123,6 +125,7 @@ services:
     env_file: .env.development
     environment:
       <<: *app-env
+      SERVICE_NAME: worker_llm
       IMAGE: ${IMAGE}
     depends_on:
       postgres:
@@ -151,6 +154,7 @@ services:
     env_file: .env.development
     environment:
       <<: *app-env
+      SERVICE_NAME: beat
       IMAGE: ${IMAGE}
     networks:
       - pzz_compare
@@ -166,6 +170,7 @@ services:
     restart: unless-stopped
     env_file: .env.development
     environment:
+      SERVICE_NAME: mcp
       IMAGE: ${IMAGE}
       APP_ENV: development
       LOG_LEVEL: INFO
