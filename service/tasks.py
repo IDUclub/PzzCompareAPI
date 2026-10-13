@@ -65,19 +65,23 @@ celery_app.conf.task_default_queue = "default"
 
 
 def enqueue_pipeline_task(
-    task_id: int, *, is_scenario: bool, is_building_upload: bool = False
+    task_id: int,
+    *,
+    is_scenario: bool,
+    is_building_upload: bool = False,
+    is_placement: bool = False,
 ):
     """Enqueue execute_pipeline_task onto the queue that fits the task type.
 
-    Deterministic runs (urban_api scenarios, and the uploaded-building PZZ check)
-    are CPU-light -> "default" (high concurrency). LLM upload runs (and scenario
+    Deterministic runs (urban_api scenarios, the uploaded-building PZZ check and
+    service placement) are CPU-light -> "default" (high concurrency). LLM upload runs (and scenario
     runs when the deterministic path is off) are GPU-bound -> "llm", served by its
     own low-concurrency worker so the embedder / vLLM backends are not
     oversubscribed.
     """
     deterministic = (
         is_scenario and settings.scenario_deterministic
-    ) or is_building_upload
+    ) or is_building_upload or is_placement
     queue = "default" if deterministic else "llm"
     return execute_pipeline_task.apply_async(args=[task_id], queue=queue)
 

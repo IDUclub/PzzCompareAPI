@@ -42,6 +42,10 @@ class PipelineTask(Base):
     building_type_col: Mapped[str | None] = mapped_column(String(128), nullable=True)
     building_service_col: Mapped[str | None] = mapped_column(String(128), nullable=True)
     building_floors_col: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    placement_vri_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    placement_service_name: Mapped[str | None] = mapped_column(
+        String(256), nullable=True
+    )
     priority: Mapped[int] = mapped_column(Integer, default=1, index=True)
     status: Mapped[TaskStatus] = mapped_column(
         SqlEnum(TaskStatus), default=TaskStatus.queued

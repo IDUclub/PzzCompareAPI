@@ -36,6 +36,16 @@ from ..domain.task_state import ensure_transition
 from ..infrastructure.chat_llm_client import build_chat_llm_client
 from ..infrastructure.geo_ingest import iter_geojson_features
 from ..infrastructure.pzz_mapping import lookup_zone_summary
+from ..infrastructure.runners.placement_pzz_runner import (
+    CATEGORY_CLASSES,
+    CATEGORY_EXISTING,
+    CATEGORY_REACH,
+    CATEGORY_SZZ,
+    CLASS_ORDER,
+    CLASS_RU,
+    PLACEMENT_SUMMARY_KEY,
+    is_szz_sensitive,
+)
 from ..infrastructure.storage import get_object_storage, is_remote_path
 from ..models import PipelineTask, TaskEvent, TaskStatus
 
@@ -57,6 +67,7 @@ RESULT_LOAD_FAILED_MESSAGE = "Failed to load the task result"
 
 _SCENARIO_IDEMPOTENCY_PREFIX = "sc:"
 _BUILDING_IDEMPOTENCY_PREFIX = "bld:"
+_PLACEMENT_IDEMPOTENCY_PREFIX = "plc:"
 
 InputLayersBuilder = Callable[
     [PipelineTask, str, Settings, Request | None], list[dict[str, Any]]
@@ -78,6 +89,11 @@ def _is_scenario_task(external_id: str, task_repo: TaskRepository) -> bool:
 def _is_building_upload_task(external_id: str, task_repo: TaskRepository) -> bool:
     key = task_repo.get_idempotency_key_by_external_id(external_id)
     return bool(key and key.startswith(_BUILDING_IDEMPOTENCY_PREFIX))
+
+
+def _is_placement_task(external_id: str, task_repo: TaskRepository) -> bool:
+    key = task_repo.get_idempotency_key_by_external_id(external_id)
+    return bool(key and key.startswith(_PLACEMENT_IDEMPOTENCY_PREFIX))
 
 
 def get_public_task_or_404(external_id: str, task_repo: TaskRepository) -> PipelineTask:
@@ -171,6 +187,7 @@ def build_recompute_task_response(
             task.id,
             is_scenario=_is_scenario_task(task.external_id, task_repo),
             is_building_upload=_is_building_upload_task(task.external_id, task_repo),
+            is_placement=_is_placement_task(task.external_id, task_repo),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to enqueue Celery task for %s", task.external_id)
@@ -872,6 +889,14 @@ async def task_stream_with_chat_generator(
                                     app_settings,
                                 )
                                 report_event = "classify_summary"
+                            elif report_kind == "placement":
+                                report = await asyncio.to_thread(
+                                    build_placement_summary_response,
+                                    task,
+                                    external_id,
+                                    app_settings,
+                                )
+                                report_event = "placement_summary"
                             else:
                                 report = await asyncio.to_thread(
                                     build_object_zone_fit_response,
@@ -1104,6 +1129,52 @@ _RESULT_SPLIT_SLOTS: dict[str, tuple[str, str, str, str]] = {
     ),
 }
 
+# Service placement (подбор мест) emits up to four layers from one result, split
+# by the same «Категория_объекта» property. slot -> (category, name, title,
+# filename).
+_PLACEMENT_SPLIT_SLOTS: dict[str, tuple[str, str, str, str]] = {
+    "placement_classes": (
+        CATEGORY_CLASSES,
+        "placement_classes",
+        "Подбор мест — классы пригодности",
+        "placement_classes.geojson",
+    ),
+    "placement_szz": (
+        CATEGORY_SZZ,
+        "placement_szz",
+        "Подбор мест — СЗЗ производственных объектов",
+        "placement_szz.geojson",
+    ),
+    "placement_reach": (
+        CATEGORY_REACH,
+        "placement_reach",
+        "Подбор мест — зона доступности жилья (500 м)",
+        "placement_reach.geojson",
+    ),
+    "placement_existing": (
+        CATEGORY_EXISTING,
+        "placement_existing",
+        "Подбор мест — существующие объекты этого типа",
+        "placement_existing.geojson",
+    ),
+}
+
+
+def _is_placement_result(task: PipelineTask) -> bool:
+    """True for service placement tasks (they carry the target ВРИ code)."""
+    return bool(getattr(task, "placement_vri_code", None))
+
+
+def _placement_slots(task: PipelineTask) -> list[str]:
+    """Placement layers worth linking: the overlays exist only with a cadastre,
+    and the СЗЗ only for ВРИ a production СЗЗ excludes."""
+    slots = ["placement_classes"]
+    if getattr(task, "cadastral_data_path", None):
+        if is_szz_sensitive(task.placement_vri_code or ""):
+            slots.append("placement_szz")
+        slots.extend(["placement_reach", "placement_existing"])
+    return slots
+
 
 # Who the checked items are — drives the wording of the deterministic summary
 # and of the LLM grounding: cadastral land parcels (pzz_check upload), uploaded
@@ -1240,6 +1311,21 @@ def build_result_geo_layers(
     """
     if task.status != "finished" or not task.result_path:
         return []
+    if _is_placement_result(task):
+        return [
+            {
+                "name": name,
+                "title": title,
+                "role": "result",
+                "url": _file_url(slot, external_id),
+                "download_url": None,
+                "filename": filename,
+                "mime_type": "application/geo+json",
+                "source_service": app_settings.app_name,
+            }
+            for slot in _placement_slots(task)
+            for _category, name, title, filename in [_PLACEMENT_SPLIT_SLOTS[slot]]
+        ]
     if not (_is_building_task(task) or scenario):
         single = build_result_geo_layer(task, external_id, app_settings, request)
         return [single] if single is not None else []
@@ -1374,6 +1460,29 @@ def _serve_result_split(
     )
 
 
+def _serve_placement_split(
+    task: PipelineTask, slot: str, app_settings: Settings
+) -> Response:
+    """Serve one layer of a placement result, filtered by «Категория_объекта»."""
+    category, _name, _title, filename = _PLACEMENT_SPLIT_SLOTS[slot]
+    if task.status != "finished" or not task.result_path:
+        raise HTTPException(status_code=404, detail="Task result not available yet")
+    if not _is_placement_result(task):
+        raise HTTPException(status_code=404, detail="Result split is not available")
+    geojson = _load_result_geojson(task.result_path, app_settings.outputs_dir)
+    features = [
+        f
+        for f in (geojson.get("features") or [])
+        if (f.get("properties") or {}).get(_COL_CATEGORY) == category
+    ]
+    fc = {"type": "FeatureCollection", "features": features}
+    return Response(
+        content=json.dumps(fc, ensure_ascii=False, default=str),
+        media_type="application/geo+json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 def _load_input_geojson(stored_path: str) -> dict[str, Any]:
     """Read a task input GeoJSON from local disk or MinIO."""
     if not is_remote_path(stored_path):
@@ -1457,6 +1566,10 @@ def get_task_file(
             app_settings,
             scenario=not _is_building_task(task)
             and _is_scenario_task(external_id, task_repo),
+        )
+    if slot in _PLACEMENT_SPLIT_SLOTS:
+        return _serve_placement_split(
+            get_task_or_404(external_id, task_repo), slot, app_settings
         )
     if slot == _SCENARIO_ZONES_SLOT:
         return _serve_scenario_zones(get_task_or_404(external_id, task_repo))
@@ -2230,4 +2343,146 @@ def build_classify_summary_response(
         "summary": summary,
         "chat_message": _build_chat_message_classify(rows, summary),
         "objects": rows,
+    }
+
+
+_PARCEL_KIND_RU = {
+    "target": "уже занятых объектами этого типа",
+    "production": "производственных и складских",
+    "housing": "жилых",
+    "other": "прочих",
+}
+
+
+def _ha_ru(value: Any) -> str:
+    """Hectares with a decimal comma, as Russian text expects."""
+    try:
+        return f"{float(value):.2f}".replace(".", ",")
+    except (TypeError, ValueError):
+        return "0,00"
+
+
+def _build_chat_message_placement(summary: dict[str, Any]) -> str:
+    """Deterministic Russian summary of a service placement run."""
+    service = summary.get("service_name") or "объект"
+    code = summary.get("vri_code") or "—"
+    vri_name = summary.get("vri_name") or ""
+    vri = f"{code} «{vri_name}»" if vri_name else code
+    lines = [
+        f"Подбор мест размещения: «{service}» (ВРИ {vri}).",
+        f"Проанализировано территориальных зон: {summary.get('zones_total', 0)}.",
+        "",
+        "Распределение по классам пригодности:",
+    ]
+    classes = summary.get("classes") or {}
+    for cls in CLASS_ORDER:
+        bucket = classes.get(cls) or {}
+        zones = int(bucket.get("zones") or 0)
+        if not zones:
+            continue
+        lines.append(
+            f"- {cls} — {CLASS_RU[cls]}: участков зон {zones}, "
+            f"{_ha_ru(bucket.get('ha'))} га."
+        )
+    if not any((classes.get(c) or {}).get("zones") for c in CLASS_ORDER):
+        lines.append("- зоны для классификации не найдены.")
+
+    best = summary.get("best_zones") or []
+    if best:
+        lines += ["", "Наиболее крупные зоны, где вид разрешён как основной:"]
+        for zone in best:
+            name = zone.get("name") or zone.get("code") or "—"
+            code_txt = zone.get("code")
+            label = name if not code_txt or code_txt == name else f"{code_txt} — {name}"
+            lines.append(f"- {label}: {_ha_ru(zone.get('ha'))} га.")
+    else:
+        lines += ["", "Зон, где вид разрешён как основной, не найдено."]
+
+    lines.append("")
+    if summary.get("cadastre_used"):
+        if summary.get("szz_applied"):
+            lines.append(
+                "Учтена санитарно-защитная зона 100 м вокруг производственных и "
+                f"складских участков: {_ha_ru(summary.get('szz_ha'))} га; "
+                "попавшие в неё части зон отнесены к классу C."
+            )
+        reach_ha = summary.get("reach_ha") or 0
+        if reach_ha:
+            lines.append(
+                f"Зона доступности жилья (500 м от жилых участков): {_ha_ru(reach_ha)} га; "
+                "для пригодных зон отмечено, попадают ли они в неё."
+            )
+        parcels = summary.get("parcels") or {}
+        counts = [
+            f"{_PARCEL_KIND_RU.get(kind, kind)} — {n}"
+            for kind, n in parcels.items()
+            if n
+        ]
+        if counts:
+            lines.append("Участки кадастра: " + "; ".join(counts) + ".")
+    else:
+        lines.append(
+            "Кадастровый слой не передан: санитарно-защитные зоны, близость к жилью "
+            "и существующие объекты не учитывались."
+        )
+
+    if summary.get("used_default_mapping"):
+        lines.append(
+            "Описания зон не переданы — использован типовой справочник видов "
+            "разрешённого использования по зонам; результат носит ориентировочный характер."
+        )
+    uncovered = summary.get("uncovered_zones") or []
+    if uncovered:
+        shown = ", ".join(str(z) for z in uncovered[:15])
+        more = f" и ещё {len(uncovered) - 15}" if len(uncovered) > 15 else ""
+        lines.append(f"Нет описания для зон: {shown}{more} (класс D).")
+    return "\n".join(lines)
+
+
+@router.get("/tasks/{external_id}/placement-summary")
+def get_placement_summary_endpoint(
+    external_id: str,
+    task_repo: TaskRepository = Depends(get_task_repo),
+    app_settings: Settings = Depends(get_app_settings),
+) -> dict[str, Any]:
+    """Summary of a finished service placement task (подбор мест размещения).
+
+    Returns the per-class zone counts and areas, the largest class-A zones and
+    the cadastre-based constraints, plus a chat-ready Russian summary. 409 if the
+    task isn't finished; 404 if not found or not a placement task.
+    """
+    task = get_public_task_or_404(external_id, task_repo)
+    return build_placement_summary_response(task, external_id, app_settings)
+
+
+def build_placement_summary_response(
+    task: PipelineTask,
+    external_id: str,
+    app_settings: Settings,
+) -> dict[str, Any]:
+    """Build the placement summary for an already-authorized task."""
+    if task.status != "finished":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task is not finished (status: {task.status})",
+        )
+    if not task.result_path:
+        raise HTTPException(status_code=404, detail="Task has no result")
+    if not _is_placement_result(task):
+        raise HTTPException(status_code=404, detail="Task is not a placement task")
+    try:
+        geojson = _load_result_geojson(task.result_path, app_settings.outputs_dir)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to load result GeoJSON for task %s", task.external_id)
+        raise HTTPException(status_code=503, detail=RESULT_LOAD_FAILED_MESSAGE) from exc
+    summary = geojson.get(PLACEMENT_SUMMARY_KEY)
+    if not isinstance(summary, dict):
+        raise HTTPException(status_code=404, detail="Result has no placement summary")
+    return {
+        "task_external_id": external_id,
+        "mode": "placement",
+        "summary": summary,
+        "chat_message": _build_chat_message_placement(summary),
     }

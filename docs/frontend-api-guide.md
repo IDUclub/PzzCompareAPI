@@ -605,6 +605,61 @@ JSON-ответом, без SSE и без текста LLM. Здания (фор
 отчёта (задача не `pzz_check` или посчитана до появления проверки — тогда
 `POST /tasks/{external_id}/recompute`); `503` — не удалось загрузить результат.
 
+### D5. `GET /tasks/{external_id}/placement-summary`
+
+**Что:** итоги подбора мест размещения сервиса (`mode=placement`, см. раздел H) — тот же объект,
+что приходит в SSE-событии `placement_summary`. Нужен, чтобы перерисовать сводку при открытии
+задачи из истории.
+
+```json
+{
+  "task_external_id": "abc...",
+  "mode": "placement",
+  "summary": {
+    "vri_code": "3.5.1",
+    "vri_name": "Дошкольное, начальное и среднее общее образование",
+    "service_name": "Школа",
+    "classes": {
+      "A":  {"zones": 12, "ha": 340.5},
+      "B":  {"zones": 3,  "ha": 41.0},
+      "B*": {"zones": 2,  "ha": 18.2},
+      "C":  {"zones": 40, "ha": 1210.0},
+      "D":  {"zones": 1,  "ha": 6.3}
+    },
+    "zones_total": 58,
+    "best_zones": [{"code": "Ж-1", "name": "Зона застройки ИЖС", "ha": 120.4}],
+    "szz_applied": true,
+    "szz_ha": 25.7,
+    "reach_ha": 610.0,
+    "parcels": {"production": 14, "target": 2, "housing": 380},
+    "cadastre_used": true,
+    "used_default_mapping": false,
+    "uncovered_zones": ["СХ-3"]
+  },
+  "chat_message": "Подбор мест размещения: «Школа» (ВРИ 3.5.1 …). …"
+}
+```
+
+| Поле `summary` | Смысл |
+|----------------|-------|
+| `vri_code` / `vri_name` | ВРИ, с которым сопоставлено название сервиса |
+| `service_name` | Название сервиса из справочника (или исходный запрос пользователя) |
+| `classes` | По каждому классу пригодности — число участков зон (`zones`) и площадь в га (`ha`). Зона может попасть в два класса, если её часть вырезана СЗЗ |
+| `zones_total` | Сколько зон ПЗЗ в слое |
+| `best_zones` | До 5 крупнейших зон класса A (код, название, га) |
+| `szz_applied`, `szz_ha` | Применена ли СЗЗ 100 м производственных/складских участков и её площадь |
+| `reach_ha` | Площадь зоны доступности жилья (500 м от жилых участков) |
+| `parcels` | Счётчики участков кадастра: `production` — производство/склады, `target` — уже есть объект этого типа, `housing` — жильё |
+| `cadastre_used` | Передан ли кадастровый слой (без него СЗЗ, близость к жилью и существующие объекты не учитываются) |
+| `used_default_mapping` | Описания зон не переданы — использован типовой справочник; результат ориентировочный |
+| `uncovered_zones` | Коды зон без описания ВРИ (класс D) |
+
+**Ключи `summary` — машинные (англ.), пользователю их не показывать.** Для показа есть готовый
+русский текст `chat_message`.
+
+Ошибки: `409` — задача не `finished`; `404` — задачи/результата нет, задача не в режиме подбора
+мест или в результате нет сводки.
+
 ---
 
 ## E. Справка по зонам (без классификации)
@@ -749,6 +804,7 @@ object-zone-fit. Параллельно история диалога сохра
 | `task_event` | событие пайплайна | по мере выполнения |
 | `status` | `TaskOut` | при смене статуса |
 | `object_zone_fit` | отчёт (см. D2) | когда задача `finished` |
+| `placement_summary` | итоги подбора мест (см. D5) | вместо `object_zone_fit` в `mode=placement`, когда задача `finished` |
 | `file` | `{ "name", "title", "url", "download_url", "filename", "mime_type", "source_service" }` | ссылка на геослой-результат (см. ниже) |
 | `service_event` | `{ "event_type": "storage_event", "event": { "storage_event_type": "chat_created", "chat_id", "chat_title" } }` | только если `chat_id` не был передан — **сохраните `chat_id`** |
 | `chunk` | `{ "text": "...", "done": false }` | дельты ответа LLM; финальный `{ "text": "", "done": true }` — конец ответа |
@@ -797,6 +853,7 @@ object-zone-fit. Параллельно история диалога сохра
 | `pzz_check` (по умолч.) | `cadastral_feature_collection_file` + `pzz_zones_feature_collection_file` | ВРИ участка + код/название зоны | object-zone-fit |
 | `classify_only` | `cadastral_feature_collection_file` | ВРИ участка | classify-summary |
 | `building_pzz_check` | `cadastral_feature_collection_file` (**здания**) + `pzz_zones_feature_collection_file` | тип / сервис / этажность здания + код зоны | object-zone-fit |
+| `placement` | `pzz_zones_feature_collection_file` (+ необязательный `cadastral_feature_collection_file`) и поле `service_name` | код/название зоны (+ ВРИ участка, если есть кадастр) | placement-summary |
 
 **`building_pzz_check` — проверка ПЗЗ по зданиям.** Пользователь грузит **сценарий застройки
 (здания)** вместо участков и свои зоны ПЗЗ. Здания — в формате Urban API (числовые
@@ -1010,6 +1067,52 @@ data: {"type":"zone_review","content":{
 
 `pzz_descriptions_file` принимает **обе** схемы (числовую и буквенную) — бэкенд выбирает по содержимому.
 
+#### `placement` — подбор мест размещения сервиса
+
+Пользователь пишет **название сервиса обычным языком** («школа», «где построить детсад»,
+«хочу разместить бассейн», можно сразу код «ВРИ 4.4») и грузит зоны ПЗЗ. Бэкенд:
+
+1. **Переводит название в код ВРИ.** Сначала детерминированно — код в тексте, справочник типов
+   сервисов, совпадение с наименованием ВРИ из классификатора; затем (если настроен эмбеддер)
+   по смыслу; в последнюю очередь — ЛЛМ, причём принимается только код, который есть в
+   классификаторе. Не сопоставилось — `error` + `done` (`detection_failed`) с текстом «Не удалось
+   сопоставить сервис «…» с видом разрешённого использования…», задача не создаётся.
+2. **Определяет колонки** зон (и кадастра, если он есть) — как в других режимах.
+3. **Относит каждую зону к классу пригодности** для этого ВРИ:
+
+| Класс | `Пригодность` |
+|-------|---------------|
+| `A` | Разрешено (основной вид использования) |
+| `B` | Разрешено с условиями (условный или вспомогательный вид) |
+| `B*` | Разрешено, но объекты этого типа в зоне уже есть (нужен кадастр) |
+| `C` | Не разрешено; сюда же — части пригодных зон внутри СЗЗ 100 м производственных/складских участков (для жилья, образования, здравоохранения, культуры, спорта, отдыха; нужен кадастр) |
+| `D` | Нет описания зоны |
+
+| Поле | Тип | Обязательно | Описание |
+|------|-----|-------------|----------|
+| `mode` | string | да | `placement` |
+| `service_name` | string | да* | Название сервиса на естественном языке или код ВРИ. *Если пусто — берётся `user_query` |
+| `pzz_zones_feature_collection_file` | file | да | Слой зон ПЗЗ (буквенные индексы или числовые) |
+| `cadastral_feature_collection_file` | file | – | Кадастровые участки с ВРИ. Добавляет СЗЗ, зону доступности жилья (500 м) и класс `B*` |
+| `pzz_descriptions_file` (или `pzz_zone_vri_labels_file`) | file | – | Описания зон → разрешённые ВРИ (JSON или `.csv`/`.xlsx`). Без файла — типовой справочник, результат ориентировочный |
+| `vri_classifier_file` | file | – | Свой классификатор ВРИ |
+| `user_query` | string | – | Вопрос к ИИ по результату (если задан `service_name`). Если пусто — подробный разбор по умолчанию |
+
+Ошибки `422`: нет файла зон («pzz_zones_feature_collection_file is required for mode=placement»);
+нет ни `service_name`, ни `user_query` («service_name (or user_query) is required for mode=placement»).
+
+**Поток событий:** ведущий `chunk` (на русском: с каким ВРИ сопоставлен сервис и откуда
+сопоставление, какие колонки определены, предупреждение, если кадастр не передан) → `task` /
+`task_event` / `status` → `file` (входные слои `input_zones` и, если был, `input_cadastral`) →
+**`placement_summary`** (объект как в D5: `summary` + готовый русский `chat_message`) → `file`
+со слоями результата (см. «Геослои как ссылки») → `chunk*` (развёрнутый ответ ИИ на русском) → `done`.
+
+**Атрибуты слоя `placement_classes`** (все — по-русски): `Класс_пригодности`, `Пригодность`,
+`Причина`, `Код_зоны`, `Название_зоны`, `Код_ВРИ`, `Площадь_га`, `Категория_объекта`, а при
+переданном кадастре ещё `Рядом_жильё_500м` (`да`/`нет`). Раскрашивать карту удобно по
+`Класс_пригодности`. В оверлейных слоях — `Категория_объекта` и `Площадь_га` (у существующих
+объектов ещё `ВРИ_участка`).
+
 ### Табличные описания зон → JSON (`POST /pzz/zone-descriptions/convert`)
 
 Описания зон не обязательно готовить руками. Если ПЗЗ уже лежит **таблицей** (выгрузка
@@ -1101,7 +1204,11 @@ data: {"type":"zone_review","content":{
 | Результат, только классификация | `classified_result` | Результат классификации ВРИ | `classification_result.geojson` |
 | Результат `building_pzz_check`, здания | `buildings_result` | Результат — здания | `buildings_result.geojson` |
 | Результат `building_pzz_check`, сервисы | `services_result` | Результат — сервисы | `services_result.geojson` |
-| Входной кадастр (`pzz_check` / `classify_only`) | `input_cadastral` | Исходные участки | `input_parcels.geojson` |
+| Результат `placement`, классы пригодности зон | `placement_classes` | Подбор мест — классы пригодности | `placement_classes.geojson` |
+| Результат `placement`, СЗЗ производственных объектов | `placement_szz` | Подбор мест — СЗЗ производственных объектов | `placement_szz.geojson` |
+| Результат `placement`, зона доступности жилья | `placement_reach` | Подбор мест — зона доступности жилья (500 м) | `placement_reach.geojson` |
+| Результат `placement`, существующие объекты | `placement_existing` | Подбор мест — существующие объекты этого типа | `placement_existing.geojson` |
+| Входной кадастр (`pzz_check` / `classify_only` / `placement`) | `input_cadastral` | Исходные участки | `input_parcels.geojson` |
 | Входные объекты (`building_pzz_check`) | `input_cadastral` | Исходные здания и сервисы | `input_buildings_and_services.geojson` |
 | Входные зоны | `input_zones` | Зоны ПЗЗ | `pzz_zones.geojson` |
 | Входные границы МО (если загружены) | `input_mo_boundaries` | Границы муниципальных образований | `mo_boundaries.geojson` |
@@ -1134,14 +1241,22 @@ data: {"type":"zone_review","content":{
 | `classify_only` | `input_cadastral`, `classified_result` |
 | `pzz_check` | `input_cadastral`, `input_zones`, `classified_result` |
 | `building_pzz_check` | `input_cadastral`, `input_zones`, `buildings_result`, `services_result` |
+| `placement` без кадастра | `input_zones`, `placement_classes` |
+| `placement` с кадастром | `input_cadastral`, `input_zones`, `placement_classes`, `placement_szz`\*, `placement_reach`, `placement_existing` |
 | сценарий (`/scenarios/{id}/chat/stream`) | `functional_zones`, `classified_result` |
 
 Подпись слоя для пользователя — `content.title` (RU); `name` — стабильный машинный ключ,
 `filename` — имя файла при скачивании.
 
+\* `placement_szz` приходит только для ВРИ, которым СЗЗ запрещает соседство с производством
+(жильё, образование, здравоохранение, культура, спорт, отдых); например, для магазина (4.4)
+его нет. Оверлейные слои могут быть пустыми FeatureCollection, если в кадастре нет
+соответствующих участков.
+
 Как пользоваться ссылками:
 - и выгрузка, и постоянная ссылка (карточка в истории, шаринг) → `url` — это
-  `GET /files/{slot}/{external_id}` (`slot` ∈ `result` / `cadastral` / `zones`). API сам читает файл
+  `GET /files/{slot}/{external_id}` (`slot` ∈ `result` / `cadastral` / `zones`, для `placement` —
+  также `placement_classes` / `placement_szz` / `placement_reach` / `placement_existing`). API сам читает файл
   из MinIO и отдаёт байты потоком (200, без редиректа): MinIO в закрытом контуре и из внешней сети
   недоступен. Не протухает, авторизация не нужна. `download_url` всегда `null`.
 - `url` всегда **относительный** (без хоста): фронт сам подставляет базовый адрес сервиса по
@@ -1264,5 +1379,32 @@ const reader = res.body.getReader();
 ```
 
 Числовые зоны (urban_api `functional_zone_type_id`) идут сразу по ветке (d) — без `zone_review`.
+
+---
+
+## Сценарий 6: Подбор мест размещения сервиса
+
+```
+1. Фронт (fetch-based SSE): POST /tasks/auto/chat/stream
+   form-data: mode=placement
+              service_name=школа            (свободный текст или код ВРИ)
+              pzz_zones_feature_collection_file=<зоны ПЗЗ>
+              [cadastral_feature_collection_file=<участки>]   (необязательно)
+              [pzz_descriptions_file=<описания зон>]          (необязательно)
+   { Authorization: Bearer <jwt> }
+
+2. Ловит события:
+   ← chunk (ведущий)        → «Сервис «Школа» сопоставлен с ВРИ 3.5.1 …» + распознанные колонки
+   ← error + done           → сервис не сопоставлен с ВРИ / колонка не найдена; попросить уточнить
+   ← task / status          → задача пошла
+   ← file (input) ×1..2     → input_zones (+ input_cadastral)
+   ← placement_summary      → KPI по классам A/B/B*/C/D + chat_message (русский текст сводки)
+   ← file (result) ×1..4    → placement_classes (+ placement_szz, placement_reach, placement_existing)
+   ← chunk*                 → подробный разбор от ИИ (Markdown, на русском)
+   ← done                   → закрыть поток
+
+3. При открытии из истории: GET /tasks/{external_id}/placement-summary
+   и слои по url из сохранённых file-частей сообщения.
+```
 
 ---

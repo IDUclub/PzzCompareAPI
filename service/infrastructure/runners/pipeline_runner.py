@@ -216,12 +216,18 @@ class PipelineRunnerFactory:
     def create(
         settings: "Settings", request: "PipelineRequest | None" = None
     ) -> PipelineRunner:
-        if request is not None and getattr(request, "is_building_upload", False):
+        if request is not None and getattr(request, "is_placement", False):
+            from service.infrastructure.runners.placement_pzz_runner import (
+                PlacementPzzRunner,
+            )
+
+            inner: PipelineRunner = PlacementPzzRunner(settings)
+        elif request is not None and getattr(request, "is_building_upload", False):
             from service.infrastructure.runners.uploaded_building_pzz_runner import (
                 UploadedBuildingPzzRunner,
             )
 
-            inner: PipelineRunner = UploadedBuildingPzzRunner(settings)
+            inner = UploadedBuildingPzzRunner(settings)
         elif (
             request is not None
             and getattr(request, "is_scenario", False)

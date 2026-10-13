@@ -185,6 +185,8 @@ def create_task(
         building_type_col=payload.building_type_col,
         building_service_col=payload.building_service_col,
         building_floors_col=payload.building_floors_col,
+        placement_vri_code=payload.placement_vri_code,
+        placement_service_name=payload.placement_service_name,
         priority=payload.priority,
         status=TaskStatus.queued,
         output_version=PIPELINE_OUTPUT_VERSION,

@@ -57,6 +57,10 @@ from ..application.use_cases.detect_columns import (
     required_columns_resolved,
     sparse_column_warnings,
 )
+from ..application.use_cases.resolve_service_vri import (
+    ResolvedService,
+    resolve_service_vri,
+)
 from ..dependencies import (
     get_app_settings,
     get_db,
@@ -503,7 +507,7 @@ def persist_geojson_dict(
 
 def _create_pipeline_task(
     *,
-    cadastral_file: UploadFile,
+    cadastral_file: UploadFile | None,
     pzz_zones_file: UploadFile | None,
     labels_file: UploadFile | None,
     classifier_file: UploadFile | None,
@@ -524,26 +528,40 @@ def _create_pipeline_task(
     building_service_col: str | None = None,
     building_floors_col: str | None = None,
     mo_boundaries_file: UploadFile | None = None,
+    placement_vri_code: str | None = None,
+    placement_service_name: str | None = None,
 ) -> TaskOut:
     """Shared logic for both submission endpoints.
 
     Streams uploads to a per-task scratch dir, validates JSON, persists to
     object storage (MinIO or local fallback), then hands a fully resolved
     ``input_paths`` dict to the ``create_task`` use case.
+
+    ``placement_vri_code`` switches to the service-placement check: the cadastre
+    becomes optional (stored as "" when absent) and the zone descriptions use the
+    building flow's schema.
     """
+    placement = bool(placement_vri_code)
+    if cadastral_file is None and not placement:
+        raise HTTPException(
+            status_code=422, detail="cadastral_feature_collection_file is required"
+        )
     external_id = uuid4().hex
     task_dir = Path(app_settings.task_inputs_dir) / external_id
     storage = get_object_storage()
 
-    stored_cadastral = _ingest_geo_upload(
-        cadastral_file,
-        task_dir,
-        "cadastral_feature_collection.geojson",
-        "cadastral_feature_collection_file",
-        app_settings.max_upload_bytes,
-        external_id,
-        storage,
-    )
+    if cadastral_file is not None:
+        stored_cadastral = _ingest_geo_upload(
+            cadastral_file,
+            task_dir,
+            "cadastral_feature_collection.geojson",
+            "cadastral_feature_collection_file",
+            app_settings.max_upload_bytes,
+            external_id,
+            storage,
+        )
+    else:
+        stored_cadastral = ""
 
     if pzz_zones_file is not None:
         stored_pzz_zones = _ingest_geo_upload(
@@ -573,7 +591,7 @@ def _create_pipeline_task(
     else:
         stored_mo_boundaries = ""
 
-    if building_upload:
+    if building_upload or placement:
         # The building flow's optional "descriptions" file is a zone→permitted-VRI
         # mapping, reusing the labels slot. Two schemas are accepted: the urban_api
         # ``functional_zone_mappings`` dict (numeric functional_zone_type_id) and
@@ -646,10 +664,20 @@ def _create_pipeline_task(
         building_service_col=building_service_col,
         building_floors_col=building_floors_col,
         priority=priority,
+        placement_vri_code=placement_vri_code or None,
+        placement_service_name=(placement_service_name or "")[:256] or None,
     )
 
     namespaced_key: str | None = None
-    if building_upload:
+    if placement:
+        # "plc:" routes the worker to PlacementPzzRunner. The target code is part
+        # of the key so one caller key reused for another service never returns
+        # the first service's result.
+        key_base = idempotency_key or external_id
+        namespaced_key = (
+            f"plc:{PIPELINE_OUTPUT_VERSION}:{placement_vri_code}:{key_base}"
+        )
+    elif building_upload:
         # "bld:" routes the worker to the deterministic UploadedBuildingPzzRunner
         # (start_task derives it from this prefix, mirroring the "sc:" scenario
         # prefix). Always keyed so routing works even without a caller key — the
@@ -668,7 +696,10 @@ def _create_pipeline_task(
         task_repo=task_repo,
         event_repo=event_repo,
         enqueue_task=lambda tid: enqueue_pipeline_task(
-            tid, is_scenario=False, is_building_upload=building_upload
+            tid,
+            is_scenario=False,
+            is_building_upload=building_upload,
+            is_placement=placement,
         ),
         idempotency_key=namespaced_key,
         retry_failed=retry_failed,
@@ -686,7 +717,9 @@ def _create_pipeline_task(
         task_id=task.id,
         external_id=task.external_id,
         mode=(
-            "building_pzz_check"
+            "placement"
+            if placement
+            else "building_pzz_check"
             if building_upload
             else ("pzz_check" if include_pzz_check else "classify_only")
         ),
@@ -1795,16 +1828,276 @@ async def _run_building_pzz_auto(
     return EventSourceResponse(prepend_narrative_generator(run.narrative, inner))
 
 
+_DEFAULT_PLACEMENT_AUTO_QUERY = (
+    "Подготовь подробный разбор результата подбора мест размещения объекта по "
+    "правилам землепользования и застройки в официально-деловом стиле: главный "
+    "вывод, итоги по классам пригодности, наиболее подходящие территориальные "
+    "зоны и ограничения, которые нужно учесть."
+)
+
+_PLACEMENT_DETECTION_HEADER = (
+    "Результат анализа содержания полей в загруженных файлах для подбора мест "
+    "размещения по правилам землепользования и застройки (ПЗЗ):"
+)
+
+
+@dataclass(frozen=True)
+class PlacementRun:
+    """What preparing a service-placement check produced: a task, or why not."""
+
+    action: str
+    narrative: str
+    detail: str = ""
+    task: TaskOut | None = None
+    resolved: ResolvedService | None = None
+
+
+def _resolved_service_line(resolved: ResolvedService, query: str) -> str:
+    """RU line announcing which ВРИ the user's service name was matched to."""
+    shown = (resolved.service_name or query).strip()
+    vri = f"{resolved.code} «{resolved.vri_name}»" if resolved.vri_name else resolved.code
+    return (
+        f"Сервис «{shown}» сопоставлен с видом разрешённого использования (ВРИ) "
+        f"{vri} ({resolved.source_ru})."
+    )
+
+
+async def _prepare_placement_run(
+    *,
+    service_query: str,
+    zones_file: UploadFile,
+    cadastral_file: UploadFile | None,
+    descriptions_file: UploadFile | None,
+    classifier_file: UploadFile | None,
+    model: str | None,
+    priority: int,
+    force_recompute: bool,
+    idempotency_key: str | None,
+    app_settings: Settings,
+    task_repo: TaskRepository,
+    event_repo: EventRepository,
+    session: Session,
+) -> PlacementRun:
+    """Resolve the service to a ВРИ code, detect the columns, create the task.
+
+    The cadastre is optional: without it only the zone permissions are checked
+    (no СЗЗ, no housing reach, no existing objects). A CSV/XLSX descriptions file
+    is converted to the label JSON up front, like the building flow.
+    """
+    resolved = await resolve_service_vri(service_query, app_settings, model=model)
+    if resolved is None:
+        return PlacementRun(
+            action="detection_failed",
+            narrative="",
+            detail=(
+                f"Не удалось сопоставить сервис «{service_query.strip()}» с видом "
+                "разрешённого использования. Уточните название сервиса или укажите "
+                "код ВРИ."
+            ),
+        )
+    resolved_line = _resolved_service_line(resolved, service_query)
+
+    try:
+        descriptions_file, table_note = await _convert_descriptions_if_table(
+            descriptions_file, app_settings, model
+        )
+    except _DescriptionsTableError as exc:
+        return PlacementRun(
+            action="detection_failed",
+            narrative=resolved_line,
+            detail=exc.detail,
+            resolved=resolved,
+        )
+
+    max_bytes = app_settings.max_upload_bytes
+    detect_dir = Path(app_settings.task_inputs_dir) / f"detect-{uuid4().hex}"
+    try:
+        zones_fc = await run_in_threadpool(
+            _upload_to_feature_collection,
+            zones_file,
+            detect_dir,
+            "pzz_zones_feature_collection_file",
+            max_bytes,
+        )
+        cadastral_fc: dict[str, Any] | None = None
+        if cadastral_file is not None:
+            cadastral_fc = await run_in_threadpool(
+                _upload_to_feature_collection,
+                cadastral_file,
+                detect_dir,
+                "cadastral_feature_collection_file",
+                max_bytes,
+            )
+    finally:
+        shutil.rmtree(detect_dir, ignore_errors=True)
+
+    targets = list(PZZ_ZONE_TARGETS) + (
+        list(CADASTRAL_TARGETS) if cadastral_fc is not None else []
+    )
+    async with build_chat_llm_client(app_settings) as chat_client:
+        suggestions = await detect_columns_for_file(
+            chat_client, zones_fc, PZZ_ZONE_TARGETS, model=model
+        )
+        if cadastral_fc is not None:
+            suggestions.update(
+                await detect_columns_for_file(
+                    chat_client, cadastral_fc, CADASTRAL_TARGETS, model=model
+                )
+            )
+    detection = render_detection_narrative(
+        suggestions, targets, header=_PLACEMENT_DETECTION_HEADER
+    )
+    sparse_warnings = sparse_column_warnings(
+        suggestions, PZZ_ZONE_TARGETS, profile_columns(zones_fc)
+    )
+    if cadastral_fc is not None:
+        sparse_warnings += sparse_column_warnings(
+            suggestions, CADASTRAL_TARGETS, profile_columns(cadastral_fc)
+        )
+    blocks = [resolved_line]
+    if table_note:
+        blocks.append(table_note)
+    blocks.append(detection)
+    if sparse_warnings:
+        blocks.append("\n".join(sparse_warnings))
+    if cadastral_fc is None:
+        blocks.append(
+            "Кадастровый слой не передан: санитарно-защитные зоны, близость к жилью "
+            "и существующие объекты этого типа не учитываются."
+        )
+    narrative = "\n\n".join(blocks)
+
+    def _val(key: str) -> str | None:
+        s = suggestions.get(key)
+        return s.value if s is not None else None
+
+    zone_code = _val("pzz_zone_code_col")
+    vri_col = _val("cadastral_vri_col")
+    if not zone_code:
+        return PlacementRun(
+            action="detection_failed",
+            narrative=narrative,
+            detail="не удалось определить колонку кода территориальной зоны ПЗЗ",
+            resolved=resolved,
+        )
+    if cadastral_fc is not None and not vri_col:
+        return PlacementRun(
+            action="detection_failed",
+            narrative=narrative,
+            detail=(
+                "не удалось определить колонку вида разрешённого использования в "
+                "кадастровом слое; повторите запрос без кадастрового слоя или "
+                "укажите нужное поле"
+            ),
+            resolved=resolved,
+        )
+
+    task_out = await run_in_threadpool(
+        _create_pipeline_task,
+        cadastral_file=cadastral_file,
+        pzz_zones_file=zones_file,
+        labels_file=descriptions_file,
+        classifier_file=classifier_file,
+        include_pzz_check=True,
+        cadastral_vri_col=vri_col or "",
+        pzz_zone_code_col=zone_code,
+        pzz_zone_name_col=_val("pzz_zone_name_col") or "",
+        priority=priority,
+        retry_failed=False,
+        force_recompute=force_recompute,
+        idempotency_key=idempotency_key,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+        placement_vri_code=resolved.code,
+        placement_service_name=resolved.service_name or service_query,
+    )
+    # Committed here: the task is already enqueued and the worker must see the row.
+    session.commit()
+    return PlacementRun(
+        action="created", narrative=narrative, task=task_out, resolved=resolved
+    )
+
+
+async def _run_placement_auto(
+    *,
+    request: Request,
+    service_query: str,
+    zones_file: UploadFile,
+    cadastral_file: UploadFile | None,
+    descriptions_file: UploadFile | None,
+    classifier_file: UploadFile | None,
+    user_query: str | None,
+    chat_id: str | None,
+    model: str | None,
+    temperature: float | None,
+    priority: int,
+    force_recompute: bool,
+    poll_interval: float,
+    idempotency_key: str | None,
+    user_id: str,
+    app_settings: Settings,
+    task_repo: TaskRepository,
+    event_repo: EventRepository,
+    session: Session,
+) -> EventSourceResponse:
+    """Run the service-placement check and stream the grounded answer."""
+    run = await _prepare_placement_run(
+        service_query=service_query,
+        zones_file=zones_file,
+        cadastral_file=cadastral_file,
+        descriptions_file=descriptions_file,
+        classifier_file=classifier_file,
+        model=model,
+        priority=priority,
+        force_recompute=force_recompute,
+        idempotency_key=idempotency_key,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+    )
+    task_out = run.task
+    if task_out is None:
+        return EventSourceResponse(
+            detection_failed_generator(run.narrative, run.detail)
+        )
+
+    effective_query = user_query or _DEFAULT_PLACEMENT_AUTO_QUERY
+    inner = task_stream_with_chat_generator(
+        task_out.external_id,
+        group_by="zone",
+        poll_interval=poll_interval,
+        request=request,
+        app_settings=app_settings,
+        initial=task_out.model_dump(mode="json"),
+        user_id=user_id,
+        user_query=effective_query,
+        chat_id=chat_id,
+        scenario_id=None,
+        project_id=None,
+        chat_title=(user_query or service_query or run.narrative)[:256],
+        model=model,
+        temperature=temperature,
+        report_kind="placement",
+        emit_input_files=True,
+        system_prompt_path=app_settings.chat_system_prompt_placement_path,
+    )
+    return EventSourceResponse(prepend_narrative_generator(run.narrative, inner))
+
+
 @router.post("/auto/chat/stream")
 async def create_auto_chat_stream_endpoint(
     request: Request,
-    cadastral_feature_collection_file: UploadFile = File(...),
+    cadastral_feature_collection_file: UploadFile | None = File(default=None),
     pzz_zones_feature_collection_file: UploadFile | None = File(default=None),
     pzz_zone_vri_labels_file: UploadFile | None = File(default=None),
     pzz_descriptions_file: UploadFile | None = File(default=None),
     vri_classifier_file: UploadFile | None = File(default=None),
     mo_boundaries_feature_collection_file: UploadFile | None = File(default=None),
     mode: str = Form("pzz_check"),
+    service_name: str | None = Form(default=None),
     user_query: str | None = Form(default=None),
     chat_id: str | None = Form(default=None),
     group_by: str = Form("zone"),
@@ -1843,6 +2136,15 @@ async def create_auto_chat_stream_endpoint(
         and runs the deterministic building PZZ check (no LLM classification).
         Optionally accepts ``pzz_descriptions_file`` (a zone→permitted-VRI mapping);
         without it the built-in mapping is used. Answer grounded in object-zone-fit.
+      - ``placement`` — "where can this service be placed": needs PZZ zones and a
+        ``service_name`` (or, failing that, ``user_query``) naming the service in
+        natural language. The name is resolved to a ВРИ code (catalogue match,
+        then LLM), every zone is classed A/B/B*/C/D for that code and the result
+        is streamed as a ``placement_summary`` event plus map layers. The cadastre
+        (``cadastral_…_file``) is optional and adds the 100 m СЗЗ of industrial
+        parcels, the 500 m housing reach and the existing objects of this type.
+        Zone descriptions come from ``pzz_descriptions_file`` (JSON or CSV/XLSX);
+        without them the built-in mapping is used. All user-facing text is Russian.
 
     When a required column can't be determined, no task is started: the narrative
     (which columns are missing) plus an ``error`` and terminal ``done`` are
@@ -1851,14 +2153,57 @@ async def create_auto_chat_stream_endpoint(
     A Bearer token is REQUIRED (chat history is persisted). Use a fetch-based SSE
     client (native EventSource cannot POST multipart or set Authorization).
     """
-    if mode not in ("pzz_check", "classify_only", "building_pzz_check"):
+    if mode not in ("pzz_check", "classify_only", "building_pzz_check", "placement"):
         raise HTTPException(
             status_code=422,
-            detail="mode must be 'pzz_check', 'classify_only' or 'building_pzz_check'",
+            detail=(
+                "mode must be 'pzz_check', 'classify_only', 'building_pzz_check' "
+                "or 'placement'"
+            ),
         )
     if group_by not in ("zone", "object"):
         raise HTTPException(
             status_code=422, detail="group_by must be 'zone' or 'object'"
+        )
+
+    if mode == "placement":
+        if pzz_zones_feature_collection_file is None:
+            raise HTTPException(
+                status_code=422,
+                detail="pzz_zones_feature_collection_file is required for mode=placement",
+            )
+        service_query = (service_name or user_query or "").strip()
+        if not service_query:
+            raise HTTPException(
+                status_code=422,
+                detail="service_name (or user_query) is required for mode=placement",
+            )
+        return await _run_placement_auto(
+            request=request,
+            service_query=service_query,
+            zones_file=pzz_zones_feature_collection_file,
+            cadastral_file=cadastral_feature_collection_file,
+            descriptions_file=pzz_descriptions_file or pzz_zone_vri_labels_file,
+            classifier_file=vri_classifier_file,
+            user_query=user_query if service_name else None,
+            chat_id=chat_id,
+            model=model,
+            temperature=temperature,
+            priority=priority,
+            force_recompute=force_recompute,
+            poll_interval=poll_interval,
+            idempotency_key=idempotency_key_header or idempotency_key_form,
+            user_id=user.user_id,
+            app_settings=app_settings,
+            task_repo=task_repo,
+            event_repo=event_repo,
+            session=session,
+        )
+
+    if cadastral_feature_collection_file is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"cadastral_feature_collection_file is required for mode={mode}",
         )
 
     if mode == "building_pzz_check":
