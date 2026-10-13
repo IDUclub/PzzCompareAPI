@@ -90,7 +90,12 @@ def test_redis_sink_carries_subprocess_traceback_text(fake_redis) -> None:
 
 
 _ENTRIES = [
-    {"level": "INFO", "service": "api", "logger": "uvicorn.access", "message": "GET /tasks"},
+    {
+        "level": "INFO",
+        "service": "api",
+        "logger": "uvicorn.access",
+        "message": "GET /tasks",
+    },
     {
         "level": "ERROR",
         "service": "worker",
