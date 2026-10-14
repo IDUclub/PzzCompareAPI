@@ -18,6 +18,7 @@ from .domain.ports.config_repository import ConfigRepository
 from .domain.ports.event_repository import EventRepository
 from .domain.ports.task_repository import TaskRepository
 from .infrastructure.chat_storage_client import ChatStorageClient
+from .infrastructure.normgraph_client import NormGraphClient
 from .infrastructure.repositories.sqlalchemy_config_repository import (
     SqlAlchemyConfigRepository,
 )
@@ -115,6 +116,33 @@ def build_chat_storage_client(
         base_url=settings.chat_storage_base_url,
         token_client=token_client,
         timeout_seconds=settings.chat_storage_timeout_seconds,
+    )
+
+
+def build_normgraph_client(
+    settings: Settings | None = None,
+) -> NormGraphClient | None:
+    """Build a fresh NormGraph client, or None when zone regulations are unavailable.
+
+    NormGraph only accepts service-account tokens, so it needs both
+    ``NORMGRAPH_BASE_URL`` and the process-wide Keycloak service token client;
+    without either the ВРИ check against the ПЗЗ of a territory is unavailable.
+    """
+    settings = settings or get_settings()
+    if not settings.normgraph_base_url:
+        return None
+    token_client = get_service_token_client()
+    if token_client is None:
+        logger.warning(
+            "NORMGRAPH_BASE_URL is set but the Keycloak service token client is "
+            "not initialized; the ВРИ check against the ПЗЗ of a territory is "
+            "unavailable."
+        )
+        return None
+    return NormGraphClient(
+        base_url=settings.normgraph_base_url,
+        token_client=token_client,
+        timeout_seconds=settings.normgraph_timeout_seconds,
     )
 
 

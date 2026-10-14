@@ -14,7 +14,9 @@ from pathlib import Path
 
 import pytest
 
-MODULE = Path(__file__).resolve().parents[1] / "pipeline_modules/business/pipeline_impl.py"
+MODULE = (
+    Path(__file__).resolve().parents[1] / "pipeline_modules/business/pipeline_impl.py"
+)
 REPORT_FIELDS = {"reason", "PZZ_REASON", "Причина", "Вердикт_ПЗЗ", "Статус"}
 
 

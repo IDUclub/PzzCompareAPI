@@ -36,8 +36,21 @@ _ARCHIVE_LAYER_EXTENSIONS = (".tab", ".shp", ".mif")
 # geometry and the attributes live in different files — so they get a hint to
 # zip the whole set instead of a bare "not supported".
 MULTIFILE_PART_EXTENSIONS = {
-    ".shp", ".shx", ".dbf", ".prj", ".cpg", ".qix", ".sbn", ".sbx",
-    ".tab", ".dat", ".map", ".id", ".ind", ".mif", ".mid",
+    ".shp",
+    ".shx",
+    ".dbf",
+    ".prj",
+    ".cpg",
+    ".qix",
+    ".sbn",
+    ".sbx",
+    ".tab",
+    ".dat",
+    ".map",
+    ".id",
+    ".ind",
+    ".mif",
+    ".mid",
 }
 
 # Zip-bomb guard: the upload size is capped before we get here, but a few MB of
@@ -97,16 +110,16 @@ def _first_position(coordinates: Any) -> tuple[float, float] | None:
     """The first ``[x, y]`` pair of an arbitrarily nested coordinates array."""
     node = coordinates
     while (
-        isinstance(node, (list, tuple))
-        and node
-        and isinstance(node[0], (list, tuple))
+        isinstance(node, (list, tuple)) and node and isinstance(node[0], (list, tuple))
     ):
         node = node[0]
     if (
         isinstance(node, (list, tuple))
         and len(node) >= 2
-        and all(isinstance(value, (int, float)) and not isinstance(value, bool)
-                for value in node[:2])
+        and all(
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+            for value in node[:2]
+        )
     ):
         return float(node[0]), float(node[1])
     return None
@@ -181,7 +194,7 @@ class _HeadReader:
         if not chunk:
             self._eof = True
             return False
-        self._buf = self._buf[self._pos:] + chunk
+        self._buf = self._buf[self._pos :] + chunk
         self._pos = 0
         if len(self._buf) > _HEAD_MAX_BUFFER_CHARS:
             raise GeoIngestError("a single GeoJSON value is too large")
@@ -212,7 +225,11 @@ class _HeadReader:
                 if not self._fill():
                     raise GeoIngestError("invalid JSON") from exc
                 continue
-            if end == len(self._buf) and not self._eof and not isinstance(value, (dict, list, str)):
+            if (
+                end == len(self._buf)
+                and not self._eof
+                and not isinstance(value, (dict, list, str))
+            ):
                 # A number may continue in the next chunk.
                 if self._fill():
                     continue
@@ -271,7 +288,9 @@ def read_geojson_light(
                             truncated = True
                             break
                         feature = reader.value()
-                        if len(features) >= geometry_features and isinstance(feature, dict):
+                        if len(features) >= geometry_features and isinstance(
+                            feature, dict
+                        ):
                             feature["geometry"] = None
                         features.append(feature)
                         if reader.peek() == ",":

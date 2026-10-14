@@ -13,7 +13,10 @@ def _layer(count: int) -> dict:
     return {
         "type": "FeatureCollection",
         "name": "parcels",
-        "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
+        "crs": {
+            "type": "name",
+            "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"},
+        },
         "features": [
             {
                 "type": "Feature",
@@ -60,7 +63,9 @@ def test_values_split_by_chunk_boundary(tmp_path: Path, monkeypatch) -> None:
     ]
 
 
-@pytest.mark.parametrize("data", [{}, {"type": "FeatureCollection", "features": []}, [1, 2]])
+@pytest.mark.parametrize(
+    "data", [{}, {"type": "FeatureCollection", "features": []}, [1, 2]]
+)
 def test_small_documents_round_trip(tmp_path: Path, data: object) -> None:
     assert read_geojson_light(_write(tmp_path, data)) == data
 
