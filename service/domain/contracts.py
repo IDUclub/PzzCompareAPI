@@ -36,3 +36,6 @@ class PipelineRequest:
     placement_vri_code: str = ""
     # The service name exactly as the user phrased it (placement only).
     placement_service_name: str = ""
+    # NormGraph context of the placement (ПЗЗ zones + the service's norms), built
+    # by the API; "" when absent (placement only).
+    placement_context_path: str = ""

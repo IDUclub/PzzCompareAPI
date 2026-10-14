@@ -46,6 +46,9 @@ class PipelineTask(Base):
     placement_service_name: Mapped[str | None] = mapped_column(
         String(256), nullable=True
     )
+    placement_context_path: Mapped[str | None] = mapped_column(
+        String(512), nullable=True
+    )
     priority: Mapped[int] = mapped_column(Integer, default=1, index=True)
     status: Mapped[TaskStatus] = mapped_column(
         SqlEnum(TaskStatus), default=TaskStatus.queued

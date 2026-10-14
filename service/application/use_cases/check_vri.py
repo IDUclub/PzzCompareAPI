@@ -227,6 +227,50 @@ def _applies(row: dict[str, Any], vri: str | None, residential: bool) -> bool:
     return True
 
 
+_LIMIT_KINDS = {
+    "max_floors": ("предельная этажность", "эт."),
+    "max_height": ("предельная высота", "м"),
+    "max_coverage": ("максимальный процент застройки", "%"),
+}
+
+
+def zone_limits(
+    zone: dict[str, Any], vri: str | None, *, residential: bool = False
+) -> list[dict[str, Any]]:
+    """``[{kind, label, value, unit, clause}]``: the zone's upper limits for a use.
+
+    The same row selection as ``check_parameters``: rows for the use itself win
+    over the zone's general rows, «не подлежит установлению» sets no limit, and
+    the tightest of several rows applies.
+    """
+    limits: list[dict[str, Any]] = []
+    for kind, (label, unit) in _LIMIT_KINDS.items():
+        rows = [
+            p
+            for p in zone.get("parameters") or []
+            if p.get("kind") == kind and _applies(p, vri, residential)
+        ]
+        rows = [p for p in rows if p.get("vri_codes")] or rows
+        candidates = [
+            (limit, p)
+            for p in rows
+            if not p.get("not_set") and (limit := _limit(p)) is not None
+        ]
+        if not candidates:
+            continue
+        limit, row = min(candidates, key=lambda item: item[0])
+        limits.append(
+            {
+                "kind": kind,
+                "label": label,
+                "value": limit,
+                "unit": unit,
+                "clause": str(row.get("number") or ""),
+            }
+        )
+    return limits
+
+
 def resolve_vri(
     *,
     vri_code: str | None,

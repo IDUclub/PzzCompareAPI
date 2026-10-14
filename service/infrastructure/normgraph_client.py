@@ -7,6 +7,8 @@ belongs to.
 
 - ``GET /regulations/documents?territory_id=…`` — ПЗЗ documents of those territories.
 - ``GET /regulations/zones?doc_id=…`` — the zones of one document.
+- ``POST /entities/resolve`` — canonical entities (services, objects) for free text.
+- ``POST /restrictions/list`` — the norms naming those entities, keyset-paged.
 
 NormGraph accepts only service-account tokens, so every request carries OUR
 Keycloak token (client_credentials via ``idu-service-auth``), never the user's.
@@ -25,6 +27,10 @@ if TYPE_CHECKING:
 
 # NormGraph caps a zone listing at 2000; a ПЗЗ has a few hundred zones at most.
 _ZONES_LIMIT = 2000
+# ``/restrictions/list`` accepts at most 50 entities per request.
+_ENTITIES_MAX = 50
+_RESTRICTIONS_PAGE = 200
+_RESTRICTIONS_MAX = 1000
 
 
 class NormGraphError(RuntimeError):
@@ -90,6 +96,46 @@ class NormGraphClient:
             headers=await self._auth_headers(),
         )
         return self._json_or_raise(resp).get("zones") or []
+
+    async def resolve_entities(
+        self, terms: list[str], *, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """``[{term, candidates}]``: canonical entities for free-text topics."""
+        resp = await self._client.post(
+            "/entities/resolve",
+            json={"terms": terms, "limit": limit},
+            headers=await self._auth_headers(),
+        )
+        return self._json_or_raise(resp)
+
+    async def list_restrictions(
+        self,
+        entities: list[str],
+        *,
+        executable_only: bool = False,
+        max_items: int = _RESTRICTIONS_MAX,
+    ) -> list[dict[str, Any]]:
+        """Restrictions naming any of ``entities``, all keyset pages up to ``max_items``."""
+        hits: list[dict[str, Any]] = []
+        after_id: str | None = None
+        headers = await self._auth_headers()
+        while len(hits) < max_items:
+            body: dict[str, Any] = {
+                "entities": entities[:_ENTITIES_MAX],
+                "executable_only": executable_only,
+                "limit": min(_RESTRICTIONS_PAGE, max_items - len(hits)),
+            }
+            if after_id:
+                body["after_id"] = after_id
+            resp = await self._client.post(
+                "/restrictions/list", json=body, headers=headers
+            )
+            page = self._json_or_raise(resp)
+            hits.extend(page.get("hits") or [])
+            after_id = page.get("next_after_id")
+            if not after_id or not page.get("hits"):
+                break
+        return hits
 
     @staticmethod
     def _json_or_raise(resp: httpx.Response) -> Any:

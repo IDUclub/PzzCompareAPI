@@ -39,11 +39,17 @@ from ..infrastructure.pzz_mapping import lookup_zone_summary
 from ..infrastructure.runners.placement_pzz_runner import (
     CATEGORY_CLASSES,
     CATEGORY_EXISTING,
+    CATEGORY_NORMS,
     CATEGORY_REACH,
     CATEGORY_SZZ,
     CLASS_ORDER,
     CLASS_RU,
+    NORM_APPLIED,
+    NORM_NOT_APPLIED,
     PLACEMENT_SUMMARY_KEY,
+    REGULATIONS_DEFAULT,
+    REGULATIONS_NORMGRAPH,
+    REGULATIONS_USER,
     is_szz_sensitive,
 )
 from ..infrastructure.storage import get_object_storage, is_remote_path
@@ -1129,7 +1135,7 @@ _RESULT_SPLIT_SLOTS: dict[str, tuple[str, str, str, str]] = {
     ),
 }
 
-# Service placement (подбор мест) emits up to four layers from one result, split
+# Service placement (подбор мест) emits up to five layers from one result, split
 # by the same «Категория_объекта» property. slot -> (category, name, title,
 # filename).
 _PLACEMENT_SPLIT_SLOTS: dict[str, tuple[str, str, str, str]] = {
@@ -1145,10 +1151,16 @@ _PLACEMENT_SPLIT_SLOTS: dict[str, tuple[str, str, str, str]] = {
         "Подбор мест — СЗЗ производственных объектов",
         "placement_szz.geojson",
     ),
+    "placement_norms": (
+        CATEGORY_NORMS,
+        "placement_norms",
+        "Подбор мест — буферы строгих норм",
+        "placement_norms.geojson",
+    ),
     "placement_reach": (
         CATEGORY_REACH,
         "placement_reach",
-        "Подбор мест — зона доступности жилья (500 м)",
+        "Подбор мест — зона доступности жилья",
         "placement_reach.geojson",
     ),
     "placement_existing": (
@@ -1167,12 +1179,15 @@ def _is_placement_result(task: PipelineTask) -> bool:
 
 def _placement_slots(task: PipelineTask) -> list[str]:
     """Placement layers worth linking: the overlays exist only with a cadastre,
-    and the СЗЗ only for ВРИ a production СЗЗ excludes."""
+    the СЗЗ only for ВРИ a production СЗЗ excludes, and the norm buffers and the
+    housing reach only when the task carries a NormGraph context."""
     slots = ["placement_classes"]
     if getattr(task, "cadastral_data_path", None):
         if is_szz_sensitive(task.placement_vri_code or ""):
             slots.append("placement_szz")
-        slots.extend(["placement_reach", "placement_existing"])
+        if getattr(task, "placement_context_path", None):
+            slots.extend(["placement_norms", "placement_reach"])
+        slots.append("placement_existing")
     return slots
 
 
@@ -2381,6 +2396,117 @@ def _ha_ru(value: Any) -> str:
         return "0,00"
 
 
+_NORM_SECTIONS = (
+    ("strict", "Строгие нормы (исключают территорию):"),
+    ("soft", "Нестрогие нормы (учитываются, но не исключают территорию):"),
+    ("unchecked", "Нормы, не проверенные автоматически:"),
+)
+_NORM_TEXT_MAX = 160
+
+
+def _placement_regulations_line(summary: dict[str, Any]) -> str:
+    regulations = summary.get("regulations") or {}
+    source = regulations.get("source")
+    if source is None:
+        source = (
+            REGULATIONS_DEFAULT
+            if summary.get("used_default_mapping")
+            else REGULATIONS_USER
+        )
+    if source == REGULATIONS_NORMGRAPH:
+        document = regulations.get("document") or "документ ПЗЗ"
+        version = regulations.get("version")
+        edition = f" ({version})" if version else ""
+        return f"Разрешённые виды использования взяты из ПЗЗ в NormGraph: «{document}»{edition}."
+    if source == REGULATIONS_USER:
+        return "Разрешённые виды использования взяты из переданного описания зон."
+    return (
+        "Описания зон не переданы и в NormGraph не найдены — использован типовой "
+        "справочник видов разрешённого использования по зонам; результат носит "
+        "ориентировочный характер."
+    )
+
+
+def _norm_line(norm: dict[str, Any]) -> str:
+    requirement = " ".join(str(norm.get("requirement") or "").split())
+    if len(requirement) > _NORM_TEXT_MAX:
+        requirement = requirement[: _NORM_TEXT_MAX - 1].rstrip() + "…"
+    document = norm.get("document") or "NormGraph"
+    clause = f", п. {norm['clause']}" if norm.get("clause") else ""
+    status = norm.get("status")
+    note = norm.get("note") or ""
+    if status == NORM_APPLIED and norm.get("strictness") == "strict":
+        outcome = f"применена, исключено {_ha_ru(norm.get('ha'))} га"
+    elif status == NORM_APPLIED:
+        outcome = "учтена: для пригодных зон указана доля площади в зоне доступности"
+    elif status == NORM_NOT_APPLIED:
+        outcome = f"не применена — {note}" if note else "не применена"
+    else:
+        outcome = note
+    tail = f": {outcome}" if outcome else ""
+    return f"- {requirement or 'норма'} ({document}{clause}){tail}."
+
+
+def _placement_norm_lines(norms: list[dict[str, Any]]) -> list[str]:
+    if not norms:
+        return []
+    lines = ["", "Нормы NormGraph для объекта:"]
+    for strictness, title in _NORM_SECTIONS:
+        group = [n for n in norms if n.get("strictness") == strictness]
+        if group:
+            lines.append(title)
+            lines.extend(_norm_line(n) for n in group)
+    pending = sum(1 for n in norms if not n.get("reviewed"))
+    if pending:
+        lines.append(
+            f"Не прошли экспертную проверку: {pending} из {len(norms)} норм — "
+            "их формализация может быть неточной."
+        )
+    return lines
+
+
+def _placement_cadastre_lines(summary: dict[str, Any]) -> list[str]:
+    if not summary.get("cadastre_used"):
+        return [
+            "Кадастровый слой не передан: санитарно-защитные зоны, буферы норм, "
+            "близость к жилью и существующие объекты не учитывались."
+        ]
+    lines: list[str] = []
+    if summary.get("szz_applied"):
+        lines.append(
+            "Учтены санитарно-защитные зоны производственных и складских участков "
+            f"(СанПиН 2.2.1/2.1.1.1200-03): {_ha_ru(summary.get('szz_ha'))} га; "
+            "попавшие в них части зон отнесены к классу C."
+        )
+        widths = [
+            f"{item.get('hazard_class')} класс — {item.get('width_m'):g} м "
+            f"(участков {item.get('parcels')})"
+            for item in summary.get("szz_by_class") or []
+        ]
+        if widths:
+            lines.append("Ширина СЗЗ по классу опасности: " + "; ".join(widths) + ".")
+        defaulted = summary.get("szz_default_class_parcels") or 0
+        if defaulted:
+            lines.append(
+                f"Для {defaulted} участков класс опасности не указан в названии зоны — "
+                "принят IV класс (100 м)."
+            )
+    reach_m = summary.get("reach_m")
+    if reach_m:
+        lines.append(
+            f"Зона доступности жилья ({reach_m:g} м от жилых участков): "
+            f"{_ha_ru(summary.get('reach_ha'))} га; пригодных участков зон, "
+            f"частично или целиком в ней: {summary.get('reach_zones', 0)}."
+        )
+    parcels = summary.get("parcels") or {}
+    counts = [
+        f"{_PARCEL_KIND_RU.get(kind, kind)} — {n}" for kind, n in parcels.items() if n
+    ]
+    if counts:
+        lines.append("Участки кадастра: " + "; ".join(counts) + ".")
+    return lines
+
+
 def _build_chat_message_placement(summary: dict[str, Any]) -> str:
     """Deterministic Russian summary of a service placement run."""
     service = summary.get("service_name") or "объект"
@@ -2390,6 +2516,7 @@ def _build_chat_message_placement(summary: dict[str, Any]) -> str:
     lines = [
         f"Подбор мест размещения: «{service}» (ВРИ {vri}).",
         f"Проанализировано территориальных зон: {summary.get('zones_total', 0)}.",
+        _placement_regulations_line(summary),
         "",
         "Распределение по классам пригодности:",
     ]
@@ -2413,48 +2540,24 @@ def _build_chat_message_placement(summary: dict[str, Any]) -> str:
             name = zone.get("name") or zone.get("code") or "—"
             code_txt = zone.get("code")
             label = name if not code_txt or code_txt == name else f"{code_txt} — {name}"
-            lines.append(f"- {label}: {_ha_ru(zone.get('ha'))} га.")
+            limits = f"; параметры зоны: {zone['limits']}" if zone.get("limits") else ""
+            lines.append(f"- {label}: {_ha_ru(zone.get('ha'))} га{limits}.")
     else:
         lines += ["", "Зон, где вид разрешён как основной, не найдено."]
 
     lines.append("")
-    if summary.get("cadastre_used"):
-        if summary.get("szz_applied"):
-            lines.append(
-                "Учтена санитарно-защитная зона 100 м вокруг производственных и "
-                f"складских участков: {_ha_ru(summary.get('szz_ha'))} га; "
-                "попавшие в неё части зон отнесены к классу C."
-            )
-        reach_ha = summary.get("reach_ha") or 0
-        if reach_ha:
-            lines.append(
-                f"Зона доступности жилья (500 м от жилых участков): {_ha_ru(reach_ha)} га; "
-                "для пригодных зон отмечено, попадают ли они в неё."
-            )
-        parcels = summary.get("parcels") or {}
-        counts = [
-            f"{_PARCEL_KIND_RU.get(kind, kind)} — {n}"
-            for kind, n in parcels.items()
-            if n
-        ]
-        if counts:
-            lines.append("Участки кадастра: " + "; ".join(counts) + ".")
-    else:
-        lines.append(
-            "Кадастровый слой не передан: санитарно-защитные зоны, близость к жилью "
-            "и существующие объекты не учитывались."
-        )
+    lines.extend(_placement_cadastre_lines(summary))
+    lines.extend(_placement_norm_lines(summary.get("norms") or []))
 
-    if summary.get("used_default_mapping"):
-        lines.append(
-            "Описания зон не переданы — использован типовой справочник видов "
-            "разрешённого использования по зонам; результат носит ориентировочный характер."
-        )
     uncovered = summary.get("uncovered_zones") or []
+    notes = [str(n) for n in summary.get("notes") or []]
+    if uncovered or notes:
+        lines.append("")
     if uncovered:
         shown = ", ".join(str(z) for z in uncovered[:15])
         more = f" и ещё {len(uncovered) - 15}" if len(uncovered) > 15 else ""
         lines.append(f"Нет описания для зон: {shown}{more} (класс D).")
+    lines.extend(notes)
     return "\n".join(lines)
 
 

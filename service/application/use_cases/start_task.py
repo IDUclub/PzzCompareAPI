@@ -102,6 +102,7 @@ def start_task(
         is_placement=is_placement,
         placement_vri_code=task.placement_vri_code or "",
         placement_service_name=task.placement_service_name or "",
+        placement_context_path=task.placement_context_path or "",
     )
 
     return StartTaskResult(

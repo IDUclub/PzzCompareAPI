@@ -203,6 +203,9 @@ class StorageAwarePipelineRunner(PipelineRunner):
             vri_classifier_path=materialise(
                 request.vri_classifier_path, "vri_classifier.json"
             ),
+            placement_context_path=materialise(
+                request.placement_context_path, "placement_context.json"
+            ),
             outputs_dir=str(local_outputs_dir),
         )
 

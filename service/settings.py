@@ -137,6 +137,9 @@ class Settings(BaseSettings):
     # check is unavailable (503); the scenario checks never use it.
     normgraph_base_url: str = Field(default="")
     normgraph_timeout_seconds: float = Field(default=30.0)
+    # Norm documents the placement check ignores (``;``-separated names): test
+    # corpora loaded next to the real norms carry contradictory values.
+    placement_excluded_norm_documents: str = Field(default="Тестовые Нормы")
 
     fileserver_endpoint: str = Field(default="")
     fileserver_access_key: str = Field(default="")
@@ -256,6 +259,9 @@ def _build_settings_cached() -> Settings:
         normgraph_base_url=_get_optional_env(config, "NORMGRAPH_BASE_URL").rstrip("/"),
         normgraph_timeout_seconds=float(
             _get_optional_env(config, "NORMGRAPH_TIMEOUT_SECONDS", "30")
+        ),
+        placement_excluded_norm_documents=_get_optional_env(
+            config, "PLACEMENT_EXCLUDED_NORM_DOCUMENTS", "Тестовые Нормы"
         ),
         chat_storage_base_url=_get_optional_env(config, "CHAT_STORAGE_BASE_URL").rstrip(
             "/"

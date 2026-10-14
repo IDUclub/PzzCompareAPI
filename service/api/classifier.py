@@ -57,11 +57,16 @@ from ..application.use_cases.detect_columns import (
     required_columns_resolved,
     sparse_column_warnings,
 )
+from ..application.use_cases.placement_context import (
+    build_placement_context,
+    parse_excluded_documents,
+)
 from ..application.use_cases.resolve_service_vri import (
     ResolvedService,
     resolve_service_vri,
 )
 from ..dependencies import (
+    build_normgraph_client,
     get_app_settings,
     get_db,
     get_event_repo,
@@ -528,6 +533,7 @@ def _create_pipeline_task(
     mo_boundaries_file: UploadFile | None = None,
     placement_vri_code: str | None = None,
     placement_service_name: str | None = None,
+    placement_context: dict[str, Any] | None = None,
 ) -> TaskOut:
     """Shared logic for both submission endpoints.
 
@@ -537,7 +543,8 @@ def _create_pipeline_task(
 
     ``placement_vri_code`` switches to the service-placement check: the cadastre
     becomes optional (stored as "" when absent) and the zone descriptions use the
-    building flow's schema.
+    building flow's schema; ``placement_context`` (NormGraph ПЗЗ + norms) is
+    stored next to the uploads for the worker.
     """
     placement = bool(placement_vri_code)
     if cadastral_file is None and not placement:
@@ -652,6 +659,14 @@ def _create_pipeline_task(
     }
     if stored_mo_boundaries:
         input_paths["mo_boundaries_data_path"] = stored_mo_boundaries
+    if placement_context is not None:
+        input_paths["placement_context_path"] = persist_geojson_dict(
+            placement_context,
+            task_dir,
+            "placement_context.json",
+            external_id,
+            storage,
+        )
 
     payload = TaskCreate(
         include_pzz_check=include_pzz_check,
@@ -717,9 +732,11 @@ def _create_pipeline_task(
         mode=(
             "placement"
             if placement
-            else "building_pzz_check"
-            if building_upload
-            else ("pzz_check" if include_pzz_check else "classify_only")
+            else (
+                "building_pzz_check"
+                if building_upload
+                else ("pzz_check" if include_pzz_check else "classify_only")
+            )
         ),
     )
     return TaskOut.model_validate(task)
@@ -1853,11 +1870,48 @@ class PlacementRun:
 def _resolved_service_line(resolved: ResolvedService, query: str) -> str:
     """RU line announcing which ВРИ the user's service name was matched to."""
     shown = (resolved.service_name or query).strip()
-    vri = f"{resolved.code} «{resolved.vri_name}»" if resolved.vri_name else resolved.code
+    vri = (
+        f"{resolved.code} «{resolved.vri_name}»" if resolved.vri_name else resolved.code
+    )
     return (
         f"Сервис «{shown}» сопоставлен с видом разрешённого использования (ВРИ) "
         f"{vri} ({resolved.source_ru})."
     )
+
+
+async def _placement_context(
+    app_settings: Settings,
+    *,
+    service_name: str,
+    service_query: str,
+    zones_fc: dict[str, Any],
+    zone_code_col: str,
+    territory_id: int | None,
+) -> dict[str, Any]:
+    """The NormGraph ПЗЗ and norms of the service, built here: the worker has no
+    service token. NormGraph unset or failing yields a context that says so."""
+    zone_codes = sorted(
+        {
+            str(value)
+            for feature in zones_fc.get("features") or []
+            if (value := (feature.get("properties") or {}).get(zone_code_col))
+            not in (None, "")
+        }
+    )
+    kwargs: dict[str, Any] = {
+        "service_name": service_name,
+        "search_terms": [service_query],
+        "zone_codes": zone_codes,
+        "territory_id": territory_id,
+        "excluded_documents": parse_excluded_documents(
+            app_settings.placement_excluded_norm_documents
+        ),
+    }
+    normgraph = build_normgraph_client(app_settings)
+    if normgraph is None:
+        return await build_placement_context(None, **kwargs)
+    async with normgraph:
+        return await build_placement_context(normgraph, **kwargs)
 
 
 async def _prepare_placement_run(
@@ -1875,12 +1929,14 @@ async def _prepare_placement_run(
     task_repo: TaskRepository,
     event_repo: EventRepository,
     session: Session,
+    territory_id: int | None = None,
 ) -> PlacementRun:
     """Resolve the service to a ВРИ code, detect the columns, create the task.
 
     The cadastre is optional: without it only the zone permissions are checked
     (no СЗЗ, no housing reach, no existing objects). A CSV/XLSX descriptions file
-    is converted to the label JSON up front, like the building flow.
+    is converted to the label JSON up front, like the building flow. The ПЗЗ and
+    the norms of the service come from NormGraph (``_placement_context``).
     """
     resolved = await resolve_service_vri(service_query, app_settings, model=model)
     if resolved is None:
@@ -1990,6 +2046,15 @@ async def _prepare_placement_run(
             resolved=resolved,
         )
 
+    service_name = resolved.service_name or service_query
+    placement_context = await _placement_context(
+        app_settings,
+        service_name=service_name,
+        service_query=service_query,
+        zones_fc=zones_fc,
+        zone_code_col=zone_code,
+        territory_id=territory_id,
+    )
     task_out = await run_in_threadpool(
         _create_pipeline_task,
         cadastral_file=cadastral_file,
@@ -2009,7 +2074,8 @@ async def _prepare_placement_run(
         event_repo=event_repo,
         session=session,
         placement_vri_code=resolved.code,
-        placement_service_name=resolved.service_name or service_query,
+        placement_service_name=service_name,
+        placement_context=placement_context,
     )
     # Committed here: the task is already enqueued and the worker must see the row.
     session.commit()
@@ -2022,6 +2088,7 @@ async def _run_placement_auto(
     *,
     request: Request,
     service_query: str,
+    territory_id: int | None = None,
     zones_file: UploadFile,
     cadastral_file: UploadFile | None,
     descriptions_file: UploadFile | None,
@@ -2042,6 +2109,7 @@ async def _run_placement_auto(
 ) -> EventSourceResponse:
     """Run the service-placement check and stream the grounded answer."""
     run = await _prepare_placement_run(
+        territory_id=territory_id,
         service_query=service_query,
         zones_file=zones_file,
         cadastral_file=cadastral_file,
@@ -2096,6 +2164,7 @@ async def create_auto_chat_stream_endpoint(
     mo_boundaries_feature_collection_file: UploadFile | None = File(default=None),
     mode: str = Form("pzz_check"),
     service_name: str | None = Form(default=None),
+    territory_id: int | None = Form(default=None),
     user_query: str | None = Form(default=None),
     chat_id: str | None = Form(default=None),
     group_by: str = Form("zone"),
@@ -2137,12 +2206,16 @@ async def create_auto_chat_stream_endpoint(
       - ``placement`` — "where can this service be placed": needs PZZ zones and a
         ``service_name`` (or, failing that, ``user_query``) naming the service in
         natural language. The name is resolved to a ВРИ code (catalogue match,
-        then LLM), every zone is classed A/B/B*/C/D for that code and the result
-        is streamed as a ``placement_summary`` event plus map layers. The cadastre
-        (``cadastral_…_file``) is optional and adds the 100 m СЗЗ of industrial
-        parcels, the 500 m housing reach and the existing objects of this type.
-        Zone descriptions come from ``pzz_descriptions_file`` (JSON or CSV/XLSX);
-        without them the built-in mapping is used. All user-facing text is Russian.
+        then LLM) and to NormGraph entities, whose norms (strict / soft / not
+        checkable) are gathered up front. Every zone is classed A/A*/B/B*/C/D
+        for that code and the result is streamed as a ``placement_summary``
+        event plus map layers. The cadastre (``cadastral_…_file``) is optional
+        and adds the СЗЗ of industrial parcels (width by hazard class), the
+        buffers of strict norms, the housing reach of soft norms and the
+        existing objects of this type. Zone descriptions come from
+        ``pzz_descriptions_file`` (JSON or CSV/XLSX), else from the NormGraph ПЗЗ
+        whose zone codes match the upload (``territory_id`` narrows the search),
+        else from the built-in mapping. All user-facing text is Russian.
 
     When a required column can't be determined, no task is started: the narrative
     (which columns are missing) plus an ``error`` and terminal ``done`` are
@@ -2179,6 +2252,7 @@ async def create_auto_chat_stream_endpoint(
         return await _run_placement_auto(
             request=request,
             service_query=service_query,
+            territory_id=territory_id,
             zones_file=pzz_zones_feature_collection_file,
             cadastral_file=cadastral_feature_collection_file,
             descriptions_file=pzz_descriptions_file or pzz_zone_vri_labels_file,
