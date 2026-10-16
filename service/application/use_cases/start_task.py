@@ -80,6 +80,7 @@ def start_task(
     idempotency_key = task_repo.get_idempotency_key_by_external_id(task.external_id)
     is_scenario = bool(idempotency_key and idempotency_key.startswith("sc:"))
     is_building_upload = bool(idempotency_key and idempotency_key.startswith("bld:"))
+    is_placement = bool(idempotency_key and idempotency_key.startswith("plc:"))
 
     request = PipelineRequest(
         task_external_id=task.external_id,
@@ -98,6 +99,10 @@ def start_task(
         building_service_col=task.building_service_col or "",
         building_floors_col=task.building_floors_col or "",
         mo_boundaries_data_path=task.mo_boundaries_data_path or "",
+        is_placement=is_placement,
+        placement_vri_code=task.placement_vri_code or "",
+        placement_service_name=task.placement_service_name or "",
+        placement_context_path=task.placement_context_path or "",
     )
 
     return StartTaskResult(

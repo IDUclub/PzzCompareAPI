@@ -25,6 +25,9 @@ class FakeTask:
     building_service_col: str | None = None
     building_floors_col: str | None = None
     mo_boundaries_data_path: str | None = None
+    placement_vri_code: str | None = None
+    placement_service_name: str | None = None
+    placement_context_path: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
     result_path: str | None = None
