@@ -136,6 +136,13 @@ _TARGET_HINTS = {
 # «a school already stands here».
 _SCHOOL_RE = re.compile(r"(?<![а-я])школ|общеобразоват|лице[йя]|гимнази")
 _PRESCHOOL_RE = re.compile(r"дошкол|детск\w* сад|ясл")
+# The 3.5 family hint also catches ВРИ 3.5.2 (colleges, universities, driving
+# schools), which is not «a school already stands here» for a 3.5.1 target.
+_GENERAL_EDUCATION_CODE = "3.5.1"
+_VOCATIONAL_RE = re.compile(
+    r"высш|профессиональн|колледж|училищ|техникум|университет|институт|академи"
+    r"|автошкол|(?:авто|водител)\w*\s+школ\w*"
+)
 _PROD_RE = re.compile(r"производ|промышлен|склад")
 _HOUSING_RE = re.compile(r"жил|ижс|многокварт")
 _NOT_HOUSING_RE = re.compile(r"нежил")
@@ -193,6 +200,21 @@ def load_placement_context(path: str) -> dict[str, Any]:
     return context if isinstance(context, dict) else {}
 
 
+def _is_general_education(code: str) -> bool:
+    return code == _GENERAL_EDUCATION_CODE or code.startswith(
+        _GENERAL_EDUCATION_CODE + "."
+    )
+
+
+def _is_vocational_only(low: str) -> bool:
+    """Vocational or higher education with no school or kindergarten named apart
+    from it («автомобильная школа» is not a school)."""
+    if not _VOCATIONAL_RE.search(low):
+        return False
+    rest = _VOCATIONAL_RE.sub(" ", low)
+    return not (_SCHOOL_RE.search(rest) or _PRESCHOOL_RE.search(rest))
+
+
 def classify_parcel(
     text: str,
     target_code: str,
@@ -203,9 +225,12 @@ def classify_parcel(
 
     ``excluded_re`` drops parcels of a sibling service from the target (a
     kindergarten when placing a school) unless the text names a school too.
+    A 3.5.1 target never takes a purely vocational or higher-education parcel.
     """
     low = _fold(text)
     if _code_pattern(target_code).search(low) or (target_re and target_re.search(low)):
+        if _is_general_education(target_code) and _is_vocational_only(low):
+            return "other"
         if excluded_re is None or not excluded_re.search(low) or _SCHOOL_RE.search(low):
             return "target"
         return "other"

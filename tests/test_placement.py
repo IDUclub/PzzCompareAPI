@@ -174,6 +174,31 @@ def test_a_kindergarten_is_not_an_existing_school() -> None:
     )
 
 
+def test_vocational_and_higher_education_is_not_an_existing_school() -> None:
+    school_re = _target_regex("3.5.1", "Школа")
+    preschool = _excluded_target_regex("Школа")
+    for text in (
+        "среднее и высшее профессиональное образование",
+        "объекты высшего профессионального образования",
+        "под размещение здания Гатчинского педагогического училища (колледжа)",
+        "для размещения существующего здания автомобильной школы",
+        "образовательные учреждения начального и среднего профессионального "
+        "образования",
+    ):
+        assert classify_parcel(text, "3.5.1", school_re, preschool) == "other", text
+    for text in (
+        "для размещения средней школы №9",
+        "для размещения музыкальной школы",
+        "для размещения объектов образования",
+        "колледж и общеобразовательная школа",
+    ):
+        assert classify_parcel(text, "3.5.1", school_re, preschool) == "target", text
+    kindergarten_re = _target_regex("3.5.1", "Детский сад")
+    assert classify_parcel("Колледж, детский сад", "3.5.1", kindergarten_re) == "target"
+    college_re = _target_regex("3.5.2", "Колледж")
+    assert classify_parcel("Колледж", "3.5.2", college_re) == "target"
+
+
 def test_is_szz_sensitive() -> None:
     for code in ("3.5.1", "2.1", "5.1.3", "3.4.1"):
         assert is_szz_sensitive(code), code
