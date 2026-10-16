@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from contextvars import Token
 from datetime import timezone
 from pathlib import Path
 from time import perf_counter
@@ -10,7 +11,7 @@ from time import perf_counter
 from celery import Celery
 from celery.exceptions import MaxRetriesExceededError
 from celery.schedules import schedule
-from celery.signals import after_setup_logger, worker_ready
+from celery.signals import after_setup_logger, task_postrun, task_prerun, worker_ready
 from sqlalchemy import func, select
 
 from .infrastructure.runners.pipeline_runner import PipelineRunnerFactory
@@ -29,7 +30,7 @@ from .infrastructure.repositories.sqlalchemy_task_repository import (
     SqlAlchemyTaskRepository,
 )
 from .log_sink import setup_redis_sink
-from .logging_config import setup_logging
+from .logging_config import bind_log_context, reset_log_context, setup_logging
 from .metrics import (
     queue_wait_seconds,
     task_fail_total,
@@ -88,8 +89,41 @@ def enqueue_pipeline_task(
 
 @worker_ready.connect
 def _setup_worker_log_sink(**kwargs) -> None:  # noqa: ARG001
-    """Wire up the Redis log sink once the worker is fully started."""
+    """Fallback for the Redis log sink (normally added in after_setup_logger).
+
+    Idempotent — a no-op when the sink is already installed.
+    """
     setup_redis_sink(redis_url=settings.redis_url)
+
+
+# Celery's threads pool reuses threads, so the per-task log context must be
+# reset when the task ends. Keyed by celery task id.
+_log_context_tokens: dict[str, Token] = {}
+
+
+@task_prerun.connect
+def _bind_task_log_context(
+    task_id=None, task=None, args=None, **kwargs
+) -> None:  # noqa: ARG001
+    """Tag every log record of a running task with its ids (shown in /logs)."""
+    task_name = getattr(task, "name", None)
+    fields: dict[str, object] = {"celery_task_id": task_id, "task_name": task_name}
+    if task_name == execute_pipeline_task.name and args:
+        fields["task_id"] = args[0]
+    if task_id:
+        _log_context_tokens[task_id] = bind_log_context(**fields)
+
+
+@task_postrun.connect
+def _reset_task_log_context(task_id=None, **kwargs) -> None:  # noqa: ARG001
+    token = _log_context_tokens.pop(task_id, None) if task_id else None
+    if token is None:
+        return
+    try:
+        reset_log_context(token)
+    except ValueError:
+        # Token created in another context (not expected with the threads pool).
+        pass
 
 
 @worker_ready.connect
@@ -120,8 +154,13 @@ def _configure_worker_logging(logger, **kwargs) -> None:  # noqa: ARG001
     adds a StreamHandler to the root logger, then Celery's worker startup adds another.
     after_setup_logger fires once Celery is done configuring, so basicConfig(force=True)
     replaces the handler rather than stacking another one.
+
+    setup_logging() removes every loguru sink, so the Redis sink is re-added
+    right here. This signal fires in both the worker and beat, so both ship
+    their logs (and tracebacks) to GET /logs.
     """
     setup_logging(force=True)
+    setup_redis_sink(redis_url=settings.redis_url)
 
 
 def _log_structured(
@@ -133,8 +172,12 @@ def _log_structured(
     status: str,
     duration_ms: int | None = None,
     level: int = logging.INFO,
+    exc_info: bool = False,
     **extra: object,
 ) -> None:
+    # Human-readable logfmt. task_id / external_id / celery_task_id also travel
+    # as separate fields of the log entry (log context), so /logs can filter
+    # on them.
     payload = {
         "task_id": task_id,
         "external_id": external_id,
@@ -144,7 +187,19 @@ def _log_structured(
         "duration_ms": duration_ms,
         **extra,
     }
-    logger.log(level, json.dumps(payload, ensure_ascii=False))
+    message = " ".join(
+        f"{key}={_logfmt_value(value)}"
+        for key, value in payload.items()
+        if value is not None
+    )
+    logger.log(level, message, exc_info=exc_info)
+
+
+def _logfmt_value(value: object) -> str:
+    text = str(value)
+    if not text or any(ch in text for ch in ' ="\n'):
+        return json.dumps(text, ensure_ascii=False)
+    return text
 
 
 @celery_app.task(
@@ -185,6 +240,8 @@ def execute_pipeline_task(self, task_id: int) -> None:
             raise self.retry(countdown=1)
 
         external_id = task.external_id
+        # Undone together with the prerun context in _reset_task_log_context.
+        bind_log_context(external_id=external_id)
         if task.created_at is not None:
             created_at = task.created_at
             if created_at.tzinfo is None:
@@ -302,6 +359,7 @@ def execute_pipeline_task(self, task_id: int) -> None:
             duration_ms=int((perf_counter() - stage_started) * 1000),
             error=error_text,
             level=logging.ERROR,
+            exc_info=True,
         )
     else:
         _log_structured(
