@@ -81,8 +81,10 @@ def enqueue_pipeline_task(
     oversubscribed.
     """
     deterministic = (
-        is_scenario and settings.scenario_deterministic
-    ) or is_building_upload or is_placement
+        (is_scenario and settings.scenario_deterministic)
+        or is_building_upload
+        or is_placement
+    )
     queue = "default" if deterministic else "llm"
     return execute_pipeline_task.apply_async(args=[task_id], queue=queue)
 

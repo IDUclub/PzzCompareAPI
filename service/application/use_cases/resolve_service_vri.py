@@ -125,7 +125,9 @@ class _Candidate:
 class _Catalog:
     vri_names: dict[str, str]  # code -> ВРИ name
     candidates: tuple[_Candidate, ...]
-    exact: dict[str, _Candidate | None]  # normalised name -> candidate (None = ambiguous)
+    exact: dict[
+        str, _Candidate | None
+    ]  # normalised name -> candidate (None = ambiguous)
 
 
 def _normalise(text: str) -> str:
