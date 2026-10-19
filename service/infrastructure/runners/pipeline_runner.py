@@ -203,6 +203,9 @@ class StorageAwarePipelineRunner(PipelineRunner):
             placement_context_path=materialise(
                 request.placement_context_path, "placement_context.json"
             ),
+            existing_objects_data_path=materialise(
+                request.existing_objects_data_path, "existing_objects.geojson"
+            ),
             outputs_dir=str(local_outputs_dir),
         )
 

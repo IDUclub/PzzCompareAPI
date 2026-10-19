@@ -118,6 +118,7 @@ docker compose -f docker-compose.yml up -d --build
   шаблоном, в ответе приходит `action` = `confirm` (подтвердить подобранные
   соответствия и повторить с `confirmed_zone_map`) или `suggest_upload` (загрузить
   своё описание разрешённых ВРИ)
+- `POST /tasks/auto/chat/stream` с `mode=placement` — подбор мест; необязательный `existing_objects_feature_collection_file` задаёт фактические объекты для `A*`/`B*` отдельно от кадастра (`existing_objects_type_col` — явная колонка типа)
 - `POST /tasks/pzz-check/chat/stream` — проверка ПЗЗ + стрим разговорного ответа LLM (SSE, требует Bearer)
 - `POST /tasks/classify-only/chat/stream` — классификация ВРИ + стрим разговорного ответа LLM (SSE, требует Bearer)
 - `GET /tasks/{id}` · `GET /tasks_list` · `GET /tasks/{id}/result`

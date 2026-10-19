@@ -103,6 +103,8 @@ def start_task(
         placement_vri_code=task.placement_vri_code or "",
         placement_service_name=task.placement_service_name or "",
         placement_context_path=task.placement_context_path or "",
+        existing_objects_data_path=getattr(task, "existing_objects_data_path", None)
+        or "",
     )
 
     return StartTaskResult(

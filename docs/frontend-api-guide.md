@@ -1139,6 +1139,8 @@ IV. Для школы детские сады существующими объ�
 | `service_name` | string | да* | Название сервиса на естественном языке или код ВРИ. *Если пусто — берётся `user_query` |
 | `pzz_zones_feature_collection_file` | file | да | Слой зон ПЗЗ (буквенные индексы или числовые) |
 | `cadastral_feature_collection_file` | file | – | Кадастровые участки с ВРИ. Добавляет СЗЗ, буферы строгих норм, зону доступности жилья и классы `A*`/`B*` |
+| `existing_objects_feature_collection_file` | file | – | Отдельный слой фактических объектов: точки/мульти-точки и полигоны/мульти-полигоны. Используется для поиска существующих объектов целевого типа и классов `A*`/`B*` независимо от кадастра |
+| `existing_objects_type_col` | string | – | Колонка с типом фактического объекта, если имя нестандартное. Автоматически читаются типы Urban API и колонки `Тип объекта`, `тип`, `object_type`, `service_type_name`, `physical_object_type_name`, `vri`, `vri_code`, `name` |
 | `pzz_descriptions_file` (или `pzz_zone_vri_labels_file`) | file | – | Описания зон → разрешённые ВРИ (JSON или `.csv`/`.xlsx`). Без файла — ПЗЗ из NormGraph, если найдены, иначе типовой справочник (результат ориентировочный) |
 | `territory_id` | int | – | Территория (id из urban_api), по которой искать ПЗЗ в NormGraph. Без неё ищется документ ПЗЗ любой территории с подходящими кодами зон |
 | `vri_classifier_file` | file | – | Свой классификатор ВРИ |
@@ -1146,6 +1148,27 @@ IV. Для школы детские сады существующими объ�
 
 Ошибки `422`: нет файла зон («pzz_zones_feature_collection_file is required for mode=placement»);
 нет ни `service_name`, ни `user_query` («service_name (or user_query) is required for mode=placement»).
+
+**Фактические объекты отдельным файлом.** Поддержаны вложенные `service_type` /
+`physical_object_type` из Urban API и плоские `service_type_id` / `physical_object_type_id`,
+либо текстовый тип, например `{"Тип объекта":"Школа"}`. Колонку можно задать явно.
+Форматы — те же геоформаты, что у зон; GeoJSON должен быть в EPSG:4326.
+Пустая FeatureCollection допустима. Если тип нельзя определить по структуре колонок,
+колонка указана неверно или геометрия не является точкой/полигоном, возвращается `422`.
+
+При наличии этого файла существующие объекты определяются **только по нему**;
+кадастровые предположения о наличии целевого объекта не добавляются, поэтому дублей
+между кадастром и отдельным файлом нет. Даже пустой файл отключает эти предположения.
+Жильё и производство из отдельного файла не заменяют кадастр для СЗЗ и доступности жилья.
+Возможен подбор с зонами и фактическими объектами **без кадастра**.
+
+Сводка дополнена `existing_objects_used` (файл передан), `existing_objects_count`
+(сколько объектов целевого типа найдено) и `existing_objects_source`
+(`upload` / `cadastre` / `scenario` / `none`). `cadastre_used` отражает именно кадастр.
+В SSE добавлен входной `file` с `name=input_existing_objects`,
+`url=/files/existing_objects/{external_id}` и `title=Фактические объекты`.
+Результирующий `placement_existing` содержит только найденные целевые объекты.
+Новый слой хранится вместе с задачей и используется при `/recompute`.
 
 **Поток событий:** ведущий `chunk` (на русском: с каким ВРИ сопоставлен сервис и откуда
 сопоставление, какие колонки определены, предупреждение, если кадастр не передан) → `task` /
@@ -1327,6 +1350,7 @@ const response = await fetch('/scenarios/843/chat/stream', {
 | Результат `placement`, зона доступности жилья | `placement_reach` | Подбор мест — зона доступности жилья | `placement_reach.geojson` |
 | Результат `placement`, существующие объекты | `placement_existing` | Подбор мест — существующие объекты этого типа | `placement_existing.geojson` |
 | Входной кадастр (`pzz_check` / `classify_only` / `placement`) | `input_cadastral` | Исходные участки | `input_parcels.geojson` |
+| Фактические объекты (`placement`) | `input_existing_objects` | Фактические объекты | `existing_objects.geojson` |
 | Входные объекты (`building_pzz_check`) | `input_cadastral` | Исходные здания и сервисы | `input_buildings_and_services.geojson` |
 | Входные зоны | `input_zones` | Зоны ПЗЗ | `pzz_zones.geojson` |
 | Входные границы МО (если загружены) | `input_mo_boundaries` | Границы муниципальных образований | `mo_boundaries.geojson` |
@@ -1360,6 +1384,7 @@ const response = await fetch('/scenarios/843/chat/stream', {
 | `pzz_check` | `input_cadastral`, `input_zones`, `classified_result` |
 | `building_pzz_check` | `input_cadastral`, `input_zones`, `buildings_result`, `services_result` |
 | `placement` без кадастра | `input_zones`, `placement_classes` |
+| `placement` с фактическими объектами без кадастра | `input_zones`, `input_existing_objects`, `placement_classes`, `placement_norms`\*\*, `placement_reach`\*\*, `placement_existing` |
 | `placement` с кадастром | `input_cadastral`, `input_zones`, `placement_classes`, `placement_szz`\*, `placement_norms`\*\*, `placement_reach`\*\*, `placement_existing` |
 | сценарий (`/scenarios/{id}/chat/stream`) | `functional_zones`, `classified_result` |
 
@@ -1371,7 +1396,7 @@ const response = await fetch('/scenarios/843/chat/stream', {
 его нет. Оверлейные слои могут быть пустыми FeatureCollection, если в кадастре нет
 соответствующих участков.
 
-\*\* `placement_norms` и `placement_reach` приходят у всех новых задач подбора с кадастром; у
+\*\* `placement_norms` и `placement_reach` приходят у новых задач подбора с кадастром или отдельным файлом фактических объектов; у
 задач, созданных до появления норм NormGraph, их нет. Пустые, если у сервиса нет строгих норм о
 расстоянии / нормы «в пределах N м от жилья» или NormGraph был недоступен.
 
