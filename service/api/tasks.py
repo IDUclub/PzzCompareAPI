@@ -2466,7 +2466,8 @@ def _placement_norm_lines(norms: list[dict[str, Any]]) -> list[str]:
 
 
 def _placement_cadastre_lines(summary: dict[str, Any]) -> list[str]:
-    if not summary.get("cadastre_used"):
+    scenario_objects = summary.get("scenario_objects_used")
+    if not summary.get("cadastre_used") and not scenario_objects:
         return [
             "Кадастровый слой не передан: санитарно-защитные зоны, буферы норм, "
             "близость к жилью и существующие объекты не учитывались."
@@ -2503,7 +2504,18 @@ def _placement_cadastre_lines(summary: dict[str, Any]) -> list[str]:
         f"{_PARCEL_KIND_RU.get(kind, kind)} — {n}" for kind, n in parcels.items() if n
     ]
     if counts:
-        lines.append("Участки кадастра: " + "; ".join(counts) + ".")
+        lines.append(
+            ("Объекты сценария: " if scenario_objects else "Участки кадастра: ")
+            + "; ".join(counts)
+            + "."
+        )
+    if scenario_objects:
+        lines = [
+            line.replace("участков зон", "частей зон")
+            .replace("участков", "объектов")
+            .replace("участка", "объекта")
+            for line in lines
+        ]
     return lines
 
 

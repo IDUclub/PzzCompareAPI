@@ -128,6 +128,62 @@ async def classify_scenario(
 
 
 @scenarios_mcp.tool(
+    name="place_service_in_scenario",
+    title="Find service placement locations in a scenario",
+    description="""Find where a service (school, kindergarten, clinic, etc.) can be placed.
+Uses the scenario's functional zones and ALL physical objects and services from Urban API.
+No uploaded files are needed. Pass scenario_id, year, source and service_name.
+The functional-zone reference mapping is approximate, not the territory's actual PZZ boundaries.
+NormGraph supplies service norms. Buffers use scenario object geometries, not cadastral parcels.
+Returns external_id and status. Poll get_scenario_classification_status, then read
+get_scenario_placement_summary. Auth is forwarded automatically from the caller.""",
+    tags={"scenario", "placement", "submit"},
+)
+@map_errors
+async def place_service_in_scenario(
+    scenario_id: int,
+    year: int,
+    source: str,
+    service_name: str,
+    priority: int = 1,
+    force_recompute: bool = False,
+    token: str | None = Depends(extract_token),
+    api: ApiClient = Depends(get_api_client),
+) -> dict[str, Any]:
+    return await api.submit_scenario_placement(
+        scenario_id=scenario_id,
+        year=year,
+        source=source,
+        service_name=service_name,
+        priority=priority,
+        force_recompute=force_recompute,
+        token=token,
+    )
+
+
+@scenarios_mcp.tool(
+    name="get_scenario_placement_summary",
+    title="Get scenario service placement summary",
+    description="""Read a finished placement task's suitability classes, norms and Russian summary.
+Use the external_id returned by place_service_in_scenario. Requires access to the scenario.
+This is a placement report; get_scenario_classification_report is for classification tasks.""",
+    tags={"scenario", "placement", "report"},
+)
+@map_errors
+async def get_scenario_placement_summary(
+    scenario_id: int,
+    external_id: str,
+    token: str | None = Depends(extract_token),
+    api: ApiClient = Depends(get_api_client),
+) -> dict[str, Any]:
+    return await api.get_scenario_placement_summary(
+        scenario_id=scenario_id,
+        external_id=external_id,
+        token=token,
+    )
+
+
+@scenarios_mcp.tool(
     name="classify_scenario_and_wait",
     title="Classify scenario objects and wait for the report",
     description="""Run scenario classification and BLOCK until it finishes, then return the report.

@@ -1887,6 +1887,7 @@ async def _placement_context(
     zones_fc: dict[str, Any],
     zone_code_col: str,
     territory_id: int | None,
+    norms_only: bool = False,
 ) -> dict[str, Any]:
     """The NormGraph ПЗЗ and norms of the service, built here: the worker has no
     service token. NormGraph unset or failing yields a context that says so."""
@@ -1901,7 +1902,7 @@ async def _placement_context(
     kwargs: dict[str, Any] = {
         "service_name": service_name,
         "search_terms": [service_query],
-        "zone_codes": zone_codes,
+        "zone_codes": [] if norms_only else zone_codes,
         "territory_id": territory_id,
         "excluded_documents": parse_excluded_documents(
             app_settings.placement_excluded_norm_documents

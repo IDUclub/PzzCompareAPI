@@ -731,7 +731,10 @@ class PlacementPzzRunner(PipelineRunner):
             "reach_ha": _ha(reach) if reach is not None else 0.0,
             "reach_zones": reach_zones,
             "parcels": parcel_counts,
-            "cadastre_used": parcels is not None,
+            "cadastre_used": parcels is not None
+            and context.get("input_kind") != "scenario_objects",
+            "scenario_objects_used": parcels is not None
+            and context.get("input_kind") == "scenario_objects",
             "used_default_mapping": regulations_source == REGULATIONS_DEFAULT,
             "uncovered_zones": uncovered_zones,
             "notes": [str(n) for n in context.get("notes") or []],
