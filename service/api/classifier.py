@@ -61,6 +61,7 @@ from ..application.use_cases.placement_context import (
     build_placement_context,
     parse_excluded_documents,
 )
+from ..application.use_cases.placement_objects import normalize_placement_objects
 from ..application.use_cases.resolve_service_vri import (
     ResolvedService,
     resolve_service_vri,
@@ -534,6 +535,7 @@ def _create_pipeline_task(
     placement_vri_code: str | None = None,
     placement_service_name: str | None = None,
     placement_context: dict[str, Any] | None = None,
+    existing_objects_fc: dict[str, Any] | None = None,
 ) -> TaskOut:
     """Shared logic for both submission endpoints.
 
@@ -664,6 +666,14 @@ def _create_pipeline_task(
             placement_context,
             task_dir,
             "placement_context.json",
+            external_id,
+            storage,
+        )
+    if existing_objects_fc is not None:
+        input_paths["existing_objects_data_path"] = persist_geojson_dict(
+            existing_objects_fc,
+            task_dir,
+            "existing_objects.geojson",
             external_id,
             storage,
         )
@@ -1887,6 +1897,7 @@ async def _placement_context(
     zones_fc: dict[str, Any],
     zone_code_col: str,
     territory_id: int | None,
+    norms_only: bool = False,
 ) -> dict[str, Any]:
     """The NormGraph ПЗЗ and norms of the service, built here: the worker has no
     service token. NormGraph unset or failing yields a context that says so."""
@@ -1901,7 +1912,7 @@ async def _placement_context(
     kwargs: dict[str, Any] = {
         "service_name": service_name,
         "search_terms": [service_query],
-        "zone_codes": zone_codes,
+        "zone_codes": [] if norms_only else zone_codes,
         "territory_id": territory_id,
         "excluded_documents": parse_excluded_documents(
             app_settings.placement_excluded_norm_documents
@@ -1930,11 +1941,14 @@ async def _prepare_placement_run(
     event_repo: EventRepository,
     session: Session,
     territory_id: int | None = None,
+    existing_objects_file: UploadFile | None = None,
+    existing_objects_type_col: str | None = None,
 ) -> PlacementRun:
     """Resolve the service to a ВРИ code, detect the columns, create the task.
 
-    The cadastre is optional: without it only the zone permissions are checked
-    (no СЗЗ, no housing reach, no existing objects). A CSV/XLSX descriptions file
+    The cadastre and actual objects are optional independent layers. Actual
+    objects override cadastral existence guesses, but do not supply housing or
+    production geometries. A CSV/XLSX descriptions file
     is converted to the label JSON up front, like the building flow. The ПЗЗ and
     the norms of the service come from NormGraph (``_placement_context``).
     """
@@ -1965,6 +1979,7 @@ async def _prepare_placement_run(
 
     max_bytes = app_settings.max_upload_bytes
     detect_dir = Path(app_settings.task_inputs_dir) / f"detect-{uuid4().hex}"
+    existing_objects_fc = None
     try:
         zones_fc = await run_in_threadpool(
             _upload_to_feature_collection,
@@ -1982,6 +1997,23 @@ async def _prepare_placement_run(
                 "cadastral_feature_collection_file",
                 max_bytes,
             )
+        if existing_objects_file is not None:
+            existing_objects_fc = await run_in_threadpool(
+                _upload_to_feature_collection,
+                existing_objects_file,
+                detect_dir,
+                "existing_objects_feature_collection_file",
+                max_bytes,
+            )
+            try:
+                existing_objects_fc = await run_in_threadpool(
+                    normalize_placement_objects,
+                    existing_objects_fc,
+                    app_settings,
+                    existing_objects_type_col,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
         shutil.rmtree(detect_dir, ignore_errors=True)
 
@@ -2017,7 +2049,11 @@ async def _prepare_placement_run(
     if cadastral_fc is None:
         blocks.append(
             "Кадастровый слой не передан: санитарно-защитные зоны, близость к жилью "
-            "и существующие объекты этого типа не учитываются."
+            "не учитываются."
+        )
+    if existing_objects_fc is not None:
+        blocks.append(
+            "Существующие объекты определяются по отдельному файлу фактических объектов; предположения по кадастру не используются."
         )
     narrative = "\n\n".join(blocks)
 
@@ -2076,6 +2112,7 @@ async def _prepare_placement_run(
         placement_vri_code=resolved.code,
         placement_service_name=service_name,
         placement_context=placement_context,
+        existing_objects_fc=existing_objects_fc,
     )
     # Committed here: the task is already enqueued and the worker must see the row.
     session.commit()
@@ -2106,6 +2143,8 @@ async def _run_placement_auto(
     task_repo: TaskRepository,
     event_repo: EventRepository,
     session: Session,
+    existing_objects_file: UploadFile | None = None,
+    existing_objects_type_col: str | None = None,
 ) -> EventSourceResponse:
     """Run the service-placement check and stream the grounded answer."""
     run = await _prepare_placement_run(
@@ -2123,6 +2162,8 @@ async def _run_placement_auto(
         task_repo=task_repo,
         event_repo=event_repo,
         session=session,
+        existing_objects_file=existing_objects_file,
+        existing_objects_type_col=existing_objects_type_col,
     )
     task_out = run.task
     if task_out is None:
@@ -2164,6 +2205,8 @@ async def create_auto_chat_stream_endpoint(
     mo_boundaries_feature_collection_file: UploadFile | None = File(default=None),
     mode: str = Form("pzz_check"),
     service_name: str | None = Form(default=None),
+    existing_objects_feature_collection_file: UploadFile | None = File(default=None),
+    existing_objects_type_col: str | None = Form(default=None),
     territory_id: int | None = Form(default=None),
     user_query: str | None = Form(default=None),
     chat_id: str | None = Form(default=None),
@@ -2232,6 +2275,19 @@ async def create_auto_chat_stream_endpoint(
                 "or 'placement'"
             ),
         )
+    if (
+        existing_objects_feature_collection_file is not None
+        or existing_objects_type_col
+    ) and mode != "placement":
+        raise HTTPException(
+            status_code=422,
+            detail="existing_objects_feature_collection_file is only supported for mode=placement",
+        )
+    if existing_objects_type_col and existing_objects_feature_collection_file is None:
+        raise HTTPException(
+            status_code=422,
+            detail="existing_objects_feature_collection_file is required with existing_objects_type_col",
+        )
     if group_by not in ("zone", "object"):
         raise HTTPException(
             status_code=422, detail="group_by must be 'zone' or 'object'"
@@ -2251,6 +2307,8 @@ async def create_auto_chat_stream_endpoint(
             )
         return await _run_placement_auto(
             request=request,
+            existing_objects_file=existing_objects_feature_collection_file,
+            existing_objects_type_col=existing_objects_type_col,
             service_query=service_query,
             territory_id=territory_id,
             zones_file=pzz_zones_feature_collection_file,

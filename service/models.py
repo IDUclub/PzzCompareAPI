@@ -49,6 +49,9 @@ class PipelineTask(Base):
     placement_context_path: Mapped[str | None] = mapped_column(
         String(512), nullable=True
     )
+    existing_objects_data_path: Mapped[str | None] = mapped_column(
+        String(1024), nullable=True
+    )
     priority: Mapped[int] = mapped_column(Integer, default=1, index=True)
     status: Mapped[TaskStatus] = mapped_column(
         SqlEnum(TaskStatus), default=TaskStatus.queued

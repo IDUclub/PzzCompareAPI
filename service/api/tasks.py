@@ -1086,6 +1086,7 @@ _FILE_SLOTS: dict[str, str] = {
     "cadastral": "cadastral_data_path",
     "zones": "pzz_zones_data_path",
     "mo_boundaries": "mo_boundaries_data_path",
+    "existing_objects": "existing_objects_data_path",
 }
 
 # Human-readable label (``title``, RU — shown in chat/layer panel) + ASCII
@@ -1099,6 +1100,7 @@ _SLOT_LABELS: dict[str, tuple[str, str]] = {
     "cadastral": ("Исходные участки", "input_parcels.geojson"),
     "zones": ("Зоны ПЗЗ", "pzz_zones.geojson"),
     "mo_boundaries": ("Границы муниципальных образований", "mo_boundaries.geojson"),
+    "existing_objects": ("Фактические объекты", "existing_objects.geojson"),
 }
 _BUILDING_INPUT_LABEL = (
     "Исходные здания и сервисы",
@@ -1178,12 +1180,14 @@ def _is_placement_result(task: PipelineTask) -> bool:
 
 
 def _placement_slots(task: PipelineTask) -> list[str]:
-    """Placement layers worth linking: the overlays exist only with a cadastre,
+    """Placement layers worth linking: overlays use a cadastre or actual objects,
     the СЗЗ only for ВРИ a production СЗЗ excludes, and the norm buffers and the
     housing reach only when the task carries a NormGraph context."""
     slots = ["placement_classes"]
-    if getattr(task, "cadastral_data_path", None):
-        if is_szz_sensitive(task.placement_vri_code or ""):
+    cadastre = getattr(task, "cadastral_data_path", None)
+    actual_objects = getattr(task, "existing_objects_data_path", None)
+    if cadastre or actual_objects:
+        if cadastre and is_szz_sensitive(task.placement_vri_code or ""):
             slots.append("placement_szz")
         if getattr(task, "placement_context_path", None):
             slots.extend(["placement_norms", "placement_reach"])
@@ -1378,6 +1382,7 @@ def build_input_geo_layers(
         ("cadastral", "cadastral_data_path", "input_cadastral"),
         ("zones", "pzz_zones_data_path", "input_zones"),
         ("mo_boundaries", "mo_boundaries_data_path", "input_mo_boundaries"),
+        ("existing_objects", "existing_objects_data_path", "input_existing_objects"),
     )
     building_task = _is_building_task(task)
     layers: list[dict[str, Any]] = []
@@ -2466,7 +2471,12 @@ def _placement_norm_lines(norms: list[dict[str, Any]]) -> list[str]:
 
 
 def _placement_cadastre_lines(summary: dict[str, Any]) -> list[str]:
-    if not summary.get("cadastre_used"):
+    scenario_objects = summary.get("scenario_objects_used")
+    if not summary.get("cadastre_used") and not scenario_objects:
+        if summary.get("existing_objects_used"):
+            return [
+                "Кадастровый слой не передан: СЗЗ производства и близость к жилью по кадастру не учитывались."
+            ]
         return [
             "Кадастровый слой не передан: санитарно-защитные зоны, буферы норм, "
             "близость к жилью и существующие объекты не учитывались."
@@ -2499,11 +2509,25 @@ def _placement_cadastre_lines(summary: dict[str, Any]) -> list[str]:
             f"частично или целиком в ней: {summary.get('reach_zones', 0)}."
         )
     parcels = summary.get("parcels") or {}
+    kind_labels = dict(_PARCEL_KIND_RU)
+    if summary.get("existing_objects_used"):
+        kind_labels["target"] = "с ВРИ целевого типа (не подтверждает наличие объекта)"
     counts = [
-        f"{_PARCEL_KIND_RU.get(kind, kind)} — {n}" for kind, n in parcels.items() if n
+        f"{kind_labels.get(kind, kind)} — {n}" for kind, n in parcels.items() if n
     ]
     if counts:
-        lines.append("Участки кадастра: " + "; ".join(counts) + ".")
+        lines.append(
+            ("Объекты сценария: " if scenario_objects else "Участки кадастра: ")
+            + "; ".join(counts)
+            + "."
+        )
+    if scenario_objects:
+        lines = [
+            line.replace("участков зон", "частей зон")
+            .replace("участков", "объектов")
+            .replace("участка", "объекта")
+            for line in lines
+        ]
     return lines
 
 
@@ -2547,6 +2571,10 @@ def _build_chat_message_placement(summary: dict[str, Any]) -> str:
 
     lines.append("")
     lines.extend(_placement_cadastre_lines(summary))
+    if summary.get("existing_objects_used"):
+        lines.append(
+            f"Существующие объекты определены по отдельному файлу: объектов целевого типа — {summary.get('existing_objects_count', 0)}. Предположения по кадастру для A*/B* не использовались."
+        )
     lines.extend(_placement_norm_lines(summary.get("norms") or []))
 
     uncovered = summary.get("uncovered_zones") or []

@@ -39,3 +39,5 @@ class PipelineRequest:
     # NormGraph context of the placement (ПЗЗ zones + the service's norms), built
     # by the API; "" when absent (placement only).
     placement_context_path: str = ""
+    # Optional actual-object layer; authoritative for existing target objects.
+    existing_objects_data_path: str = ""

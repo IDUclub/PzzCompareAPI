@@ -118,6 +118,7 @@ docker compose -f docker-compose.yml up -d --build
   шаблоном, в ответе приходит `action` = `confirm` (подтвердить подобранные
   соответствия и повторить с `confirmed_zone_map`) или `suggest_upload` (загрузить
   своё описание разрешённых ВРИ)
+- `POST /tasks/auto/chat/stream` с `mode=placement` — подбор мест; необязательный `existing_objects_feature_collection_file` задаёт фактические объекты для `A*`/`B*` отдельно от кадастра (`existing_objects_type_col` — явная колонка типа)
 - `POST /tasks/pzz-check/chat/stream` — проверка ПЗЗ + стрим разговорного ответа LLM (SSE, требует Bearer)
 - `POST /tasks/classify-only/chat/stream` — классификация ВРИ + стрим разговорного ответа LLM (SSE, требует Bearer)
 - `GET /tasks/{id}` · `GET /tasks_list` · `GET /tasks/{id}/result`
@@ -135,6 +136,8 @@ GeoParquet и ZIP-архив со слоем Shapefile (`.shp`) или MapInfo (
 **Сценарный флоу** (требует `Authorization: Bearer <jwt>`)
 - `POST /scenarios/{id}/classify` — запуск по данным urban_api
 - `POST /scenarios/{id}/chat/stream` — запуск + стрим разговорного ответа LLM (SSE)
+- `POST /scenarios/{id}/chat/stream` с `mode=placement`, `service_name`, `year`, `source` — подбор мест по функциональным зонам и всем объектам сценария, без загрузки файлов
+- `POST /scenarios/{id}/placement` — тот же подбор без чат-стрима; `GET /scenarios/{id}/tasks/{external_id}/placement-summary` — сводка
 - `GET /scenarios/{id}/zones-info` — зоны + справка «что можно строить»
 - `GET /scenarios/{id}/tasks/{external_id}` (+ `/result`, `/object-zone-fit`, `/events`)
 - `DELETE` / `POST .../recompute`
@@ -199,6 +202,11 @@ MCP-сервер (`service/mcp_server/`) — отдельный процесс �
 **Файловые** (`tools/tasks.py`): `submit_pzz_check_task`,
 `submit_classify_only_task`, `get_task_status`, `list_tasks`,
 `get_task_events`, `get_task_result`, `cancel_task`, `recompute_task`.
+
+**Сценарный подбор** (`tools/scenarios.py`): `place_service_in_scenario` →
+`get_scenario_classification_status` → `get_scenario_placement_summary`.
+Использует справочное соответствие функциональных зон и нормы NormGraph;
+геометрия объектов сценария не заменяет фактические границы кадастра и ПЗЗ.
 
 **ПЗЗ территории** (`tools/regulations.py`): `check_vri_in_pzz` — точечная
 проверка вида использования по ПЗЗ территории проекта (`POST /pzz/regulations/check-vri`).

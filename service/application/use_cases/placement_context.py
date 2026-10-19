@@ -102,6 +102,8 @@ async def _pick_regulations(
     try:
         documents = await normgraph.regulation_documents([])
         regulation_ids = frozenset(str(d["doc_id"]) for d in documents)
+        if not uploaded_codes:
+            return None, regulation_ids
         candidates = [
             d
             for d in documents

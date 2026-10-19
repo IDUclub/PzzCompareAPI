@@ -32,6 +32,7 @@ from service.infrastructure.runners.placement_pzz_runner import (
     COL_SOURCE,
     COL_ZONE_CODE,
     COL_ZONE_LIMITS,
+    COL_ZONE_NAME,
     PLACEMENT_SUMMARY_KEY,
     PlacementPzzRunner,
     _excluded_target_regex,
@@ -521,6 +522,10 @@ def test_runner_with_normgraph_context(tmp_path: Path) -> None:
     for props in classes:
         by_zone.setdefault(props[COL_ZONE_CODE], set()).add(props[COL_CLASS])
     assert by_zone == {"Ж-1": {"A", "C"}, "П-1": {"C"}, "О-1": {"B*"}, "Х-1": {"D"}}
+    # NormGraph ПЗЗ names the zones; the uploaded name only feeds the hazard class.
+    names = {p[COL_ZONE_CODE]: p[COL_ZONE_NAME] for p in classes}
+    assert names["П-1"] == "Производственная"
+    assert names["Х-1"] == "Без описания"
     zh1_c_reasons = {
         p[COL_REASON]
         for p in classes

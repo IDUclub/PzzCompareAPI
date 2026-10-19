@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -528,11 +528,23 @@ class PlacementPzzRunner(PipelineRunner):
         zgdf["geometry"] = zgdf.geometry.make_valid()
         metric = zgdf.estimate_utm_crs() if len(zgdf) else "EPSG:3857"
         zm = zgdf.to_crs(metric)
-        labels = {
+        official_names = (
+            {key: str(zone.get("name") or "") for key, zone in ng_zones.items()}
+            if regulations_source == REGULATIONS_NORMGRAPH
+            else {}
+        )
+        layer_labels = {
             int(idx): str(row["zone_name"] or display_nick.get(row["fz_type_id"]) or "")
             for idx, row in zm.iterrows()
         }
-        hazards = {idx: hazard_class(label) for idx, label in labels.items()}
+        labels = {
+            int(idx): official_names.get(row["fz_type_id"]) or layer_labels[int(idx)]
+            for idx, row in zm.iterrows()
+        }
+        hazards = {
+            idx: hazard_class(f"{layer_labels[idx]} {label}")
+            for idx, label in labels.items()
+        }
 
         parcels = self._load_cadastre(request, metric)
         szz = None
@@ -553,6 +565,25 @@ class PlacementPzzRunner(PipelineRunner):
             if len(homes):
                 layers[LAYER_HOUSING] = homes.geometry.union_all()
             if len(existing):
+                layers[LAYER_TARGET] = existing.geometry.union_all()
+
+        if request.existing_objects_data_path:
+            from service.application.use_cases.placement_objects import OBJECT_TYPE_TEXT
+
+            actual = self._load_cadastre(
+                replace(
+                    request,
+                    cadastral_data_path=request.existing_objects_data_path,
+                    cadastral_vri_col=OBJECT_TYPE_TEXT,
+                ),
+                metric,
+            )
+            # Even an empty upload is authoritative; never fall back to parcel guesses.
+            existing = (
+                actual[actual["kind"] == "target"] if actual is not None else None
+            )
+            layers.pop(LAYER_TARGET, None)
+            if existing is not None and len(existing):
                 layers[LAYER_TARGET] = existing.geometry.union_all()
 
         rules = [PlacementRule.from_dict(r) for r in context.get("rules") or []]
@@ -731,7 +762,21 @@ class PlacementPzzRunner(PipelineRunner):
             "reach_ha": _ha(reach) if reach is not None else 0.0,
             "reach_zones": reach_zones,
             "parcels": parcel_counts,
-            "cadastre_used": parcels is not None,
+            "cadastre_used": parcels is not None
+            and context.get("input_kind") != "scenario_objects",
+            "scenario_objects_used": parcels is not None
+            and context.get("input_kind") == "scenario_objects",
+            "existing_objects_used": bool(request.existing_objects_data_path),
+            "existing_objects_count": len(existing) if existing is not None else 0,
+            "existing_objects_source": (
+                "upload"
+                if request.existing_objects_data_path
+                else (
+                    "scenario"
+                    if context.get("input_kind") == "scenario_objects"
+                    else "cadastre" if parcels is not None else "none"
+                )
+            ),
             "used_default_mapping": regulations_source == REGULATIONS_DEFAULT,
             "uncovered_zones": uncovered_zones,
             "notes": [str(n) for n in context.get("notes") or []],
