@@ -528,11 +528,23 @@ class PlacementPzzRunner(PipelineRunner):
         zgdf["geometry"] = zgdf.geometry.make_valid()
         metric = zgdf.estimate_utm_crs() if len(zgdf) else "EPSG:3857"
         zm = zgdf.to_crs(metric)
-        labels = {
+        official_names = (
+            {key: str(zone.get("name") or "") for key, zone in ng_zones.items()}
+            if regulations_source == REGULATIONS_NORMGRAPH
+            else {}
+        )
+        layer_labels = {
             int(idx): str(row["zone_name"] or display_nick.get(row["fz_type_id"]) or "")
             for idx, row in zm.iterrows()
         }
-        hazards = {idx: hazard_class(label) for idx, label in labels.items()}
+        labels = {
+            int(idx): official_names.get(row["fz_type_id"]) or layer_labels[int(idx)]
+            for idx, row in zm.iterrows()
+        }
+        hazards = {
+            idx: hazard_class(f"{layer_labels[idx]} {label}")
+            for idx, label in labels.items()
+        }
 
         parcels = self._load_cadastre(request, metric)
         szz = None
