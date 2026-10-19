@@ -189,6 +189,43 @@ def _enrich_zone_names(
     return enriched
 
 
+def load_zone_mapping_for_request(
+    settings: "Settings", request: PipelineRequest, numeric: bool
+):
+    """User descriptions file when supplied+usable, else built-in fallback —
+    picking the schema by backend: urban_api functional-zone mapping (numeric
+    id) or the ПЗЗ letter-index label mapping («Ж-1» → permitted ВРИ, the
+    regular ``pzz_check`` schema).
+
+    Returns ``(allowed, nick, used_default)`` — ``used_default`` is True when
+    no usable upload was found and the built-in template/mapping was used, so
+    the chat answer can flag that the check is approximate.
+    """
+    load = load_zone_mapping if numeric else load_pzz_label_mapping
+    descriptions_path = request.pzz_zone_vri_labels_path
+    if descriptions_path and Path(descriptions_path).is_file():
+        try:
+            allowed, nick = load(descriptions_path)
+            if allowed:
+                return allowed, nick, False
+            logger.warning(
+                "uploaded zone descriptions had no usable mappings for the %s "
+                "backend; falling back to the built-in mapping",
+                "numeric" if numeric else "pzz-index",
+            )
+        except (json.JSONDecodeError, OSError, KeyError) as exc:
+            logger.warning(
+                "failed to read uploaded zone descriptions (%s); fallback", exc
+            )
+    fallback_path = (
+        settings.default_fz_to_pzz_mapping_path
+        if numeric
+        else settings.default_pzz_zone_labels_path
+    )
+    allowed, nick = load(fallback_path)
+    return allowed, nick, True
+
+
 class UploadedBuildingPzzRunner(PipelineRunner):
     """Classify user-uploaded buildings against user-uploaded PZZ zones."""
 
@@ -238,38 +275,7 @@ class UploadedBuildingPzzRunner(PipelineRunner):
         return aliases
 
     def _load_zone_mapping(self, request: PipelineRequest, numeric: bool):
-        """User descriptions file when supplied+usable, else built-in fallback —
-        picking the schema by backend: urban_api functional-zone mapping (numeric
-        id) or the ПЗЗ letter-index label mapping («Ж-1» → permitted ВРИ, the
-        regular ``pzz_check`` schema).
-
-        Returns ``(allowed, nick, used_default)`` — ``used_default`` is True when
-        no usable upload was found and the built-in template/mapping was used, so
-        the chat answer can flag that the check is approximate.
-        """
-        load = load_zone_mapping if numeric else load_pzz_label_mapping
-        descriptions_path = request.pzz_zone_vri_labels_path
-        if descriptions_path and Path(descriptions_path).is_file():
-            try:
-                allowed, nick = load(descriptions_path)
-                if allowed:
-                    return allowed, nick, False
-                logger.warning(
-                    "uploaded zone descriptions had no usable mappings for the %s "
-                    "backend; falling back to the built-in mapping",
-                    "numeric" if numeric else "pzz-index",
-                )
-            except (json.JSONDecodeError, OSError, KeyError) as exc:
-                logger.warning(
-                    "failed to read uploaded zone descriptions (%s); fallback", exc
-                )
-        fallback_path = (
-            self._settings.default_fz_to_pzz_mapping_path
-            if numeric
-            else self._settings.default_pzz_zone_labels_path
-        )
-        allowed, nick = load(fallback_path)
-        return allowed, nick, True
+        return load_zone_mapping_for_request(self._settings, request, numeric)
 
     # --- name fallback (semantic embedder, then LLM) ---------------------------
     def _needs_fallback(self, value: Any, aliases: dict[str, str | None]) -> bool:

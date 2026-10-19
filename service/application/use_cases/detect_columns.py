@@ -602,12 +602,14 @@ def render_detection_narrative(
     targets: list[DetectionTarget],
     *,
     include_pzz_check: bool = True,
+    header: str | None = None,
 ) -> str:
     """Build the RU chat message announcing the detected columns.
 
     ``include_pzz_check`` selects the header: classify-only has no PZZ zones
     involved at all, so it must not be announced as a "PZZ check" — same
     reasoning as the classify-only system prompt (no PZZ, no zones, ever).
+    ``header`` overrides both for flows with their own wording (placement).
     """
     title_by_key = {t.key: t.title_ru for t in targets}
     resolved: list[str] = []
@@ -621,13 +623,14 @@ def render_detection_narrative(
 
     lines: list[str] = []
     if resolved:
-        header = (
-            "Результат анализа содержания полей в загруженном файле "
-            "для проверки по правилам землепользования и застройки (ПЗЗ):"
-            if include_pzz_check
-            else "Результат анализа содержания полей в загруженном файле "
-            "для классификации видов разрешённого использования (ВРИ):"
-        )
+        if header is None:
+            header = (
+                "Результат анализа содержания полей в загруженном файле "
+                "для проверки по правилам землепользования и застройки (ПЗЗ):"
+                if include_pzz_check
+                else "Результат анализа содержания полей в загруженном файле "
+                "для классификации видов разрешённого использования (ВРИ):"
+            )
         lines.append(header)
         lines.extend(resolved)
     if missing:

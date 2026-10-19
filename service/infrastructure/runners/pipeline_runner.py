@@ -200,6 +200,9 @@ class StorageAwarePipelineRunner(PipelineRunner):
             vri_classifier_path=materialise(
                 request.vri_classifier_path, "vri_classifier.json"
             ),
+            placement_context_path=materialise(
+                request.placement_context_path, "placement_context.json"
+            ),
             outputs_dir=str(local_outputs_dir),
         )
 
@@ -216,12 +219,18 @@ class PipelineRunnerFactory:
     def create(
         settings: "Settings", request: "PipelineRequest | None" = None
     ) -> PipelineRunner:
-        if request is not None and getattr(request, "is_building_upload", False):
+        if request is not None and getattr(request, "is_placement", False):
+            from service.infrastructure.runners.placement_pzz_runner import (
+                PlacementPzzRunner,
+            )
+
+            inner: PipelineRunner = PlacementPzzRunner(settings)
+        elif request is not None and getattr(request, "is_building_upload", False):
             from service.infrastructure.runners.uploaded_building_pzz_runner import (
                 UploadedBuildingPzzRunner,
             )
 
-            inner: PipelineRunner = UploadedBuildingPzzRunner(settings)
+            inner = UploadedBuildingPzzRunner(settings)
         elif (
             request is not None
             and getattr(request, "is_scenario", False)

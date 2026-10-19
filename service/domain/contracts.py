@@ -28,3 +28,14 @@ class PipelineRequest:
     building_floors_col: str = ""
     # Optional municipal boundary layer for the overlap checks; "" when absent.
     mo_boundaries_data_path: str = ""
+    # True for the service-placement check (idempotency key prefixed "plc:"):
+    # classify PZZ zones by whether a target VRI may be placed there, optionally
+    # refined by a cadastre layer. Routes to PlacementPzzRunner.
+    is_placement: bool = False
+    # Target VRI code resolved from the user's service name (placement only).
+    placement_vri_code: str = ""
+    # The service name exactly as the user phrased it (placement only).
+    placement_service_name: str = ""
+    # NormGraph context of the placement (ПЗЗ zones + the service's norms), built
+    # by the API; "" when absent (placement only).
+    placement_context_path: str = ""
