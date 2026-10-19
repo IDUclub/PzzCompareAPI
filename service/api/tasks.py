@@ -2513,9 +2513,7 @@ def _placement_cadastre_lines(summary: dict[str, Any]) -> list[str]:
     if summary.get("existing_objects_used"):
         kind_labels["target"] = "с ВРИ целевого типа (не подтверждает наличие объекта)"
     counts = [
-        f"{kind_labels.get(kind, kind)} — {n}"
-        for kind, n in parcels.items()
-        if n
+        f"{kind_labels.get(kind, kind)} — {n}" for kind, n in parcels.items() if n
     ]
     if counts:
         lines.append(
