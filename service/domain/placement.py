@@ -72,7 +72,7 @@ _CLASS_TOKEN = r"(?:IV|V|I{1,3}|[1-5])"
 _CLASS_SEPARATOR = r"\s*(?:-|–|—|,|и)\s*"
 _HAZARD_RE = re.compile(
     rf"(?<![A-Za-z0-9])({_CLASS_TOKEN}(?:{_CLASS_SEPARATOR}{_CLASS_TOKEN})*)"
-    r"(?![A-Za-z0-9])\s*-?\s*(?:го\s+)?класс",
+    r"(?![A-Za-z0-9])\s*-?\s*(?i:(?:го\s+)?класс)",
 )
 _HOUSING_ENTITY_RE = re.compile(r"жил|многокварт|ижс")
 _NOT_HOUSING_ENTITY_RE = re.compile(r"нежил")
