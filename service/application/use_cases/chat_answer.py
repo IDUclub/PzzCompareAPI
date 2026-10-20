@@ -125,7 +125,12 @@ def _extract_problem_objects(
             "Основание_подбора_типа_использования",
         )
         if object_mode
-        else ("ВРИ_ЕГРН", "Код_подобранного_ВРИ", "Подобранный_ВРИ", "Основание_подбора_ВРИ")
+        else (
+            "ВРИ_ЕГРН",
+            "Код_подобранного_ВРИ",
+            "Подобранный_ВРИ",
+            "Основание_подбора_ВРИ",
+        )
     )
     objects = object_zone_fit.get("objects")
     if not objects:
@@ -181,11 +186,10 @@ def build_classification_context(
     """
     parts: list[str] = []
     if chat_message:
-        summary_label = (
-            "Готовое резюме классификации ВРИ:"
-            if report_kind == "classify"
-            else "Готовое резюме проверки ПЗЗ:"
-        )
+        summary_label = {
+            "classify": "Готовое резюме классификации ВРИ:",
+            "placement": "Готовое резюме подбора мест размещения:",
+        }.get(report_kind, "Готовое резюме проверки ПЗЗ:")
         parts.append(summary_label + "\n" + chat_message)
     if object_zone_fit:
         subject = object_zone_fit.get("subject")

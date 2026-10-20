@@ -48,9 +48,7 @@ def test_empty_wording_is_not_deep():
 
 
 def test_kill_switch_disables_every_deep_case(monkeypatch):
-    monkeypatch.setattr(
-        profiled_fast_match_layer, "LLM_DEEP_REASONING_ENABLED", False
-    )
+    monkeypatch.setattr(profiled_fast_match_layer, "LLM_DEEP_REASONING_ENABLED", False)
     assert trigger(HERITAGE_VRI, HERITAGE_ZONE) is False
 
 

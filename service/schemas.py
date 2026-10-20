@@ -18,6 +18,8 @@ class TaskCreate(BaseModel):
     building_type_col: str | None = None
     building_service_col: str | None = None
     building_floors_col: str | None = None
+    placement_vri_code: str | None = None
+    placement_service_name: str | None = None
     priority: int = Field(default=1, ge=1, le=10)
 
 
@@ -29,6 +31,7 @@ class TaskOut(BaseModel):
     cadastral_data_path: str
     pzz_zones_data_path: str
     mo_boundaries_data_path: str | None = None
+    existing_objects_data_path: str | None = None
     priority: int
     status: TaskStatus
     include_pzz_check: bool

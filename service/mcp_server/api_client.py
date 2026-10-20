@@ -139,9 +139,7 @@ class ApiClient:
         if pzz_zones_upload_id:
             data["pzz_zones_feature_collection_upload_id"] = pzz_zones_upload_id
         if mo_boundaries_upload_id:
-            data["mo_boundaries_feature_collection_upload_id"] = (
-                mo_boundaries_upload_id
-            )
+            data["mo_boundaries_feature_collection_upload_id"] = mo_boundaries_upload_id
         headers: dict[str, str] = {}
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
@@ -251,6 +249,41 @@ class ApiClient:
         )
         return self._json_or_raise(resp)
 
+    async def submit_scenario_placement(
+        self,
+        *,
+        scenario_id: int,
+        year: int,
+        source: str,
+        service_name: str,
+        priority: int = 1,
+        force_recompute: bool = False,
+        token: str | None = None,
+    ) -> dict[str, Any]:
+        data = {
+            "year": str(year),
+            "source": source,
+            "service_name": service_name,
+            "priority": str(priority),
+            "force_recompute": str(force_recompute).lower(),
+        }
+        resp = await self._client.post(
+            f"/scenarios/{scenario_id}/placement",
+            data=data,
+            headers=self._bearer(token),
+            timeout=300.0,
+        )
+        return self._json_or_raise(resp)
+
+    async def get_scenario_placement_summary(
+        self, *, scenario_id: int, external_id: str, token: str | None = None
+    ) -> dict[str, Any]:
+        resp = await self._client.get(
+            f"/scenarios/{scenario_id}/tasks/{external_id}/placement-summary",
+            headers=self._bearer(token),
+        )
+        return self._json_or_raise(resp)
+
     async def get_scenario_zones_info(
         self, *, scenario_id: int, year: int, source: str, token: str | None = None
     ) -> dict[str, Any]:
@@ -291,6 +324,18 @@ class ApiClient:
         resp = await self._client.post(
             f"/scenarios/{scenario_id}/tasks/{external_id}/recompute",
             headers=self._bearer(token),
+        )
+        return self._json_or_raise(resp)
+
+    async def check_vri(
+        self, *, body: dict[str, Any], token: str | None = None
+    ) -> dict[str, Any]:
+        # The first check against a ПЗЗ edition maps its zones with the LLM: wait longer.
+        resp = await self._client.post(
+            "/pzz/regulations/check-vri",
+            json=body,
+            headers=self._bearer(token),
+            timeout=300.0,
         )
         return self._json_or_raise(resp)
 

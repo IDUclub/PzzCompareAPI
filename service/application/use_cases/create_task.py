@@ -135,6 +135,12 @@ def create_task(
                         "pzz_zone_vri_labels_path"
                     ]
                     existing.vri_classifier_path = input_paths["vri_classifier_path"]
+                    existing.placement_context_path = (
+                        input_paths.get("placement_context_path") or None
+                    )
+                    existing.existing_objects_data_path = (
+                        input_paths.get("existing_objects_data_path") or None
+                    )
                 task_repo.update_status(existing.id, TaskStatus.queued)
                 if session is not None:
                     session.commit()
@@ -185,6 +191,11 @@ def create_task(
         building_type_col=payload.building_type_col,
         building_service_col=payload.building_service_col,
         building_floors_col=payload.building_floors_col,
+        placement_vri_code=payload.placement_vri_code,
+        placement_service_name=payload.placement_service_name,
+        placement_context_path=input_paths.get("placement_context_path") or None,
+        existing_objects_data_path=input_paths.get("existing_objects_data_path")
+        or None,
         priority=payload.priority,
         status=TaskStatus.queued,
         output_version=PIPELINE_OUTPUT_VERSION,

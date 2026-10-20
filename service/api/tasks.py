@@ -36,6 +36,22 @@ from ..domain.task_state import ensure_transition
 from ..infrastructure.chat_llm_client import build_chat_llm_client
 from ..infrastructure.geo_ingest import iter_geojson_features
 from ..infrastructure.pzz_mapping import lookup_zone_summary
+from ..infrastructure.runners.placement_pzz_runner import (
+    CATEGORY_CLASSES,
+    CATEGORY_EXISTING,
+    CATEGORY_NORMS,
+    CATEGORY_REACH,
+    CATEGORY_SZZ,
+    CLASS_ORDER,
+    CLASS_RU,
+    NORM_APPLIED,
+    NORM_NOT_APPLIED,
+    PLACEMENT_SUMMARY_KEY,
+    REGULATIONS_DEFAULT,
+    REGULATIONS_NORMGRAPH,
+    REGULATIONS_USER,
+    is_szz_sensitive,
+)
 from ..infrastructure.storage import get_object_storage, is_remote_path
 from ..models import PipelineTask, TaskEvent, TaskStatus
 
@@ -57,6 +73,7 @@ RESULT_LOAD_FAILED_MESSAGE = "Failed to load the task result"
 
 _SCENARIO_IDEMPOTENCY_PREFIX = "sc:"
 _BUILDING_IDEMPOTENCY_PREFIX = "bld:"
+_PLACEMENT_IDEMPOTENCY_PREFIX = "plc:"
 
 InputLayersBuilder = Callable[
     [PipelineTask, str, Settings, Request | None], list[dict[str, Any]]
@@ -78,6 +95,11 @@ def _is_scenario_task(external_id: str, task_repo: TaskRepository) -> bool:
 def _is_building_upload_task(external_id: str, task_repo: TaskRepository) -> bool:
     key = task_repo.get_idempotency_key_by_external_id(external_id)
     return bool(key and key.startswith(_BUILDING_IDEMPOTENCY_PREFIX))
+
+
+def _is_placement_task(external_id: str, task_repo: TaskRepository) -> bool:
+    key = task_repo.get_idempotency_key_by_external_id(external_id)
+    return bool(key and key.startswith(_PLACEMENT_IDEMPOTENCY_PREFIX))
 
 
 def get_public_task_or_404(external_id: str, task_repo: TaskRepository) -> PipelineTask:
@@ -171,6 +193,7 @@ def build_recompute_task_response(
             task.id,
             is_scenario=_is_scenario_task(task.external_id, task_repo),
             is_building_upload=_is_building_upload_task(task.external_id, task_repo),
+            is_placement=_is_placement_task(task.external_id, task_repo),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to enqueue Celery task for %s", task.external_id)
@@ -872,6 +895,14 @@ async def task_stream_with_chat_generator(
                                     app_settings,
                                 )
                                 report_event = "classify_summary"
+                            elif report_kind == "placement":
+                                report = await asyncio.to_thread(
+                                    build_placement_summary_response,
+                                    task,
+                                    external_id,
+                                    app_settings,
+                                )
+                                report_event = "placement_summary"
                             else:
                                 report = await asyncio.to_thread(
                                     build_object_zone_fit_response,
@@ -1055,6 +1086,7 @@ _FILE_SLOTS: dict[str, str] = {
     "cadastral": "cadastral_data_path",
     "zones": "pzz_zones_data_path",
     "mo_boundaries": "mo_boundaries_data_path",
+    "existing_objects": "existing_objects_data_path",
 }
 
 # Human-readable label (``title``, RU — shown in chat/layer panel) + ASCII
@@ -1068,6 +1100,7 @@ _SLOT_LABELS: dict[str, tuple[str, str]] = {
     "cadastral": ("Исходные участки", "input_parcels.geojson"),
     "zones": ("Зоны ПЗЗ", "pzz_zones.geojson"),
     "mo_boundaries": ("Границы муниципальных образований", "mo_boundaries.geojson"),
+    "existing_objects": ("Фактические объекты", "existing_objects.geojson"),
 }
 _BUILDING_INPUT_LABEL = (
     "Исходные здания и сервисы",
@@ -1103,6 +1136,63 @@ _RESULT_SPLIT_SLOTS: dict[str, tuple[str, str, str, str]] = {
         "services_result.geojson",
     ),
 }
+
+# Service placement (подбор мест) emits up to five layers from one result, split
+# by the same «Категория_объекта» property. slot -> (category, name, title,
+# filename).
+_PLACEMENT_SPLIT_SLOTS: dict[str, tuple[str, str, str, str]] = {
+    "placement_classes": (
+        CATEGORY_CLASSES,
+        "placement_classes",
+        "Подбор мест — классы пригодности",
+        "placement_classes.geojson",
+    ),
+    "placement_szz": (
+        CATEGORY_SZZ,
+        "placement_szz",
+        "Подбор мест — СЗЗ производственных объектов",
+        "placement_szz.geojson",
+    ),
+    "placement_norms": (
+        CATEGORY_NORMS,
+        "placement_norms",
+        "Подбор мест — буферы строгих норм",
+        "placement_norms.geojson",
+    ),
+    "placement_reach": (
+        CATEGORY_REACH,
+        "placement_reach",
+        "Подбор мест — зона доступности жилья",
+        "placement_reach.geojson",
+    ),
+    "placement_existing": (
+        CATEGORY_EXISTING,
+        "placement_existing",
+        "Подбор мест — существующие объекты этого типа",
+        "placement_existing.geojson",
+    ),
+}
+
+
+def _is_placement_result(task: PipelineTask) -> bool:
+    """True for service placement tasks (they carry the target ВРИ code)."""
+    return bool(getattr(task, "placement_vri_code", None))
+
+
+def _placement_slots(task: PipelineTask) -> list[str]:
+    """Placement layers worth linking: overlays use a cadastre or actual objects,
+    the СЗЗ only for ВРИ a production СЗЗ excludes, and the norm buffers and the
+    housing reach only when the task carries a NormGraph context."""
+    slots = ["placement_classes"]
+    cadastre = getattr(task, "cadastral_data_path", None)
+    actual_objects = getattr(task, "existing_objects_data_path", None)
+    if cadastre or actual_objects:
+        if cadastre and is_szz_sensitive(task.placement_vri_code or ""):
+            slots.append("placement_szz")
+        if getattr(task, "placement_context_path", None):
+            slots.extend(["placement_norms", "placement_reach"])
+        slots.append("placement_existing")
+    return slots
 
 
 # Who the checked items are — drives the wording of the deterministic summary
@@ -1240,6 +1330,21 @@ def build_result_geo_layers(
     """
     if task.status != "finished" or not task.result_path:
         return []
+    if _is_placement_result(task):
+        return [
+            {
+                "name": name,
+                "title": title,
+                "role": "result",
+                "url": _file_url(slot, external_id),
+                "download_url": None,
+                "filename": filename,
+                "mime_type": "application/geo+json",
+                "source_service": app_settings.app_name,
+            }
+            for slot in _placement_slots(task)
+            for _category, name, title, filename in [_PLACEMENT_SPLIT_SLOTS[slot]]
+        ]
     if not (_is_building_task(task) or scenario):
         single = build_result_geo_layer(task, external_id, app_settings, request)
         return [single] if single is not None else []
@@ -1277,6 +1382,7 @@ def build_input_geo_layers(
         ("cadastral", "cadastral_data_path", "input_cadastral"),
         ("zones", "pzz_zones_data_path", "input_zones"),
         ("mo_boundaries", "mo_boundaries_data_path", "input_mo_boundaries"),
+        ("existing_objects", "existing_objects_data_path", "input_existing_objects"),
     )
     building_task = _is_building_task(task)
     layers: list[dict[str, Any]] = []
@@ -1374,6 +1480,29 @@ def _serve_result_split(
     )
 
 
+def _serve_placement_split(
+    task: PipelineTask, slot: str, app_settings: Settings
+) -> Response:
+    """Serve one layer of a placement result, filtered by «Категория_объекта»."""
+    category, _name, _title, filename = _PLACEMENT_SPLIT_SLOTS[slot]
+    if task.status != "finished" or not task.result_path:
+        raise HTTPException(status_code=404, detail="Task result not available yet")
+    if not _is_placement_result(task):
+        raise HTTPException(status_code=404, detail="Result split is not available")
+    geojson = _load_result_geojson(task.result_path, app_settings.outputs_dir)
+    features = [
+        f
+        for f in (geojson.get("features") or [])
+        if (f.get("properties") or {}).get(_COL_CATEGORY) == category
+    ]
+    fc = {"type": "FeatureCollection", "features": features}
+    return Response(
+        content=json.dumps(fc, ensure_ascii=False, default=str),
+        media_type="application/geo+json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 def _load_input_geojson(stored_path: str) -> dict[str, Any]:
     """Read a task input GeoJSON from local disk or MinIO."""
     if not is_remote_path(stored_path):
@@ -1457,6 +1586,10 @@ def get_task_file(
             app_settings,
             scenario=not _is_building_task(task)
             and _is_scenario_task(external_id, task_repo),
+        )
+    if slot in _PLACEMENT_SPLIT_SLOTS:
+        return _serve_placement_split(
+            get_task_or_404(external_id, task_repo), slot, app_settings
         )
     if slot == _SCENARIO_ZONES_SLOT:
         return _serve_scenario_zones(get_task_or_404(external_id, task_repo))
@@ -1613,10 +1746,22 @@ def _overlap_summary_lines(counts: dict[str, int] | None) -> list[str]:
         )
     mo_lines = (
         ("mo_overlaps", "Наложения границ муниципальных образований друг на друга"),
-        ("parcels_in_multiple_mo", "Участков, пересекающих границу муниципальных образований"),
-        ("parcels_outside_mo", "Участков, полностью или частично вне границ муниципальных образований"),
-        ("zones_in_multiple_mo", "Территориальных зон, пересекающих границу муниципальных образований"),
-        ("zones_outside_mo", "Территориальных зон, полностью или частично вне границ муниципальных образований"),
+        (
+            "parcels_in_multiple_mo",
+            "Участков, пересекающих границу муниципальных образований",
+        ),
+        (
+            "parcels_outside_mo",
+            "Участков, полностью или частично вне границ муниципальных образований",
+        ),
+        (
+            "zones_in_multiple_mo",
+            "Территориальных зон, пересекающих границу муниципальных образований",
+        ),
+        (
+            "zones_outside_mo",
+            "Территориальных зон, полностью или частично вне границ муниципальных образований",
+        ),
     )
     lines.extend(f"{text}: {counts[key]}." for key, text in mo_lines if counts.get(key))
     return lines
@@ -1636,7 +1781,12 @@ def _with_overlap_lines(chat_message: str, counts: dict[str, int] | None) -> str
     if not lines:
         return chat_message
     return "\n".join(
-        [chat_message, "", "Проверка наложений исходных слоёв:", *(f"- {l}" for l in lines)]
+        [
+            chat_message,
+            "",
+            "Проверка наложений исходных слоёв:",
+            *(f"- {l}" for l in lines),
+        ]
     )
 
 
@@ -2014,8 +2164,9 @@ def build_object_zone_fit_response(
             "group_by": "object",
             "summary": summary,
             "chat_message": _with_overlap_lines(
-            _build_chat_message_objects(rows, summary, subject=subject), overlap_counts
-        ),
+                _build_chat_message_objects(rows, summary, subject=subject),
+                overlap_counts,
+            ),
             "objects": rows,
         }
 
@@ -2057,7 +2208,8 @@ def build_object_zone_fit_response(
         "group_by": "zone",
         "summary": summary,
         "chat_message": _with_overlap_lines(
-            _build_chat_message_zones(zones_list, summary, subject=subject), overlap_counts
+            _build_chat_message_zones(zones_list, summary, subject=subject),
+            overlap_counts,
         ),
         "zones": zones_list,
     }
@@ -2230,4 +2382,257 @@ def build_classify_summary_response(
         "summary": summary,
         "chat_message": _build_chat_message_classify(rows, summary),
         "objects": rows,
+    }
+
+
+_PARCEL_KIND_RU = {
+    "target": "уже занятых объектами этого типа",
+    "production": "производственных и складских",
+    "housing": "жилых",
+    "other": "прочих",
+}
+
+
+def _ha_ru(value: Any) -> str:
+    """Hectares with a decimal comma, as Russian text expects."""
+    try:
+        return f"{float(value):.2f}".replace(".", ",")
+    except (TypeError, ValueError):
+        return "0,00"
+
+
+_NORM_SECTIONS = (
+    ("strict", "Строгие нормы (исключают территорию):"),
+    ("soft", "Нестрогие нормы (учитываются, но не исключают территорию):"),
+    ("unchecked", "Нормы, не проверенные автоматически:"),
+)
+_NORM_TEXT_MAX = 160
+
+
+def _placement_regulations_line(summary: dict[str, Any]) -> str:
+    regulations = summary.get("regulations") or {}
+    source = regulations.get("source")
+    if source is None:
+        source = (
+            REGULATIONS_DEFAULT
+            if summary.get("used_default_mapping")
+            else REGULATIONS_USER
+        )
+    if source == REGULATIONS_NORMGRAPH:
+        document = regulations.get("document") or "документ ПЗЗ"
+        version = regulations.get("version")
+        edition = f" ({version})" if version else ""
+        return f"Разрешённые виды использования взяты из ПЗЗ в NormGraph: «{document}»{edition}."
+    if source == REGULATIONS_USER:
+        return "Разрешённые виды использования взяты из переданного описания зон."
+    return (
+        "Описания зон не переданы и в NormGraph не найдены — использован типовой "
+        "справочник видов разрешённого использования по зонам; результат носит "
+        "ориентировочный характер."
+    )
+
+
+def _norm_line(norm: dict[str, Any]) -> str:
+    requirement = " ".join(str(norm.get("requirement") or "").split())
+    if len(requirement) > _NORM_TEXT_MAX:
+        requirement = requirement[: _NORM_TEXT_MAX - 1].rstrip() + "…"
+    document = norm.get("document") or "NormGraph"
+    clause = f", п. {norm['clause']}" if norm.get("clause") else ""
+    status = norm.get("status")
+    note = norm.get("note") or ""
+    if status == NORM_APPLIED and norm.get("strictness") == "strict":
+        outcome = f"применена, исключено {_ha_ru(norm.get('ha'))} га"
+    elif status == NORM_APPLIED:
+        outcome = "учтена: для пригодных зон указана доля площади в зоне доступности"
+    elif status == NORM_NOT_APPLIED:
+        outcome = f"не применена — {note}" if note else "не применена"
+    else:
+        outcome = note
+    tail = f": {outcome}" if outcome else ""
+    return f"- {requirement or 'норма'} ({document}{clause}){tail}."
+
+
+def _placement_norm_lines(norms: list[dict[str, Any]]) -> list[str]:
+    if not norms:
+        return []
+    lines = ["", "Нормы NormGraph для объекта:"]
+    for strictness, title in _NORM_SECTIONS:
+        group = [n for n in norms if n.get("strictness") == strictness]
+        if group:
+            lines.append(title)
+            lines.extend(_norm_line(n) for n in group)
+    pending = sum(1 for n in norms if not n.get("reviewed"))
+    if pending:
+        lines.append(
+            f"Не прошли экспертную проверку: {pending} из {len(norms)} норм — "
+            "их формализация может быть неточной."
+        )
+    return lines
+
+
+def _placement_cadastre_lines(summary: dict[str, Any]) -> list[str]:
+    scenario_objects = summary.get("scenario_objects_used")
+    if not summary.get("cadastre_used") and not scenario_objects:
+        if summary.get("existing_objects_used"):
+            return [
+                "Кадастровый слой не передан: СЗЗ производства и близость к жилью по кадастру не учитывались."
+            ]
+        return [
+            "Кадастровый слой не передан: санитарно-защитные зоны, буферы норм, "
+            "близость к жилью и существующие объекты не учитывались."
+        ]
+    lines: list[str] = []
+    if summary.get("szz_applied"):
+        lines.append(
+            "Учтены санитарно-защитные зоны производственных и складских участков "
+            f"(СанПиН 2.2.1/2.1.1.1200-03): {_ha_ru(summary.get('szz_ha'))} га; "
+            "попавшие в них части зон отнесены к классу C."
+        )
+        widths = [
+            f"{item.get('hazard_class')} класс — {item.get('width_m'):g} м "
+            f"(участков {item.get('parcels')})"
+            for item in summary.get("szz_by_class") or []
+        ]
+        if widths:
+            lines.append("Ширина СЗЗ по классу опасности: " + "; ".join(widths) + ".")
+        defaulted = summary.get("szz_default_class_parcels") or 0
+        if defaulted:
+            lines.append(
+                f"Для {defaulted} участков класс опасности не указан в названии зоны — "
+                "принят IV класс (100 м)."
+            )
+    reach_m = summary.get("reach_m")
+    if reach_m:
+        lines.append(
+            f"Зона доступности жилья ({reach_m:g} м от жилых участков): "
+            f"{_ha_ru(summary.get('reach_ha'))} га; пригодных участков зон, "
+            f"частично или целиком в ней: {summary.get('reach_zones', 0)}."
+        )
+    parcels = summary.get("parcels") or {}
+    kind_labels = dict(_PARCEL_KIND_RU)
+    if summary.get("existing_objects_used"):
+        kind_labels["target"] = "с ВРИ целевого типа (не подтверждает наличие объекта)"
+    counts = [
+        f"{kind_labels.get(kind, kind)} — {n}" for kind, n in parcels.items() if n
+    ]
+    if counts:
+        lines.append(
+            ("Объекты сценария: " if scenario_objects else "Участки кадастра: ")
+            + "; ".join(counts)
+            + "."
+        )
+    if scenario_objects:
+        lines = [
+            line.replace("участков зон", "частей зон")
+            .replace("участков", "объектов")
+            .replace("участка", "объекта")
+            for line in lines
+        ]
+    return lines
+
+
+def _build_chat_message_placement(summary: dict[str, Any]) -> str:
+    """Deterministic Russian summary of a service placement run."""
+    service = summary.get("service_name") or "объект"
+    code = summary.get("vri_code") or "—"
+    vri_name = summary.get("vri_name") or ""
+    vri = f"{code} «{vri_name}»" if vri_name else code
+    lines = [
+        f"Подбор мест размещения: «{service}» (ВРИ {vri}).",
+        f"Проанализировано территориальных зон: {summary.get('zones_total', 0)}.",
+        _placement_regulations_line(summary),
+        "",
+        "Распределение по классам пригодности:",
+    ]
+    classes = summary.get("classes") or {}
+    for cls in CLASS_ORDER:
+        bucket = classes.get(cls) or {}
+        zones = int(bucket.get("zones") or 0)
+        if not zones:
+            continue
+        lines.append(
+            f"- {cls} — {CLASS_RU[cls]}: участков зон {zones}, "
+            f"{_ha_ru(bucket.get('ha'))} га."
+        )
+    if not any((classes.get(c) or {}).get("zones") for c in CLASS_ORDER):
+        lines.append("- зоны для классификации не найдены.")
+
+    best = summary.get("best_zones") or []
+    if best:
+        lines += ["", "Наиболее крупные зоны, где вид разрешён как основной:"]
+        for zone in best:
+            name = zone.get("name") or zone.get("code") or "—"
+            code_txt = zone.get("code")
+            label = name if not code_txt or code_txt == name else f"{code_txt} — {name}"
+            limits = f"; параметры зоны: {zone['limits']}" if zone.get("limits") else ""
+            lines.append(f"- {label}: {_ha_ru(zone.get('ha'))} га{limits}.")
+    else:
+        lines += ["", "Зон, где вид разрешён как основной, не найдено."]
+
+    lines.append("")
+    lines.extend(_placement_cadastre_lines(summary))
+    if summary.get("existing_objects_used"):
+        lines.append(
+            f"Существующие объекты определены по отдельному файлу: объектов целевого типа — {summary.get('existing_objects_count', 0)}. Предположения по кадастру для A*/B* не использовались."
+        )
+    lines.extend(_placement_norm_lines(summary.get("norms") or []))
+
+    uncovered = summary.get("uncovered_zones") or []
+    notes = [str(n) for n in summary.get("notes") or []]
+    if uncovered or notes:
+        lines.append("")
+    if uncovered:
+        shown = ", ".join(str(z) for z in uncovered[:15])
+        more = f" и ещё {len(uncovered) - 15}" if len(uncovered) > 15 else ""
+        lines.append(f"Нет описания для зон: {shown}{more} (класс D).")
+    lines.extend(notes)
+    return "\n".join(lines)
+
+
+@router.get("/tasks/{external_id}/placement-summary")
+def get_placement_summary_endpoint(
+    external_id: str,
+    task_repo: TaskRepository = Depends(get_task_repo),
+    app_settings: Settings = Depends(get_app_settings),
+) -> dict[str, Any]:
+    """Summary of a finished service placement task (подбор мест размещения).
+
+    Returns the per-class zone counts and areas, the largest class-A zones and
+    the cadastre-based constraints, plus a chat-ready Russian summary. 409 if the
+    task isn't finished; 404 if not found or not a placement task.
+    """
+    task = get_public_task_or_404(external_id, task_repo)
+    return build_placement_summary_response(task, external_id, app_settings)
+
+
+def build_placement_summary_response(
+    task: PipelineTask,
+    external_id: str,
+    app_settings: Settings,
+) -> dict[str, Any]:
+    """Build the placement summary for an already-authorized task."""
+    if task.status != "finished":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task is not finished (status: {task.status})",
+        )
+    if not task.result_path:
+        raise HTTPException(status_code=404, detail="Task has no result")
+    if not _is_placement_result(task):
+        raise HTTPException(status_code=404, detail="Task is not a placement task")
+    try:
+        geojson = _load_result_geojson(task.result_path, app_settings.outputs_dir)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to load result GeoJSON for task %s", task.external_id)
+        raise HTTPException(status_code=503, detail=RESULT_LOAD_FAILED_MESSAGE) from exc
+    summary = geojson.get(PLACEMENT_SUMMARY_KEY)
+    if not isinstance(summary, dict):
+        raise HTTPException(status_code=404, detail="Result has no placement summary")
+    return {
+        "task_external_id": external_id,
+        "mode": "placement",
+        "summary": summary,
+        "chat_message": _build_chat_message_placement(summary),
     }

@@ -16,10 +16,7 @@ jobs:
       test-command: |
         python -m pip install --disable-pip-version-check uv==0.12.10
         uv python install 3.11
-        uv venv --python 3.11
-        uv pip install --python .venv/bin/python \
-          --requirement requirements.txt \
-          pytest==9.1.1
+        uv sync --locked
         cp .env.example .env.development
         export APP_ENV=development
         export URBAN_API_BASE_URL=http://localhost:9999
@@ -39,5 +36,5 @@ jobs:
         export NOT_ALLOWED_LLM_RERANK_NUM_CTX=2048
         export NOT_ALLOWED_LLM_RERANK_NUM_PREDICT=256
         export NOT_ALLOWED_LLM_RERANK_THINK=false
-        .venv/bin/python -m pytest --verbose tests
+        uv run pytest --verbose tests
     secrets: inherit

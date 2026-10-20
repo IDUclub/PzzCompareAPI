@@ -14,6 +14,7 @@ forwarded to urban_api verbatim.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -58,7 +59,8 @@ from ..schemas import TaskCreate, TaskEventOut, TaskOut
 from ..output_version import PIPELINE_OUTPUT_VERSION
 from ..settings import Settings
 from ..tasks import enqueue_pipeline_task, execute_pipeline_task
-from .classifier import persist_geojson_dict
+from .classifier import _placement_context, persist_geojson_dict
+from ..application.use_cases.resolve_service_vri import resolve_service_vri
 from fastapi.concurrency import run_in_threadpool
 
 from .tasks import (
@@ -66,6 +68,7 @@ from .tasks import (
     SCENARIO_ZONE_NAME_COL,
     build_cancel_task_response,
     build_object_zone_fit_response,
+    build_placement_summary_response,
     build_recompute_task_response,
     build_scenario_zone_geo_layers,
     build_task_events_response,
@@ -221,15 +224,19 @@ def _persist_and_create_scenario_task(
     task_repo: TaskRepository,
     event_repo: EventRepository,
     session: Session,
+    placement_vri_code: str | None = None,
+    placement_service_name: str | None = None,
+    placement_context: dict[str, Any] | None = None,
 ) -> PipelineTask:
     """Flatten inputs, persist GeoJSON to storage, and create the task.
 
     Synchronous and I/O-heavy (three MinIO writes); intended to run in a
     threadpool so the API event loop stays responsive under concurrent submits.
     """
-    objects_fc = _flatten_physical_object_features(
-        objects_fc, vri_col=_CADASTRAL_VRI_COL
-    )
+    if not placement_vri_code:
+        objects_fc = _flatten_physical_object_features(
+            objects_fc, vri_col=_CADASTRAL_VRI_COL
+        )
     zones_fc = _flatten_functional_zone_features(
         zones_fc, code_col=_PZZ_ZONE_CODE_COL, name_col=_PZZ_ZONE_NAME_COL
     )
@@ -258,8 +265,12 @@ def _persist_and_create_scenario_task(
     scenario_labels = build_pipeline_zone_labels(
         observed_zone_types=observed_zone_types
     )
-    stored_labels = persist_geojson_dict(
-        scenario_labels, task_dir, "pzz_zone_vri_labels.json", external_id, storage
+    stored_labels = (
+        ""
+        if placement_vri_code
+        else persist_geojson_dict(
+            scenario_labels, task_dir, "pzz_zone_vri_labels.json", external_id, storage
+        )
     )
 
     input_paths = {
@@ -270,6 +281,10 @@ def _persist_and_create_scenario_task(
             Path(app_settings.default_vri_classifier_path).resolve()
         ),
     }
+    if placement_context is not None:
+        input_paths["placement_context_path"] = persist_geojson_dict(
+            placement_context, task_dir, "placement_context.json", external_id, storage
+        )
 
     payload = TaskCreate(
         include_pzz_check=True,
@@ -277,6 +292,8 @@ def _persist_and_create_scenario_task(
         pzz_zone_code_col=_PZZ_ZONE_CODE_COL,
         pzz_zone_name_col=_PZZ_ZONE_NAME_COL,
         priority=priority,
+        placement_vri_code=placement_vri_code,
+        placement_service_name=(placement_service_name or "")[:256] or None,
     )
 
     task = create_task(
@@ -299,7 +316,7 @@ def _persist_and_create_scenario_task(
         "accepted",
         task_id=task.id,
         external_id=task.external_id,
-        mode="scenario_classify",
+        mode="scenario_placement" if placement_vri_code else "scenario_classify",
         scenario_id=scenario_id,
         year=year,
         source=source,
@@ -475,6 +492,224 @@ async def _build_scenario_classification_task(
     )
 
 
+def _placement_object_texts(
+    feature_collection: dict[str, Any], app_settings: Settings
+) -> dict[str, Any]:
+    """Resolve controlled Urban API types before the placement text classifier."""
+    from ..infrastructure.runners._deterministic_pzz import resolve_po_type_vri
+
+    physical_map = json.loads(
+        Path(app_settings.physical_object_type_to_vri_path).read_text(encoding="utf-8")
+    )
+    service_map = json.loads(
+        Path(app_settings.service_type_to_vri_path).read_text(encoding="utf-8")
+    ).get("by_service_type_id", {})
+    fc = _flatten_physical_object_features(
+        feature_collection, vri_col=_CADASTRAL_VRI_COL
+    )
+    for feature in fc.get("features") or []:
+        props = feature.get("properties") or {}
+        service_type = props.get("service_type")
+        code = None
+        if isinstance(service_type, dict):
+            type_id = service_type.get("service_type_id", service_type.get("id"))
+            code = (service_map.get(str(type_id)) or {}).get("vri_code")
+        else:
+            physical_type = props.get("physical_object_type") or {}
+            type_id = physical_type.get(
+                "physical_object_type_id", physical_type.get("id")
+            )
+            nested = props.get("properties") or {}
+            floors = (
+                nested.get("Количество этажей") if isinstance(nested, dict) else None
+            ) or props.get("Количество этажей")
+            if type_id is not None:
+                code, _ = resolve_po_type_vri(physical_map, int(type_id), floors)
+        if code:
+            props[_CADASTRAL_VRI_COL] += f" (ВРИ {code})"
+    return fc
+
+
+async def _build_scenario_placement_task(
+    *,
+    scenario_id: int,
+    year: int,
+    source: str,
+    service_name: str,
+    model: str | None,
+    priority: int,
+    force_recompute: bool,
+    idempotency_key_form: str | None,
+    idempotency_key_header: str | None,
+    token: str,
+    app_settings: Settings,
+    task_repo: TaskRepository,
+    event_repo: EventRepository,
+    session: Session,
+) -> PipelineTask:
+    if not service_name.strip():
+        raise HTTPException(
+            status_code=422, detail="service_name is required for placement"
+        )
+    if not app_settings.urban_api_base_url:
+        raise HTTPException(
+            status_code=503, detail="urban_api integration is not configured."
+        )
+    # Check access even on cache hits, before resolving the user's service query.
+    async with UrbanApiClient(
+        app_settings.urban_api_base_url,
+        timeout_seconds=app_settings.urban_api_timeout_seconds,
+    ) as urban:
+        try:
+            info = await urban.get_scenario_info(scenario_id, token=token)
+            sources = await urban.list_functional_zone_sources(scenario_id, token=token)
+            available = [
+                {"year": s.get("year"), "source": s.get("source")} for s in sources
+            ]
+            if not any(
+                s.get("year") == year and s.get("source") == source for s in sources
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "no functional zones for the requested (year, source)",
+                        "requested": {"year": year, "source": source},
+                        "available": available,
+                    },
+                )
+            resolved = await resolve_service_vri(
+                service_name, app_settings, model=model
+            )
+            if resolved is None:
+                raise HTTPException(
+                    status_code=422, detail="Не удалось сопоставить сервис с ВРИ."
+                )
+            # Isolate services sharing the same ВРИ (school / kindergarten),
+            # and placements from classifications.
+            query_hash = hashlib.sha256(
+                service_name.strip().casefold().encode()
+            ).hexdigest()[:16]
+            namespaced_key = (
+                f"sc:{scenario_id}:{year}:{source}:placement:{resolved.code}:{query_hash}"
+                f":upd-{(info or {}).get('updated_at', 'unknown')}"
+                f":m-{mapping_version()}:pv-{PIPELINE_OUTPUT_VERSION}"
+            )
+            raw_key = idempotency_key_header or idempotency_key_form
+            if raw_key:
+                namespaced_key += f":{raw_key}"
+            existing = task_repo.get_by_idempotency_key(namespaced_key)
+            if existing is not None and not force_recompute:
+                return existing
+            zones_fc = await urban.get_functional_zones(
+                scenario_id, year=year, source=source, token=token
+            )
+            # A housing-only filter would hide production buffers and schools.
+            objects_fc = await urban.get_physical_objects_with_geometry(
+                scenario_id, token=token
+            )
+            services_fc = await urban.get_services_with_geometry(
+                scenario_id, token=token
+            )
+        except UrbanApiError as exc:
+            _raise_urban_api_http_exception(exc)
+    if not zones_fc.get("features"):
+        raise HTTPException(
+            status_code=422, detail="urban_api returned no functional zones."
+        )
+    objects_fc = {
+        "type": "FeatureCollection",
+        "features": [
+            f
+            for fc in (objects_fc, services_fc)
+            for f in fc.get("features") or []
+            if f.get("geometry") is not None
+        ],
+    }
+    objects_fc = await run_in_threadpool(
+        _placement_object_texts, objects_fc, app_settings
+    )
+    zones_fc = _flatten_functional_zone_features(
+        zones_fc, code_col=_PZZ_ZONE_CODE_COL, name_col=_PZZ_ZONE_NAME_COL
+    )
+    context = await _placement_context(
+        app_settings,
+        service_name=resolved.service_name or service_name,
+        service_query=service_name,
+        zones_fc=zones_fc,
+        zone_code_col=_PZZ_ZONE_CODE_COL,
+        territory_id=None,
+        norms_only=True,
+    )
+    context["input_kind"] = "scenario_objects"
+    context["notes"].append(
+        "Использованы функциональные зоны и объекты сценария Urban API, а не кадастровые "
+        "участки. Допустимость оценена по справочному соответствию функциональных зон "
+        "видам использования, а не по границам зон ПЗЗ. Буферы построены от геометрии "
+        "объектов сценария; результат ориентировочный."
+    )
+    return await run_in_threadpool(
+        _persist_and_create_scenario_task,
+        objects_fc=objects_fc,
+        zones_fc=zones_fc,
+        scenario_id=scenario_id,
+        year=year,
+        source=source,
+        physical_object_type_id=0,
+        priority=priority,
+        namespaced_key=namespaced_key,
+        force_recompute=force_recompute,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+        placement_vri_code=resolved.code,
+        placement_service_name=resolved.service_name or service_name,
+        placement_context=context,
+    )
+
+
+@router.post("/{scenario_id}/placement", response_model=TaskOut)
+async def place_service_in_scenario_endpoint(
+    scenario_id: int = FastPath(..., ge=1),
+    year: int = Form(..., ge=1900, le=2100),
+    source: str = Form(..., min_length=1),
+    service_name: str = Form(..., min_length=1),
+    model: str | None = Form(default=None),
+    priority: int = Form(1, ge=1, le=10),
+    force_recompute: bool = Form(False),
+    idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    token: str = Depends(verify_token),
+    app_settings: Settings = Depends(get_app_settings),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    event_repo: EventRepository = Depends(get_event_repo),
+    session: Session = Depends(get_db),
+) -> TaskOut:
+    """Place a service using a scenario's functional zones and all its objects.
+
+    Uses the functional-zone reference mapping and NormGraph service norms.
+    Physical objects are an approximate substitute for cadastral parcels.
+    """
+    task = await _build_scenario_placement_task(
+        scenario_id=scenario_id,
+        year=year,
+        source=source,
+        service_name=service_name,
+        model=model,
+        priority=priority,
+        force_recompute=force_recompute,
+        idempotency_key_form=idempotency_key_form,
+        idempotency_key_header=idempotency_key_header,
+        token=token,
+        app_settings=app_settings,
+        task_repo=task_repo,
+        event_repo=event_repo,
+        session=session,
+    )
+    session.commit()
+    return TaskOut.model_validate(task)
+
+
 @router.post("/{scenario_id}/classify", response_model=TaskOut)
 async def classify_scenario_endpoint(
     scenario_id: int = FastPath(..., ge=1),
@@ -627,7 +862,9 @@ async def _fetch_project_id(
 async def scenario_chat_stream_endpoint(
     request: FastRequest,
     scenario_id: int = FastPath(..., ge=1),
-    user_query: str = Form(..., min_length=1),
+    user_query: str | None = Form(default=None, min_length=1),
+    mode: str = Form("pzz_check"),
+    service_name: str | None = Form(default=None),
     year: int = Form(..., ge=1900, le=2100),
     source: str = Form(..., min_length=1),
     chat_id: str | None = Form(default=None),
@@ -646,7 +883,12 @@ async def scenario_chat_stream_endpoint(
     event_repo: EventRepository = Depends(get_event_repo),
     session: Session = Depends(get_db),
 ) -> EventSourceResponse:
-    """Classify a scenario, then stream a grounded conversational answer.
+    """Classify a scenario or place a service, then stream a grounded answer.
+
+    ``mode=placement`` accepts ``service_name`` (or ``user_query``), fetches all
+    scenario objects, and emits ``placement_summary`` and placement map layers.
+    Functional zones use the reference mapping; NormGraph supplies service norms.
+    ``physical_object_type_id`` only filters the default ``pzz_check`` mode.
 
     One call: builds (or reuses a cached) classification task, waits for it to
     finish, then streams an LLM answer to ``user_query`` grounded in the
@@ -663,6 +905,66 @@ async def scenario_chat_stream_endpoint(
     if group_by not in ("zone", "object"):
         raise HTTPException(
             status_code=422, detail="group_by must be 'zone' or 'object'"
+        )
+
+    if mode not in ("pzz_check", "placement"):
+        raise HTTPException(
+            status_code=422, detail="mode must be 'pzz_check' or 'placement'"
+        )
+    if mode == "pzz_check" and not user_query:
+        raise HTTPException(
+            status_code=422, detail="user_query is required for pzz_check"
+        )
+    if mode == "placement" and not (service_name or user_query or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="service_name (or user_query) is required for placement",
+        )
+
+    if mode == "placement":
+        task = await _build_scenario_placement_task(
+            scenario_id=scenario_id,
+            year=year,
+            source=source,
+            service_name=service_name or user_query or "",
+            model=model,
+            priority=priority,
+            force_recompute=force_recompute,
+            idempotency_key_form=idempotency_key_form,
+            idempotency_key_header=idempotency_key_header,
+            token=user.token,
+            app_settings=app_settings,
+            task_repo=task_repo,
+            event_repo=event_repo,
+            session=session,
+        )
+        session.commit()
+        project_id = await _fetch_project_id(scenario_id, user.token, app_settings)
+        return EventSourceResponse(
+            task_stream_with_chat_generator(
+                task.external_id,
+                group_by="zone",
+                poll_interval=poll_interval,
+                request=request,
+                app_settings=app_settings,
+                initial=TaskOut.model_validate(task).model_dump(mode="json"),
+                user_id=user.user_id,
+                user_query=user_query
+                or f"Где разместить {service_name}? Объясни ограничения.",
+                chat_id=chat_id,
+                scenario_id=scenario_id,
+                project_id=project_id,
+                chat_title=(user_query or service_name or "Подбор мест размещения")[
+                    :256
+                ],
+                model=model,
+                temperature=temperature,
+                report_kind="placement",
+                emit_input_files=True,
+                input_layers_builder=build_scenario_zone_geo_layers,
+                system_prompt_path=app_settings.chat_system_prompt_placement_path,
+                scenario=True,
+            )
         )
 
     # The user's token is forwarded to urban_api (still fresh at request start);
@@ -805,6 +1107,24 @@ async def get_scenario_task_endpoint(
     return TaskOut.model_validate(task)
 
 
+@router.get("/{scenario_id}/tasks/{external_id}/placement-summary")
+async def get_scenario_placement_summary_endpoint(
+    scenario_id: int = FastPath(..., ge=1),
+    external_id: str = FastPath(..., min_length=1),
+    token: str = Depends(verify_token),
+    app_settings: Settings = Depends(get_app_settings),
+    task_repo: TaskRepository = Depends(get_task_repo),
+) -> dict[str, Any]:
+    """Placement summary after checking scenario access and task membership."""
+    await _verify_scenario_access(
+        scenario_id=scenario_id, token=token, app_settings=app_settings
+    )
+    task = _get_scenario_task_or_404(
+        scenario_id=scenario_id, external_id=external_id, task_repo=task_repo
+    )
+    return build_placement_summary_response(task, external_id, app_settings)
+
+
 @router.get("/{scenario_id}/tasks/{external_id}/result")
 async def get_scenario_task_result_endpoint(
     scenario_id: int = FastPath(..., ge=1),
@@ -923,7 +1243,7 @@ def _parse_scenario_idempotency_key(key: str) -> tuple[int, str, int] | None:
     try:
         year = int(parts[2])
         source = parts[3]
-        po_type_id = int(parts[4].split("-", 1)[1])
+        po_type_id = 0 if parts[4] == "placement" else int(parts[4].split("-", 1)[1])
         return year, source, po_type_id
     except (ValueError, IndexError):
         return None
@@ -1042,12 +1362,21 @@ async def _scenario_task_sse_generator(
                 # 3. On success emit object_zone_fit and result
                 if current_status == TaskStatus.finished:
                     try:
-                        ozone = build_object_zone_fit_response(
-                            task, external_id, "zone", app_settings, scenario=True
-                        )
+                        if task.placement_vri_code:
+                            ozone = build_placement_summary_response(
+                                task, external_id, app_settings
+                            )
+                        else:
+                            ozone = build_object_zone_fit_response(
+                                task, external_id, "zone", app_settings, scenario=True
+                            )
                         yield ServerSentEvent(
                             data=json.dumps(ozone, default=str),
-                            event="object_zone_fit",
+                            event=(
+                                "placement_summary"
+                                if task.placement_vri_code
+                                else "object_zone_fit"
+                            ),
                         )
                     except Exception:
                         pass

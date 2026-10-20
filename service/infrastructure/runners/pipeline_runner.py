@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import importlib
 import os
+import queue
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from abc import ABC, abstractmethod
+from collections import deque
 from dataclasses import replace
 from pathlib import Path
+
+from loguru import logger as _loguru
 
 from service.domain import PipelineRequest
 from service.infrastructure.storage import (
@@ -50,7 +56,9 @@ class InProcessPipelineRunner(PipelineRunner):
         # municipal boundary layer keep working.
         extra_kwargs = {}
         if request.mo_boundaries_data_path:
-            extra_kwargs["mo_boundaries_features_path"] = request.mo_boundaries_data_path
+            extra_kwargs["mo_boundaries_features_path"] = (
+                request.mo_boundaries_data_path
+            )
         pipeline_callable(
             cadastral_features_path=request.cadastral_data_path,
             pzz_zones_features_path=request.pzz_zones_data_path,
@@ -117,21 +125,12 @@ class SubprocessPipelineRunner(PipelineRunner):
         env["LLM_CACHE_DIR"] = settings.llm_cache_dir
         env["LLM_CACHE_TTL_DAYS"] = settings.llm_cache_ttl_days
 
-        result = subprocess.run(
-            [sys.executable, "-m", settings.pipeline_module],
-            env=env,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        if result.returncode != 0:
-            # Keep the tail of stderr: a Python traceback ends with the actual
-            # exception type + message, so the last chunk is the useful part.
-            # Surfaced into the task's error_text / failed event so /logs shows
-            # the real cause, not just "exit status 1".
-            stderr_tail = (result.stderr or "").strip()[-8000:]
-            raise subprocess.CalledProcessError(
-                result.returncode, result.args, stderr=stderr_tail
-            )
+        args = [sys.executable, "-m", settings.pipeline_module]
+        returncode, stderr_tail = _run_pipeline_process(args, env)
+        if returncode != 0:
+            # Surfaced into the task's error_text / failed event, so the task
+            # shows the real cause, not just "exit status 1".
+            raise subprocess.CalledProcessError(returncode, args, stderr=stderr_tail)
 
         return _build_output_glob(output_dir, request.task_external_id)
 
@@ -192,13 +191,20 @@ class StorageAwarePipelineRunner(PipelineRunner):
                 request.pzz_zones_data_path, "pzz_zones_feature_collection.geojson"
             ),
             mo_boundaries_data_path=materialise(
-                request.mo_boundaries_data_path, "mo_boundaries_feature_collection.geojson"
+                request.mo_boundaries_data_path,
+                "mo_boundaries_feature_collection.geojson",
             ),
             pzz_zone_vri_labels_path=materialise(
                 request.pzz_zone_vri_labels_path, "pzz_zone_vri_labels.json"
             ),
             vri_classifier_path=materialise(
                 request.vri_classifier_path, "vri_classifier.json"
+            ),
+            placement_context_path=materialise(
+                request.placement_context_path, "placement_context.json"
+            ),
+            existing_objects_data_path=materialise(
+                request.existing_objects_data_path, "existing_objects.geojson"
             ),
             outputs_dir=str(local_outputs_dir),
         )
@@ -216,12 +222,18 @@ class PipelineRunnerFactory:
     def create(
         settings: "Settings", request: "PipelineRequest | None" = None
     ) -> PipelineRunner:
-        if request is not None and getattr(request, "is_building_upload", False):
+        if request is not None and getattr(request, "is_placement", False):
+            from service.infrastructure.runners.placement_pzz_runner import (
+                PlacementPzzRunner,
+            )
+
+            inner: PipelineRunner = PlacementPzzRunner(settings)
+        elif request is not None and getattr(request, "is_building_upload", False):
             from service.infrastructure.runners.uploaded_building_pzz_runner import (
                 UploadedBuildingPzzRunner,
             )
 
-            inner: PipelineRunner = UploadedBuildingPzzRunner(settings)
+            inner = UploadedBuildingPzzRunner(settings)
         elif (
             request is not None
             and getattr(request, "is_scenario", False)
@@ -252,6 +264,159 @@ class PipelineRunnerFactory:
                 return SubprocessPipelineRunner(settings)
 
         raise ValueError(f"Unsupported pipeline_runner_mode: {mode}")
+
+
+# Line format of the pipeline's logging.basicConfig (pipeline_modules/*:__main__):
+# "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+_PIPELINE_LOG_LINE = re.compile(
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \| (?P<level>[A-Z]+) \| "
+    r"(?P<name>[^|]+?) \| (?P<message>.*)$"
+)
+_TRACEBACK_START = "Traceback (most recent call last):"
+# tqdm frames ("45%|████▌     | 9/20 [00:03<00:04, 2.6it/s]") — noise in logs.
+_PROGRESS_BAR_LINE = re.compile(r"\d+%\|.*\||it/s\]|s/it\]")
+_STDERR_TAIL_CHARS = 8000
+_STDERR_TAIL_LINES = 500
+
+
+# A record is held back until the next line shows whether a traceback follows;
+# if the subprocess goes quiet (a long step) it is flushed after this delay.
+_PENDING_FLUSH_SECONDS = 0.5
+
+
+class _PipelineRecord:
+    """One log record of the pipeline subprocess, possibly spanning lines."""
+
+    def __init__(self, level: str, name: str, message: str) -> None:
+        self.level = level
+        self.name = name
+        self.message_lines = [message]
+        self.traceback_lines: list[str] = []
+
+    def add_line(self, line: str) -> bool:
+        """Attach a continuation line; False if *line* is not part of it."""
+        if self.traceback_lines or line.startswith(_TRACEBACK_START):
+            self.traceback_lines.append(line)
+        elif line[:1].isspace():
+            self.message_lines.append(line)
+        else:
+            return False
+        return True
+
+    def emit(self) -> None:
+        try:
+            level = _loguru.level(self.level).name
+        except ValueError:
+            level = "INFO"
+        bound = _loguru.bind(logger_name=self.name)
+        if self.traceback_lines:
+            bound = bound.bind(exception_text="\n".join(self.traceback_lines))
+        bound.log(level, "\n".join(self.message_lines))
+
+
+def _run_pipeline_process(args: list[str], env: dict[str, str]) -> tuple[int, str]:
+    """Run the pipeline subprocess, streaming its logs into ours.
+
+    The subprocess logs to stdout in its own format; each record is re-emitted
+    through loguru (stdout + Redis /logs sinks) under its original logger name,
+    tagged with the current task context, and with any traceback attached as
+    the entry's exception. Non-log stdout (print) goes to "pipeline.stdout".
+
+    stderr is kept as a bounded tail (progress bars dropped). On failure it is
+    logged as an error and returned for the caller's CalledProcessError; on
+    success any remaining stderr (warnings) is logged once as a warning.
+
+    Returns (returncode, stderr_tail).
+    """
+    env = {**env, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
+    proc = subprocess.Popen(
+        args,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+
+    stderr_lines: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
+    stdout_lines: queue.Queue[str | None] = queue.Queue()
+
+    def _drain_stderr() -> None:
+        assert proc.stderr is not None
+        for raw in proc.stderr:
+            line = raw.rstrip("\n")
+            if line.strip() and not _PROGRESS_BAR_LINE.search(line):
+                stderr_lines.append(line)
+
+    def _drain_stdout() -> None:
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            stdout_lines.put(raw.rstrip("\n"))
+        stdout_lines.put(None)
+
+    readers = [
+        threading.Thread(target=_drain_stderr, name="pipeline-stderr", daemon=True),
+        threading.Thread(target=_drain_stdout, name="pipeline-stdout", daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+
+    pending: _PipelineRecord | None = None
+    try:
+        while True:
+            try:
+                line = stdout_lines.get(timeout=_PENDING_FLUSH_SECONDS)
+            except queue.Empty:
+                if pending is not None:
+                    pending.emit()
+                    pending = None
+                continue
+            if line is None:
+                break
+            match = _PIPELINE_LOG_LINE.match(line)
+            if match:
+                if pending is not None:
+                    pending.emit()
+                pending = _PipelineRecord(
+                    match["level"], match["name"].strip(), match["message"]
+                )
+            elif pending is None or not pending.add_line(line):
+                if pending is not None:
+                    pending.emit()
+                    pending = None
+                if line.strip():
+                    _loguru.bind(logger_name="pipeline.stdout").info(line)
+        if pending is not None:
+            pending.emit()
+        returncode = proc.wait()
+    except BaseException:
+        # Interrupted (time limit, worker shutdown): never leave the child
+        # running on its own.
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        for reader in readers:
+            reader.join(timeout=5)
+
+    stderr_text = "\n".join(stderr_lines)
+    # A Python traceback ends with the exception type + message; start the tail
+    # at the last traceback header so it isn't diluted by earlier warnings.
+    traceback_at = stderr_text.rfind(_TRACEBACK_START)
+    if traceback_at != -1:
+        stderr_text = stderr_text[traceback_at:]
+    stderr_tail = stderr_text.strip()[-_STDERR_TAIL_CHARS:]
+
+    log = _loguru.bind(logger_name="pipeline.stderr")
+    if returncode != 0:
+        log.bind(exception_text=stderr_tail or None).error(
+            "pipeline subprocess exited with code {}", returncode
+        )
+    elif stderr_tail:
+        log.warning("pipeline subprocess stderr:\n{}", stderr_tail)
+    return returncode, stderr_tail
 
 
 def _build_output_glob(output_dir: Path, task_external_id: str) -> str:

@@ -107,6 +107,7 @@ class ChatLlmClient:
         schema: dict[str, Any],
         model: str | None = None,
         temperature: float = 0.0,
+        reasoning_effort: str = "low",
     ) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -172,6 +173,7 @@ class VllmChatClient(ChatLlmClient):
         schema: dict[str, Any],
         model: str | None = None,
         temperature: float = 0.0,
+        reasoning_effort: str = "low",
     ) -> dict[str, Any]:
         """Non-streaming call with OpenAI ``response_format`` structured output.
 
@@ -194,10 +196,11 @@ class VllmChatClient(ChatLlmClient):
             },
             "temperature": temperature,
         }
-        # gpt-oss reasons before answering; without this the chain-of-thought can
-        # consume the whole budget and leave ``content`` empty.
+        # gpt-oss reasons before answering; without a cap the chain-of-thought can
+        # consume the whole budget and leave ``content`` empty. "low" suits short
+        # answers; a judgement over many items needs "medium".
         if selected_model.lower().startswith("gpt-oss"):
-            payload["reasoning_effort"] = "low"
+            payload["reasoning_effort"] = reasoning_effort
 
         resp = await self._client.post(self._PATH, json=payload, headers=self._headers)
         if resp.status_code >= 400:
@@ -275,6 +278,7 @@ class OllamaChatClient(ChatLlmClient):
         schema: dict[str, Any],
         model: str | None = None,
         temperature: float = 0.0,
+        reasoning_effort: str = "low",
     ) -> dict[str, Any]:
         """Non-streaming ``/api/chat`` with structured output (Ollama ``format``).
 
@@ -282,7 +286,8 @@ class OllamaChatClient(ChatLlmClient):
         JSON conforming to ``schema`` (e.g. an ``enum`` of real column names, so
         it cannot hallucinate a field). Parses ``message.content`` and returns it
         as a dict. Raises ``ChatLlmError`` on a non-2xx status or when the
-        content is not valid JSON.
+        content is not valid JSON. ``reasoning_effort`` is vLLM-only: thinking is
+        off here.
         """
         payload: dict[str, Any] = {
             "model": model or self._default_model,

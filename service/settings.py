@@ -131,6 +131,16 @@ class Settings(BaseSettings):
     urban_api_base_url: str = Field(default="")
     urban_api_timeout_seconds: float = Field(default=30.0)
 
+    # ── NormGraph zone regulations ───────────────────────────────────────────
+    # The ВРИ check (POST /pzz/regulations/check-vri) takes the ПЗЗ of a territory
+    # from NormGraph, called with the Keycloak service token above. Empty => the
+    # check is unavailable (503); the scenario checks never use it.
+    normgraph_base_url: str = Field(default="")
+    normgraph_timeout_seconds: float = Field(default=30.0)
+    # Norm documents the placement check ignores (``;``-separated names): test
+    # corpora loaded next to the real norms carry contradictory values.
+    placement_excluded_norm_documents: str = Field(default="Тестовые Нормы")
+
     fileserver_endpoint: str = Field(default="")
     fileserver_access_key: str = Field(default="")
     fileserver_secret_key: str = Field(default="")
@@ -188,6 +198,9 @@ class Settings(BaseSettings):
     chat_system_prompt_scenario_path: str = Field(
         default="data/chat_system_prompt_scenario.txt"
     )
+    chat_system_prompt_placement_path: str = Field(
+        default="data/chat_system_prompt_placement.txt"
+    )
 
     # ── Geo-layer download links ─────────────────────────────────────────────
     # Result GeoJSON layers are offered as links instead of inline payloads.
@@ -243,6 +256,13 @@ def _build_settings_cached() -> Settings:
         ),
         urban_api_base_url=_get_optional_env(config, "URBAN_API_BASE_URL").rstrip("/"),
         urban_api_timeout_seconds=float("600"),
+        normgraph_base_url=_get_optional_env(config, "NORMGRAPH_BASE_URL").rstrip("/"),
+        normgraph_timeout_seconds=float(
+            _get_optional_env(config, "NORMGRAPH_TIMEOUT_SECONDS", "30")
+        ),
+        placement_excluded_norm_documents=_get_optional_env(
+            config, "PLACEMENT_EXCLUDED_NORM_DOCUMENTS", "Тестовые Нормы"
+        ),
         chat_storage_base_url=_get_optional_env(config, "CHAT_STORAGE_BASE_URL").rstrip(
             "/"
         ),
@@ -271,6 +291,11 @@ def _build_settings_cached() -> Settings:
             config,
             "CHAT_SYSTEM_PROMPT_SCENARIO_PATH",
             "data/chat_system_prompt_scenario.txt",
+        ),
+        chat_system_prompt_placement_path=_get_optional_env(
+            config,
+            "CHAT_SYSTEM_PROMPT_PLACEMENT_PATH",
+            "data/chat_system_prompt_placement.txt",
         ),
         keycloak_url=_get_optional_env(config, "KEYCLOAK_URL").rstrip("/"),
         keycloak_realm=_get_optional_env(config, "KEYCLOAK_REALM"),

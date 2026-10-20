@@ -25,6 +25,10 @@ class FakeTask:
     building_service_col: str | None = None
     building_floors_col: str | None = None
     mo_boundaries_data_path: str | None = None
+    placement_vri_code: str | None = None
+    placement_service_name: str | None = None
+    placement_context_path: str | None = None
+    existing_objects_data_path: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
     result_path: str | None = None
@@ -95,6 +99,34 @@ def _settings(tmp_path) -> Settings:
         task_inputs_dir=str(tmp_path / "inputs"),
         default_pzz_zone_labels_path=str(tmp_path / "labels.json"),
         default_vri_classifier_path=str(tmp_path / "classifier.json"),
+    )
+
+
+def test_force_recompute_preserves_new_actual_objects_layer(tmp_path):
+    repo = Repo()
+    paths = {
+        "cadastral_data_path": "cad",
+        "pzz_zones_data_path": "zones",
+        "pzz_zone_vri_labels_path": "labels",
+        "vri_classifier_path": "classifier",
+        "existing_objects_data_path": "minio://inputs/actual-first.geojson",
+    }
+    args = dict(
+        payload=_payload(),
+        settings=_settings(tmp_path),
+        task_repo=repo,
+        event_repo=EventRepo(),
+        enqueue_task=lambda tid: Result(),
+        idempotency_key="objects",
+        input_paths=paths,
+    )
+    first = create_task(**args)
+    assert first.existing_objects_data_path == paths["existing_objects_data_path"]
+    paths["existing_objects_data_path"] = "minio://inputs/actual-updated.geojson"
+    repeated = create_task(**args, force_recompute=True)
+    assert repeated is first
+    assert (
+        repeated.existing_objects_data_path == "minio://inputs/actual-updated.geojson"
     )
 
 
