@@ -162,7 +162,7 @@ def test_task_chat_stream_always_emits_terminal_done(monkeypatch) -> None:
             group_by="zone",
             poll_interval=0.01,
             request=request,
-            app_settings=SimpleNamespace(),
+            app_settings=SimpleNamespace(app_name="pzz"),
             initial={"external_id": "ext-1"},
             user_id=None,
             user_query="q",
@@ -330,7 +330,7 @@ def _run_finished_chat_stream(monkeypatch, result_layers, **generator_kwargs):
             group_by="zone",
             poll_interval=0.01,
             request=request,
-            app_settings=SimpleNamespace(),
+            app_settings=SimpleNamespace(app_name="pzz"),
             initial={"external_id": "ext-1"},
             user_id=None,
             user_query="q",
@@ -367,9 +367,13 @@ def test_task_chat_stream_persists_input_and_result_layers(monkeypatch) -> None:
         emit_input_files=True,
     )
 
-    assert streamed == ["input_cadastral", "input_zones", "classified_result"]
+    assert streamed == ["input_cadastral", "input_zones", "classified_result", "report"]
     assert [part["name"] for part in file_parts] == streamed
-    assert all("download_url" not in part for part in file_parts)
+    assert all(
+        "download_url" not in part
+        for part in file_parts
+        if part.get("role") != "report"
+    )
 
 
 def test_task_chat_stream_uses_custom_input_layers_builder(monkeypatch) -> None:
@@ -380,7 +384,7 @@ def test_task_chat_stream_uses_custom_input_layers_builder(monkeypatch) -> None:
         input_layers_builder=lambda *a: [_geo_layer("functional_zones", "input")],
     )
 
-    assert streamed == ["functional_zones", "classified_result"]
+    assert streamed == ["functional_zones", "classified_result", "report"]
     assert [part["name"] for part in file_parts] == streamed
 
 

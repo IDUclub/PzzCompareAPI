@@ -22,6 +22,12 @@ from ..application.use_cases.chat_answer import (
     load_vri_names,
     stream_chat_answer,
 )
+from ..application.use_cases.service_reports import (
+    descriptor,
+    file_part,
+    report_text,
+    text_response,
+)
 from ..db import session_scope
 from ..dependencies import (
     build_chat_storage_client,
@@ -928,6 +934,15 @@ async def task_stream_with_chat_generator(
                             yield ServerSentEvent(
                                 data=json.dumps({"error": exc.detail}), event="error"
                             )
+
+                    geo_layers.append(
+                        descriptor(
+                            app_settings.app_name,
+                            "",
+                            external_id,
+                            "Отчёт о работе сервиса ПЗЗ",
+                        )
+                    )
                     for geo_layer in geo_layers:
                         yield ServerSentEvent(
                             data=json.dumps({"type": "file", "content": geo_layer}),
@@ -1442,6 +1457,9 @@ def geo_layer_to_file_part(layer: dict[str, Any]) -> dict[str, Any]:
     Stores only the durable ``url`` (streamed through the API); ``download_url``
     is always None and is not persisted into chat history.
     """
+    if layer.get("role") == "report":
+
+        return file_part(layer)
     return {
         "url": layer["url"],
         "name": layer.get("name"),
@@ -2636,3 +2654,32 @@ def build_placement_summary_response(
         "summary": summary,
         "chat_message": _build_chat_message_placement(summary),
     }
+
+
+@router.get("/reports/{external_id}", summary="Открыть или скачать полный отчёт ПЗЗ")
+def service_report(
+    external_id: str,
+    download: bool = False,
+    task_repo: TaskRepository = Depends(get_task_repo),
+    app_settings: Settings = Depends(get_app_settings),
+):
+
+    task = get_task_or_404(external_id, task_repo)
+    if _is_placement_result(task):
+        report = build_placement_summary_response(task, external_id, app_settings)
+    elif task.include_pzz_check is False:
+        report = build_classify_summary_response(task, external_id, app_settings)
+    else:
+        report = build_object_zone_fit_response(
+            task,
+            external_id,
+            "object",
+            app_settings,
+            scenario=_is_scenario_task(external_id, task_repo),
+        )
+    return text_response(
+        report_text(
+            "Отчёт о работе сервиса ПЗЗ", report.get("chat_message") or "", report
+        ),
+        download,
+    )
