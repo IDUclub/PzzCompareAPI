@@ -91,6 +91,9 @@ _CADASTRAL_VRI_COL = "vri_text"
 _PZZ_ZONE_CODE_COL = "zone_code"
 _PZZ_ZONE_NAME_COL = SCENARIO_ZONE_NAME_COL
 _SCENARIO_IDEMPOTENCY_PREFIX = "sc:"
+# urban_api physical_object_type ids: 4 = жилой дом (the default), 5 = нежилое здание.
+_RESIDENTIAL_PO_TYPE = 4
+NON_RESIDENTIAL_PO_TYPE = 5
 
 
 def _scenario_id_from_idempotency_key(key: str | None) -> int | None:
@@ -471,6 +474,36 @@ async def _build_scenario_classification_task(
                 error=str(exc),
             )
             services_fc = {}
+
+        has_services = any(
+            f.get("geometry") is not None
+            for f in ((services_fc or {}).get("features") or [])
+        )
+        if (
+            not (objects_fc.get("features") or [])
+            and not has_services
+            and physical_object_type_id == _RESIDENTIAL_PO_TYPE
+        ):
+            # No houses and no services: check the non-residential buildings
+            # instead of failing. Their ВРИ is unknown without services, so
+            # they come out as «Не определено» — the user still sees them.
+            try:
+                objects_fc = await urban.get_physical_objects_with_geometry(
+                    scenario_id,
+                    physical_object_type_id=NON_RESIDENTIAL_PO_TYPE,
+                    token=token,
+                )
+            except UrbanApiError as exc:
+                raise HTTPException(
+                    status_code=502, detail=f"urban_api: {exc}"
+                ) from exc
+            api_log(
+                "create_task",
+                "non_residential_fallback",
+                mode="scenario_classify",
+                scenario_id=scenario_id,
+                objects=len(objects_fc.get("features") or []),
+            )
 
     service_features = [
         f

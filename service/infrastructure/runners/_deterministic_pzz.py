@@ -43,6 +43,7 @@ VERDICT_RU = {
     "allowed_auxiliary": "Разрешен как вспомогательный",
     "not_allowed": "Не разрешен",
     "unclear": "Требуется ручная проверка",
+    "vri_undetermined": "Не определено",
     "no_actual_zone": "Нет пересечения с ПЗЗ",
     "no_zone_metadata": "Нет описания зоны в шаблоне",
 }

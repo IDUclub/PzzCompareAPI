@@ -49,6 +49,24 @@ logger = logging.getLogger("service.tasks")
 
 _FLOORS_FIELD = "Количество этажей"
 _RESIDENTIAL_PO_TYPE = 4  # urban_api "жилой дом"
+NON_RESIDENTIAL_PO_TYPE = 5  # urban_api "нежилое здание"
+
+_NON_RESIDENTIAL_BASIS = (
+    "нежилое здание — тип использования не определить по типу объекта, "
+    "его задают сервисы в здании"
+)
+_NON_RESIDENTIAL_REASON = (
+    "Нежилое здание: вид разрешённого использования не определён — по типу "
+    "объекта его не установить, а сервисов в здании в сценарии нет."
+)
+
+
+def _po_type_id(props: dict[str, Any]) -> int | None:
+    raw = (props.get("physical_object_type") or {}).get("physical_object_type_id")
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 class DeterministicScenarioRunner(PipelineRunner):
@@ -102,6 +120,8 @@ class DeterministicScenarioRunner(PipelineRunner):
         po_type = int(po_type)
         code, name = resolve_po_type_vri(self._po2vri, po_type, floors)
         if not code:
+            if po_type == NON_RESIDENTIAL_PO_TYPE:
+                return None, None, _NON_RESIDENTIAL_BASIS, CATEGORY_BUILDING
             return None, None, "", CATEGORY_BUILDING
         if po_type == _RESIDENTIAL_PO_TYPE:
             floors_txt = (
@@ -149,6 +169,12 @@ class DeterministicScenarioRunner(PipelineRunner):
             machine_verdict, reason, mcode, _ = compute_verdict(
                 vri, fz, self._zone_allowed, self._zone_nick, zone_label=zone_name
             )
+            if (
+                machine_verdict == "unclear"
+                and not isinstance(old_props.get("service_type"), dict)
+                and _po_type_id(old_props) == NON_RESIDENTIAL_PO_TYPE
+            ):
+                machine_verdict, reason = "vri_undetermined", _NON_RESIDENTIAL_REASON
             feature["properties"] = clean_result_properties(
                 vri_text=old_props.get(vri_col),
                 fz_type_id=fz,
