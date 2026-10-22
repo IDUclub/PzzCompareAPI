@@ -812,7 +812,9 @@ async def _build_scenario_placement_task(
         "Буферы построены от геометрии объектов сценария; результат ориентировочный."
     )
     if vri_classifier is not None:
-        context["notes"].append("Использован загруженный пользователем классификатор ВРИ.")
+        context["notes"].append(
+            "Использован загруженный пользователем классификатор ВРИ."
+        )
     return await run_in_threadpool(
         _persist_and_create_scenario_task,
         objects_fc=objects_fc,
