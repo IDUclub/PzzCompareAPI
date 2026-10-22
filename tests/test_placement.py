@@ -991,3 +991,199 @@ def test_render_detection_narrative_custom_header() -> None:
     )
     assert _PLACEMENT_DETECTION_HEADER in custom
     assert _PLACEMENT_DETECTION_HEADER not in default
+
+
+# --- Scenario mode: the user's own ПЗЗ descriptions / ВРИ classifier ---------
+
+import io  # noqa: E402
+
+from fastapi import UploadFile  # noqa: E402
+
+from service.api import classifier as classifier_api  # noqa: E402
+from service.api import scenarios as scenarios_api  # noqa: E402
+
+_SCENARIO_DESCRIPTIONS = {
+    "functional_zone_mappings": [
+        {
+            "functional_zone_type_id": 4,
+            "averaged_pzz_profile": {"main_vri": [{"vri_code": "3.5.1"}]},
+        }
+    ]
+}
+
+
+def _upload(data: bytes, filename: str = "file.json") -> UploadFile:
+    return UploadFile(file=io.BytesIO(data), filename=filename)
+
+
+def _upload_settings(tmp_path: Path, max_bytes: int = 1_000_000) -> SimpleNamespace:
+    return SimpleNamespace(
+        uploads_dir=str(tmp_path / "uploads"), max_upload_bytes=max_bytes
+    )
+
+
+def _read_files(tmp_path: Path, **kwargs):
+    slots = {
+        "pzz_descriptions_file": None,
+        "pzz_descriptions_upload_id": None,
+        "vri_classifier_file": None,
+        "vri_classifier_upload_id": None,
+    }
+    slots.update(kwargs)
+    return asyncio.run(
+        scenarios_api.read_scenario_regulation_files(
+            **slots, owner_id="u1", app_settings=_upload_settings(tmp_path)
+        )
+    )
+
+
+def test_scenario_regulation_files_are_optional(tmp_path: Path) -> None:
+    assert _read_files(tmp_path) == (None, None)
+
+
+def test_scenario_regulation_files_are_parsed(tmp_path: Path) -> None:
+    descriptions, classifier = _read_files(
+        tmp_path,
+        pzz_descriptions_file=_upload(
+            json.dumps(_SCENARIO_DESCRIPTIONS).encode("utf-8")
+        ),
+        vri_classifier_file=_upload(b'\xef\xbb\xbf[{"code": "3.5.1"}]'),
+    )
+    assert descriptions == _SCENARIO_DESCRIPTIONS
+    assert classifier == [{"code": "3.5.1"}]
+
+
+def test_scenario_regulation_files_by_upload_id(tmp_path: Path, monkeypatch) -> None:
+    stored = tmp_path / "stored" / "descriptions.json"
+    stored.parent.mkdir()
+    stored.write_text(json.dumps(_SCENARIO_DESCRIPTIONS), encoding="utf-8")
+    monkeypatch.setattr(classifier_api, "resolve_upload", lambda *a, **k: stored)
+    descriptions, _ = _read_files(tmp_path, pzz_descriptions_upload_id="abc")
+    assert descriptions == _SCENARIO_DESCRIPTIONS
+    # The scratch copy is cleaned up; the stored upload is kept.
+    assert stored.exists()
+    assert not any((tmp_path / "uploads").glob("resolve-*"))
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        {"zones": []},  # file-mode label JSON — can't match numeric scenario codes
+        {"functional_zone_mappings": []},
+        {"functional_zone_mappings": [{"functional_zone_type_id": "Ж1"}]},
+        [1, 2],
+    ],
+)
+def test_scenario_descriptions_wrong_schema_is_422(tmp_path: Path, doc) -> None:
+    with pytest.raises(HTTPException) as exc:
+        _read_files(
+            tmp_path, pzz_descriptions_file=_upload(json.dumps(doc).encode("utf-8"))
+        )
+    assert exc.value.status_code == 422
+    assert "functional_zone_mappings" in exc.value.detail
+
+
+@pytest.mark.parametrize(
+    "kwargs, status",
+    [
+        ({"vri_classifier_file": _upload(b"{}")}, 422),
+        ({"vri_classifier_file": _upload(b"not json")}, 422),
+        ({"vri_classifier_file": _upload(b"a;b", "classifier.csv")}, 415),
+        ({"pzz_descriptions_file": _upload(b"x", "descriptions.xlsx")}, 415),
+    ],
+)
+def test_scenario_regulation_files_rejected(tmp_path: Path, kwargs, status) -> None:
+    kwargs = {k: _upload(v.file.getvalue(), v.filename) for k, v in kwargs.items()}
+    with pytest.raises(HTTPException) as exc:
+        _read_files(tmp_path, **kwargs)
+    assert exc.value.status_code == status
+
+
+def test_scenario_regulation_file_too_big_is_413(tmp_path: Path) -> None:
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            scenarios_api.read_scenario_regulation_files(
+                pzz_descriptions_file=None,
+                pzz_descriptions_upload_id=None,
+                vri_classifier_file=_upload(b'["' + b"a" * 100 + b'"]'),
+                vri_classifier_upload_id=None,
+                owner_id="u1",
+                app_settings=_upload_settings(tmp_path, max_bytes=10),
+            )
+        )
+    assert exc.value.status_code == 413
+
+
+def test_json_digest_ignores_key_order() -> None:
+    a = scenarios_api._json_digest({"a": 1, "b": [1, 2]})
+    assert a == scenarios_api._json_digest({"b": [1, 2], "a": 1})
+    assert a != scenarios_api._json_digest({"a": 2, "b": [1, 2]})
+
+
+def _persist_scenario_task(tmp_path: Path, monkeypatch, **kwargs) -> dict:
+    persisted: dict[str, object] = {}
+
+    def fake_persist(doc, task_dir, name, external_id, storage):
+        persisted[name] = doc
+        return f"s3://{external_id}/{name}"
+
+    captured: dict = {}
+
+    def fake_create_task(**kw):
+        captured.update(kw)
+        return SimpleNamespace(id=1, external_id="x")
+
+    monkeypatch.setattr(scenarios_api, "persist_geojson_dict", fake_persist)
+    monkeypatch.setattr(scenarios_api, "get_object_storage", lambda: None)
+    monkeypatch.setattr(scenarios_api, "create_task", fake_create_task)
+    monkeypatch.setattr(scenarios_api, "api_log", lambda *a, **k: None)
+    settings = SimpleNamespace(
+        task_inputs_dir=str(tmp_path / "inputs"),
+        default_vri_classifier_path=str(tmp_path / "default_classifier.json"),
+    )
+    session = SimpleNamespace(flush=lambda: None, refresh=lambda task: None)
+    scenarios_api._persist_and_create_scenario_task(
+        objects_fc={"type": "FeatureCollection", "features": []},
+        zones_fc={"type": "FeatureCollection", "features": []},
+        scenario_id=1,
+        year=2024,
+        source="PZZ",
+        physical_object_type_id=0,
+        priority=5,
+        namespaced_key="k",
+        force_recompute=False,
+        app_settings=settings,
+        task_repo=None,
+        event_repo=None,
+        session=session,
+        placement_vri_code="3.5.1",
+        placement_service_name="школа",
+        **kwargs,
+    )
+    return {"persisted": persisted, "input_paths": captured["input_paths"]}
+
+
+def test_scenario_task_uses_uploaded_regulation_files(
+    tmp_path: Path, monkeypatch
+) -> None:
+    out = _persist_scenario_task(
+        tmp_path,
+        monkeypatch,
+        zone_descriptions=_SCENARIO_DESCRIPTIONS,
+        vri_classifier=[{"code": "3.5.1"}],
+    )
+    paths = out["input_paths"]
+    assert paths["pzz_zone_vri_labels_path"].endswith("/pzz_zone_descriptions.json")
+    assert paths["vri_classifier_path"].endswith("/vri_classifier.json")
+    assert out["persisted"]["pzz_zone_descriptions.json"] == _SCENARIO_DESCRIPTIONS
+    assert out["persisted"]["vri_classifier.json"] == [{"code": "3.5.1"}]
+
+
+def test_scenario_task_defaults_without_uploads(tmp_path: Path, monkeypatch) -> None:
+    out = _persist_scenario_task(tmp_path, monkeypatch)
+    paths = out["input_paths"]
+    assert paths["pzz_zone_vri_labels_path"] == ""
+    assert paths["vri_classifier_path"] == str(
+        (tmp_path / "default_classifier.json").resolve()
+    )
+    assert "vri_classifier.json" not in out["persisted"]

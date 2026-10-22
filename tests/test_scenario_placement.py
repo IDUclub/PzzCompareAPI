@@ -305,6 +305,10 @@ def test_chat_placement_preserves_project_and_uses_placement_report(monkeypatch)
             poll_interval=2,
             idempotency_key_form=None,
             idempotency_key_header=None,
+            pzz_descriptions_file=None,
+            pzz_descriptions_upload_id=None,
+            vri_classifier_file=None,
+            vri_classifier_upload_id=None,
             user=AuthUser(token="t", user_id="u"),
             app_settings=SimpleNamespace(
                 chat_system_prompt_placement_path="placement-prompt"
