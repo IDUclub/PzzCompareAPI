@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Any, AsyncIterator
 from uuid import uuid4
@@ -23,12 +24,14 @@ from uuid import uuid4
 from fastapi import (
     APIRouter,
     Depends,
+    File,
     Form,
     Header,
     HTTPException,
     Path as FastPath,
     Query,
     Request as FastRequest,
+    UploadFile,
 )
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -59,7 +62,8 @@ from ..schemas import TaskCreate, TaskEventOut, TaskOut
 from ..output_version import PIPELINE_OUTPUT_VERSION
 from ..settings import Settings
 from ..tasks import enqueue_pipeline_task, execute_pipeline_task
-from .classifier import _placement_context, persist_geojson_dict
+from ..application.use_cases.uploads import uploads_root
+from .classifier import _placement_context, _resolve_file_slot, persist_geojson_dict
 from ..application.use_cases.resolve_service_vri import resolve_service_vri
 from fastapi.concurrency import run_in_threadpool
 
@@ -77,8 +81,8 @@ from .tasks import (
     task_stream_with_chat_generator,
     task_stream_with_report_generator,
 )
-from .security import AuthUser, get_current_user, verify_token
-from .utils import api_log
+from .security import AuthUser, get_current_user, get_optional_user, verify_token
+from .utils import api_log, field_title
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
 
@@ -87,6 +91,9 @@ _CADASTRAL_VRI_COL = "vri_text"
 _PZZ_ZONE_CODE_COL = "zone_code"
 _PZZ_ZONE_NAME_COL = SCENARIO_ZONE_NAME_COL
 _SCENARIO_IDEMPOTENCY_PREFIX = "sc:"
+# urban_api physical_object_type ids: 4 = жилой дом (the default), 5 = нежилое здание.
+_RESIDENTIAL_PO_TYPE = 4
+NON_RESIDENTIAL_PO_TYPE = 5
 
 
 def _scenario_id_from_idempotency_key(key: str | None) -> int | None:
@@ -227,8 +234,14 @@ def _persist_and_create_scenario_task(
     placement_vri_code: str | None = None,
     placement_service_name: str | None = None,
     placement_context: dict[str, Any] | None = None,
+    zone_descriptions: dict[str, Any] | None = None,
+    vri_classifier: dict[str, Any] | list[Any] | None = None,
 ) -> PipelineTask:
     """Flatten inputs, persist GeoJSON to storage, and create the task.
+
+    ``zone_descriptions`` / ``vri_classifier`` are the user's own optional
+    regulation files (already parsed and validated); when given they replace the
+    built-in functional-zone mapping and ВРИ classifier for this task.
 
     Synchronous and I/O-heavy (three MinIO writes); intended to run in a
     threadpool so the API event loop stays responsive under concurrent submits.
@@ -265,21 +278,34 @@ def _persist_and_create_scenario_task(
     scenario_labels = build_pipeline_zone_labels(
         observed_zone_types=observed_zone_types
     )
-    stored_labels = (
-        ""
-        if placement_vri_code
-        else persist_geojson_dict(
+    if zone_descriptions is not None:
+        stored_labels = persist_geojson_dict(
+            zone_descriptions,
+            task_dir,
+            "pzz_zone_descriptions.json",
+            external_id,
+            storage,
+        )
+    elif placement_vri_code:
+        stored_labels = ""
+    else:
+        stored_labels = persist_geojson_dict(
             scenario_labels, task_dir, "pzz_zone_vri_labels.json", external_id, storage
         )
-    )
+    if vri_classifier is not None:
+        stored_classifier = persist_geojson_dict(
+            vri_classifier, task_dir, "vri_classifier.json", external_id, storage
+        )
+    else:
+        stored_classifier = str(
+            Path(app_settings.default_vri_classifier_path).resolve()
+        )
 
     input_paths = {
         "cadastral_data_path": stored_cadastral,
         "pzz_zones_data_path": stored_pzz_zones,
         "pzz_zone_vri_labels_path": stored_labels,
-        "vri_classifier_path": str(
-            Path(app_settings.default_vri_classifier_path).resolve()
-        ),
+        "vri_classifier_path": stored_classifier,
     }
     if placement_context is not None:
         input_paths["placement_context_path"] = persist_geojson_dict(
@@ -449,6 +475,36 @@ async def _build_scenario_classification_task(
             )
             services_fc = {}
 
+        has_services = any(
+            f.get("geometry") is not None
+            for f in ((services_fc or {}).get("features") or [])
+        )
+        if (
+            not (objects_fc.get("features") or [])
+            and not has_services
+            and physical_object_type_id == _RESIDENTIAL_PO_TYPE
+        ):
+            # No houses and no services: check the non-residential buildings
+            # instead of failing. Their ВРИ is unknown without services, so
+            # they come out as «Не определено» — the user still sees them.
+            try:
+                objects_fc = await urban.get_physical_objects_with_geometry(
+                    scenario_id,
+                    physical_object_type_id=NON_RESIDENTIAL_PO_TYPE,
+                    token=token,
+                )
+            except UrbanApiError as exc:
+                raise HTTPException(
+                    status_code=502, detail=f"urban_api: {exc}"
+                ) from exc
+            api_log(
+                "create_task",
+                "non_residential_fallback",
+                mode="scenario_classify",
+                scenario_id=scenario_id,
+                objects=len(objects_fc.get("features") or []),
+            )
+
     service_features = [
         f
         for f in ((services_fc or {}).get("features") or [])
@@ -530,6 +586,135 @@ def _placement_object_texts(
     return fc
 
 
+_JSON_EXTENSIONS = frozenset({".json", ""})
+
+
+def _read_json_slot(
+    upload: UploadFile | None,
+    upload_id: str | None,
+    field_name: str,
+    *,
+    owner_id: str,
+    app_settings: Settings,
+) -> Any | None:
+    """Read one optional JSON upload slot (inline file or ``upload_id``).
+
+    Returns the parsed JSON, or ``None`` when the slot is empty. Synchronous —
+    run it in a threadpool.
+    """
+    if upload is None and not upload_id:
+        return None
+    title = field_title(field_name)
+    scratch = uploads_root(app_settings) / f"resolve-{uuid4().hex}"
+    try:
+        resolved = _resolve_file_slot(
+            upload,
+            upload_id,
+            field_name,
+            required=False,
+            owner_id=owner_id,
+            app_settings=app_settings,
+            scratch=scratch,
+        )
+        if resolved is None:
+            return None
+        suffix = Path(resolved.filename or "").suffix.lower()
+        if suffix not in _JSON_EXTENSIONS:
+            raise HTTPException(
+                status_code=415,
+                detail=f"{title}: в режиме проекта принимается только JSON.",
+            )
+        try:
+            resolved.file.seek(0)
+            raw = resolved.file.read(app_settings.max_upload_bytes + 1)
+        finally:
+            if upload_id:
+                # Our own copy in the scratch dir; close it so rmtree can delete it.
+                resolved.file.close()
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    if len(raw) > app_settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail=f"{title}: файл слишком большой.")
+    try:
+        return json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=422, detail=f"{title}: некорректный JSON ({exc})."
+        ) from exc
+
+
+def _validate_scenario_zone_descriptions(doc: Any) -> dict[str, Any]:
+    """Scenario zones are coded by ``functional_zone_type`` id, so only the
+    ``functional_zone_mappings`` schema can match them. The worker would
+    silently fall back to the built-in mapping on anything else, so refuse it."""
+    entries = doc.get("functional_zone_mappings") if isinstance(doc, dict) else None
+    usable = [
+        e
+        for e in (entries if isinstance(entries, list) else [])
+        if isinstance(e, dict)
+        and str(e.get("functional_zone_type_id", "")).strip().isdigit()
+        and isinstance(e.get("averaged_pzz_profile"), dict)
+    ]
+    if not usable:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Описания зон ПЗЗ: в режиме проекта нужен JSON со списком "
+                "«functional_zone_mappings» — записи с functional_zone_type_id и "
+                "averaged_pzz_profile (main_vri / conditional_vri / auxiliary_vri), "
+                "как во встроенном functional_zones_to_pzz_mapping.json."
+            ),
+        )
+    return doc
+
+
+def _validate_vri_classifier(doc: Any) -> dict[str, Any] | list[Any]:
+    if not isinstance(doc, (dict, list)) or not doc:
+        raise HTTPException(
+            status_code=422,
+            detail="Классификатор ВРИ: ожидается непустой JSON-объект или массив.",
+        )
+    return doc
+
+
+async def read_scenario_regulation_files(
+    *,
+    pzz_descriptions_file: UploadFile | None,
+    pzz_descriptions_upload_id: str | None,
+    vri_classifier_file: UploadFile | None,
+    vri_classifier_upload_id: str | None,
+    owner_id: str,
+    app_settings: Settings,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | list[Any] | None]:
+    """The user's optional ПЗЗ descriptions and ВРИ classifier, validated."""
+    descriptions = await run_in_threadpool(
+        _read_json_slot,
+        pzz_descriptions_file,
+        pzz_descriptions_upload_id,
+        "pzz_descriptions_file",
+        owner_id=owner_id,
+        app_settings=app_settings,
+    )
+    classifier = await run_in_threadpool(
+        _read_json_slot,
+        vri_classifier_file,
+        vri_classifier_upload_id,
+        "vri_classifier_file",
+        owner_id=owner_id,
+        app_settings=app_settings,
+    )
+    if descriptions is not None:
+        descriptions = _validate_scenario_zone_descriptions(descriptions)
+    if classifier is not None:
+        classifier = _validate_vri_classifier(classifier)
+    return descriptions, classifier
+
+
+def _json_digest(doc: Any) -> str:
+    canonical = json.dumps(doc, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
 async def _build_scenario_placement_task(
     *,
     scenario_id: int,
@@ -546,6 +731,8 @@ async def _build_scenario_placement_task(
     task_repo: TaskRepository,
     event_repo: EventRepository,
     session: Session,
+    zone_descriptions: dict[str, Any] | None = None,
+    vri_classifier: dict[str, Any] | list[Any] | None = None,
 ) -> PipelineTask:
     if not service_name.strip():
         raise HTTPException(
@@ -594,6 +781,12 @@ async def _build_scenario_placement_task(
                 f":upd-{(info or {}).get('updated_at', 'unknown')}"
                 f":m-{mapping_version()}:pv-{PIPELINE_OUTPUT_VERSION}"
             )
+            # The user's own regulation files change the answer, so they
+            # must change the cache key too.
+            if zone_descriptions is not None:
+                namespaced_key += f":d-{_json_digest(zone_descriptions)}"
+            if vri_classifier is not None:
+                namespaced_key += f":c-{_json_digest(vri_classifier)}"
             raw_key = idempotency_key_header or idempotency_key_form
             if raw_key:
                 namespaced_key += f":{raw_key}"
@@ -641,12 +834,20 @@ async def _build_scenario_placement_task(
         norms_only=True,
     )
     context["input_kind"] = "scenario_objects"
+    mapping_note = (
+        "по загруженным пользователем описаниям функциональных зон"
+        if zone_descriptions is not None
+        else "по справочному соответствию функциональных зон видам использования"
+    )
     context["notes"].append(
         "Использованы функциональные зоны и объекты сценария Urban API, а не кадастровые "
-        "участки. Допустимость оценена по справочному соответствию функциональных зон "
-        "видам использования, а не по границам зон ПЗЗ. Буферы построены от геометрии "
-        "объектов сценария; результат ориентировочный."
+        f"участки. Допустимость оценена {mapping_note}, а не по границам зон ПЗЗ. "
+        "Буферы построены от геометрии объектов сценария; результат ориентировочный."
     )
+    if vri_classifier is not None:
+        context["notes"].append(
+            "Использован загруженный пользователем классификатор ВРИ."
+        )
     return await run_in_threadpool(
         _persist_and_create_scenario_task,
         objects_fc=objects_fc,
@@ -665,6 +866,8 @@ async def _build_scenario_placement_task(
         placement_vri_code=resolved.code,
         placement_service_name=resolved.service_name or service_name,
         placement_context=context,
+        zone_descriptions=zone_descriptions,
+        vri_classifier=vri_classifier,
     )
 
 
@@ -679,7 +882,12 @@ async def place_service_in_scenario_endpoint(
     force_recompute: bool = Form(False),
     idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
     idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    pzz_descriptions_file: UploadFile | None = File(default=None),
+    pzz_descriptions_upload_id: str | None = Form(default=None),
+    vri_classifier_file: UploadFile | None = File(default=None),
+    vri_classifier_upload_id: str | None = Form(default=None),
     token: str = Depends(verify_token),
+    user: AuthUser | None = Depends(get_optional_user),
     app_settings: Settings = Depends(get_app_settings),
     task_repo: TaskRepository = Depends(get_task_repo),
     event_repo: EventRepository = Depends(get_event_repo),
@@ -689,7 +897,23 @@ async def place_service_in_scenario_endpoint(
 
     Uses the functional-zone reference mapping and NormGraph service norms.
     Physical objects are an approximate substitute for cadastral parcels.
+
+    Optional, like the file-mode endpoints (each as a file or an ``*_upload_id``):
+
+    * ``pzz_descriptions_file`` — your own zone descriptions instead of the
+      built-in mapping. Scenario zones are keyed by ``functional_zone_type`` id,
+      so it must be JSON in the ``functional_zone_mappings`` schema (same as
+      ``functional_zones_to_pzz_mapping.json``).
+    * ``vri_classifier_file`` — your own ВРИ classifier JSON.
     """
+    zone_descriptions, vri_classifier = await read_scenario_regulation_files(
+        pzz_descriptions_file=pzz_descriptions_file,
+        pzz_descriptions_upload_id=pzz_descriptions_upload_id,
+        vri_classifier_file=vri_classifier_file,
+        vri_classifier_upload_id=vri_classifier_upload_id,
+        owner_id=user.user_id if user else "",
+        app_settings=app_settings,
+    )
     task = await _build_scenario_placement_task(
         scenario_id=scenario_id,
         year=year,
@@ -705,6 +929,8 @@ async def place_service_in_scenario_endpoint(
         task_repo=task_repo,
         event_repo=event_repo,
         session=session,
+        zone_descriptions=zone_descriptions,
+        vri_classifier=vri_classifier,
     )
     session.commit()
     return TaskOut.model_validate(task)
@@ -877,6 +1103,10 @@ async def scenario_chat_stream_endpoint(
     poll_interval: float = Query(2.0, ge=0.5, le=10.0),
     idempotency_key_form: str | None = Form(default=None, alias="Idempotency-Key"),
     idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    pzz_descriptions_file: UploadFile | None = File(default=None),
+    pzz_descriptions_upload_id: str | None = Form(default=None),
+    vri_classifier_file: UploadFile | None = File(default=None),
+    vri_classifier_upload_id: str | None = Form(default=None),
     user: AuthUser = Depends(get_current_user),
     app_settings: Settings = Depends(get_app_settings),
     task_repo: TaskRepository = Depends(get_task_repo),
@@ -889,6 +1119,9 @@ async def scenario_chat_stream_endpoint(
     scenario objects, and emits ``placement_summary`` and placement map layers.
     Functional zones use the reference mapping; NormGraph supplies service norms.
     ``physical_object_type_id`` only filters the default ``pzz_check`` mode.
+    Placement also takes the optional ``pzz_descriptions_file`` /
+    ``vri_classifier_file`` (or their ``*_upload_id``), as
+    ``POST /scenarios/{scenario_id}/placement`` does.
 
     One call: builds (or reuses a cached) classification task, waits for it to
     finish, then streams an LLM answer to ``user_query`` grounded in the
@@ -922,6 +1155,14 @@ async def scenario_chat_stream_endpoint(
         )
 
     if mode == "placement":
+        zone_descriptions, vri_classifier = await read_scenario_regulation_files(
+            pzz_descriptions_file=pzz_descriptions_file,
+            pzz_descriptions_upload_id=pzz_descriptions_upload_id,
+            vri_classifier_file=vri_classifier_file,
+            vri_classifier_upload_id=vri_classifier_upload_id,
+            owner_id=user.user_id,
+            app_settings=app_settings,
+        )
         task = await _build_scenario_placement_task(
             scenario_id=scenario_id,
             year=year,
@@ -937,6 +1178,8 @@ async def scenario_chat_stream_endpoint(
             task_repo=task_repo,
             event_repo=event_repo,
             session=session,
+            zone_descriptions=zone_descriptions,
+            vri_classifier=vri_classifier,
         )
         session.commit()
         project_id = await _fetch_project_id(scenario_id, user.token, app_settings)
