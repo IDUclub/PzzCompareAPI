@@ -59,6 +59,14 @@ from ..infrastructure.runners.placement_pzz_runner import (
     is_szz_sensitive,
 )
 from ..infrastructure.storage import get_object_storage, is_remote_path
+from ..infrastructure.scenario_cadastre import (
+    CADASTRE_CHECK_KEY,
+    PARCEL_IDS,
+    PARCEL_VRI,
+    PARCEL_CODES,
+    PARCEL_VERDICT,
+    PARCEL_REASON,
+)
 from ..models import PipelineTask, TaskEvent, TaskStatus
 
 _TERMINAL_STATUSES = {TaskStatus.finished, TaskStatus.failed}
@@ -1429,7 +1437,7 @@ def build_scenario_zone_geo_layers(
     app_settings: Settings,
     request: Request | None = None,
 ) -> list[dict[str, Any]]:
-    """Input layer for a scenario task: its urban_api functional zones only.
+    """Scenario functional zones and the optional uploaded cadastral layer.
 
     The scenario's physical objects are not surfaced as an input layer — every
     one of them is already in the result layer, together with its verdict.
@@ -1437,7 +1445,7 @@ def build_scenario_zone_geo_layers(
     if not task.pzz_zones_data_path:
         return []
     title, filename = _SCENARIO_ZONES_LABEL
-    return [
+    layers = [
         {
             "name": "functional_zones",
             "title": title,
@@ -1449,6 +1457,22 @@ def build_scenario_zone_geo_layers(
             "source_service": app_settings.app_name,
         }
     ]
+    if getattr(task, "existing_objects_data_path", None):
+        title, filename = _SLOT_LABELS["cadastral"]
+        layer = _build_geo_layer(
+            slot="cadastral",
+            name="input_cadastral",
+            title=title,
+            filename=filename,
+            role="input",
+            stored_path=task.cadastral_data_path,
+            external_id=external_id,
+            app_settings=app_settings,
+            request=request,
+        )
+        if layer is not None:
+            layers.append(layer)
+    return layers
 
 
 def geo_layer_to_file_part(layer: dict[str, Any]) -> dict[str, Any]:
@@ -1945,14 +1969,21 @@ def _reconciled_intro(
     parcel = subject == SUBJECT_PARCEL
     use = "ВРИ" if parcel else "Тип использования"
     use_genitive = "ВРИ" if parcel else "типа использования"
+    requirements = "его территориальной зоны ПЗЗ"
+    wrong_target = "зоне ПЗЗ"
+    correct_note = "нарушений ПЗЗ нет"
+    if summary.get("cadastre_used"):
+        requirements += " и ВРИ покрывающих объект кадастровых участков"
+        wrong_target += " или ВРИ кадастрового участка"
+        correct_note = "соответствует ПЗЗ и ВРИ кадастровых участков"
     return [
         definition + "землепользования и застройки.",
         "",
         intro,
         f"Результат проверки соответствия {use_genitive} каждого {item_dative} правилам "
-        f"его территориальной зоны ПЗЗ ({correct} + {wrong} + {unclear} = {total}):",
-        f"- {use} допустим, нарушений ПЗЗ нет: {correct};",
-        f"- {use} не соответствует зоне ПЗЗ (потенциальное нарушение): {wrong};",
+        f"{requirements} ({correct} + {wrong} + {unclear} = {total}):",
+        f"- {use} допустим, {correct_note}: {correct};",
+        f"- {use} не соответствует {wrong_target} (потенциальное нарушение): {wrong};",
         f"- требуют ручной проверки: {unclear}.",
     ]
 
@@ -1979,7 +2010,9 @@ def _build_chat_message_objects(
                     "Объекты (здания и сервисы) с недопустимым в их зоне ПЗЗ типом использования:"
                 ),
                 SUBJECT_SCENARIO_OBJECT: (
-                    "Объекты сценария с недопустимым в их зоне ПЗЗ типом использования:"
+                    "Объекты сценария с несоответствием ПЗЗ или ВРИ кадастровых участков:"
+                    if summary.get("cadastre_used")
+                    else "Объекты сценария с недопустимым в их зоне ПЗЗ типом использования:"
                 ),
             }.get(subject, "Земельные участки с недопустимым в их зоне ВРИ:"),
         ]
@@ -1994,7 +2027,11 @@ def _build_chat_message_objects(
             if subject == SUBJECT_PARCEL:
                 tail = "земельных участков с недопустимым в их зоне ВРИ."
             else:
-                tail = "объектов с недопустимым в их зоне ПЗЗ типом использования."
+                tail = (
+                    "объектов с несоответствием ПЗЗ или ВРИ кадастровых участков."
+                    if summary.get("cadastre_used")
+                    else "объектов с недопустимым в их зоне ПЗЗ типом использования."
+                )
             lines.append(f"...и ещё {len(wrong) - 10} {tail}")
     elif not summary["unclear"]:
         lines += [
@@ -2125,6 +2162,17 @@ def build_object_zone_fit_response(
                     "category": _building_feature_category(props),
                 }
             )
+            if PARCEL_VERDICT in props:
+                rows[-1]["cadastre"] = {
+                    key: props.get(key)
+                    for key in (
+                        PARCEL_IDS,
+                        PARCEL_VRI,
+                        PARCEL_CODES,
+                        PARCEL_VERDICT,
+                        PARCEL_REASON,
+                    )
+                }
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -2173,6 +2221,9 @@ def build_object_zone_fit_response(
     overlap_counts = _overlap_counts(members)
     if overlap_counts is not None:
         summary["overlaps"] = overlap_counts
+    if CADASTRE_CHECK_KEY in members:
+        summary["cadastre_used"] = True
+        summary[CADASTRE_CHECK_KEY] = members[CADASTRE_CHECK_KEY]
 
     if group_by == "object":
         return {
@@ -2602,8 +2653,13 @@ def _build_chat_message_placement(summary: dict[str, Any]) -> str:
     lines.append("")
     lines.extend(_placement_cadastre_lines(summary))
     if summary.get("existing_objects_used"):
+        object_source = (
+            "по объектам сценария"
+            if summary.get("existing_objects_source") == "scenario"
+            else "по отдельному файлу"
+        )
         lines.append(
-            f"Существующие объекты определены по отдельному файлу: объектов целевого типа — {summary.get('existing_objects_count', 0)}. Предположения по кадастру для A*/B* не использовались."
+            f"Существующие объекты определены {object_source}: объектов целевого типа — {summary.get('existing_objects_count', 0)}. Предположения по кадастру для A*/B* не использовались."
         )
     lines.extend(_placement_norm_lines(summary.get("norms") or []))
 

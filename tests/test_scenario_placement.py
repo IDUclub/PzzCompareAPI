@@ -170,11 +170,19 @@ def test_classification_regulations_are_persisted_and_isolate_cache(flow):
         {"zone_descriptions": descriptions},
         {"vri_classifier": classifier},
         {"zone_descriptions": descriptions, "vri_classifier": classifier},
+        {"cadastral_fc": {"type": "FeatureCollection", "features": []}},
+        {
+            "cadastral_fc": {
+                "type": "FeatureCollection",
+                "features": [feature(vri_text="2.1")],
+            }
+        },
     ]:
         asyncio.run(mod._build_scenario_classification_task(**args, **extra))
         captured = flow.captured[-1]
         assert captured["zone_descriptions"] == extra.get("zone_descriptions")
         assert captured["vri_classifier"] == extra.get("vri_classifier")
+        assert captured["cadastral_fc"] == extra.get("cadastral_fc")
         key = captured["namespaced_key"]
         assert key not in cache
         cache[key] = SimpleNamespace(id=1, external_id=key)
@@ -182,8 +190,28 @@ def test_classification_regulations_are_persisted_and_isolate_cache(flow):
             asyncio.run(mod._build_scenario_classification_task(**args, **extra))
             is cache[key]
         )
-    assert len(flow.captured) == 4
-    assert len(flow.calls) == 8  # Access is checked even for cached results.
+    assert len(flow.captured) == 6
+    assert len(flow.calls) == 12  # Access is checked even for cached results.
+
+
+def test_scenario_placement_cadastre_is_separate_and_changes_cache(flow):
+    for cadastre in [
+        None,
+        {"features": [feature(vri_text="2.1")]},
+        {"features": [feature(vri_text="6.9")]},
+    ]:
+        flow.run(cadastral_fc=cadastre)
+    assert len({args["namespaced_key"] for args in flow.captured}) == 3
+    for args in flow.captured[1:]:
+        assert args["placement_context"]["input_kind"] == "scenario_with_cadastre"
+        assert args["cadastral_fc"]["features"][0]["properties"]["vri_text"] in {
+            "2.1",
+            "6.9",
+        }
+        assert all(
+            f["properties"]["placement_object_type"]
+            for f in args["objects_fc"]["features"]
+        )
 
 
 def test_scenario_cache_never_bypasses_access_check(flow):
@@ -353,6 +381,9 @@ def test_chat_placement_preserves_project_and_uses_placement_report(monkeypatch)
             pzz_descriptions_upload_id=None,
             vri_classifier_file=None,
             vri_classifier_upload_id=None,
+            cadastral_feature_collection_file=None,
+            cadastral_feature_collection_upload_id=None,
+            cadastral_vri_col=None,
             user=AuthUser(token="t", user_id="u"),
             app_settings=SimpleNamespace(
                 chat_system_prompt_placement_path="placement-prompt"

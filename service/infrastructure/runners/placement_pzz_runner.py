@@ -764,12 +764,20 @@ class PlacementPzzRunner(PipelineRunner):
             "parcels": parcel_counts,
             "cadastre_used": parcels is not None
             and context.get("input_kind") != "scenario_objects",
-            "scenario_objects_used": parcels is not None
-            and context.get("input_kind") == "scenario_objects",
+            "scenario_objects_used": (
+                parcels is not None
+                and context.get("input_kind") == "scenario_objects"
+                or bool(request.existing_objects_data_path)
+                and context.get("input_kind") == "scenario_with_cadastre"
+            ),
             "existing_objects_used": bool(request.existing_objects_data_path),
             "existing_objects_count": len(existing) if existing is not None else 0,
             "existing_objects_source": (
-                "upload"
+                (
+                    "scenario"
+                    if context.get("input_kind") == "scenario_with_cadastre"
+                    else "upload"
+                )
                 if request.existing_objects_data_path
                 else (
                     "scenario"
