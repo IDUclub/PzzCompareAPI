@@ -163,6 +163,8 @@ def _extract_problem_objects(
         }
         if obj.get("category"):
             item["Категория_объекта"] = obj["category"]
+        if obj.get("cadastre"):
+            item["Проверка_по_кадастру"] = obj["cadastre"]
         trimmed.append(item)
     return trimmed
 
