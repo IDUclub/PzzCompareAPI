@@ -72,7 +72,7 @@ def load_system_prompt(path: str) -> str:
 
 @lru_cache(maxsize=4)
 def _load_vri_names_cached(path: str) -> tuple[tuple[str, str], ...]:
-    """Load ``{vri_code: name}`` from a Rosreestr classifier's ``by_code`` block.
+    """Load ``{vri_code: name}`` from ``by_code``, ``entries`` or a JSON list.
 
     Cached; returns a tuple of pairs (hashable). Used to enrich the grounding
     with human-readable ВРИ names, since the deterministic runner leaves
@@ -83,12 +83,19 @@ def _load_vri_names_cached(path: str) -> tuple[tuple[str, str], ...]:
     except (OSError, json.JSONDecodeError):
         return ()
     by_code = data.get("by_code") if isinstance(data, dict) else None
+    if not by_code:
+        entries = data.get("entries") if isinstance(data, dict) else data
+        by_code = {
+            str(entry.get("code") or entry.get("vri_code")): entry
+            for entry in (entries if isinstance(entries, list) else [])
+            if isinstance(entry, dict) and (entry.get("code") or entry.get("vri_code"))
+        }
     if not isinstance(by_code, dict):
         return ()
     pairs: list[tuple[str, str]] = []
     for code, entry in by_code.items():
         if isinstance(entry, dict):
-            name = entry.get("name_plain") or entry.get("name")
+            name = entry.get("name_plain") or entry.get("name") or entry.get("vri_name")
         else:
             name = entry
         if name:

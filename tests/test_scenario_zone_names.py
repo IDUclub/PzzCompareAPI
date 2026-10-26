@@ -1,7 +1,11 @@
 """Project (scenario) zones are named by their own ``name`` first, then by a Russian type label."""
 
 import json
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from service.api.scenarios import _flatten_functional_zone_features
 from service.domain.contracts import PipelineRequest
@@ -155,6 +159,99 @@ def test_scenario_runner_names_each_object_by_its_own_zone(tmp_path):
     ]
     assert "«Квартал А»" in result[0]["Причина"]
     assert all("basic" not in p["Причина"] for p in result)
+
+
+@pytest.mark.parametrize("classifier_shape", ["by_code", "entries", "list"])
+def test_scenario_uploaded_regulations_control_verdict_and_chat_report(
+    tmp_path, classifier_shape
+):
+    from service.api.tasks import build_object_zone_fit_response
+
+    zones = _flatten_functional_zone_features(
+        {"features": [_zone(30.0, "Квартал", _RESIDENTIAL)]},
+        code_col="zone_code",
+        name_col="zone_name",
+    )
+    objects = {"features": [_building(30.005)]}
+    for name, doc in [("objects.json", objects), ("zones.json", zones)]:
+        (tmp_path / name).write_text(json.dumps(doc), encoding="utf-8")
+    entry = {"code": "2.1.1", "name": "Пользовательское название жилья"}
+    classifier = {
+        "by_code": {"by_code": {"2.1.1": entry}},
+        "entries": {"entries": [entry]},
+        "list": [entry],
+    }[classifier_shape]
+    classifier_path = tmp_path / "classifier.json"
+    classifier_path.write_text(json.dumps(classifier), encoding="utf-8")
+    descriptions = {
+        "functional_zone_mappings": [
+            {
+                "functional_zone_type_id": 1,
+                "db_zone_nickname": "Свои правила",
+                "mapping_confidence": "high",
+                "averaged_pzz_profile": {
+                    "allowed_construction_summary": "Жилье разрешено условно",
+                    "conditional_vri": [{"vri_code": "2.1"}],
+                },
+            }
+        ]
+    }
+    descriptions_path = tmp_path / "descriptions.json"
+    descriptions_path.write_text(json.dumps(descriptions), encoding="utf-8")
+    settings = SimpleNamespace(
+        physical_object_type_to_vri_path="data/physical_object_type_to_vri.json",
+        default_fz_to_pzz_mapping_path="data/functional_zones_to_pzz_mapping.json",
+        service_type_to_vri_path="data/service_type_to_vri.json",
+        outputs_dir=str(tmp_path / "out"),
+    )
+    runner = DeterministicScenarioRunner(settings)
+    request = PipelineRequest(
+        task_external_id="custom",
+        cadastral_data_path=str(tmp_path / "objects.json"),
+        pzz_zones_data_path=str(tmp_path / "zones.json"),
+        pzz_zone_vri_labels_path=str(descriptions_path),
+        vri_classifier_path=str(classifier_path),
+        include_pzz_check=True,
+        cadastral_vri_col="vri_text",
+        pzz_zone_code_col="zone_code",
+        pzz_zone_name_col="zone_name",
+        outputs_dir=settings.outputs_dir,
+        is_scenario=True,
+    )
+    task = SimpleNamespace(
+        status="finished",
+        result_path=runner.run(request),
+        pzz_zone_vri_labels_path=str(descriptions_path),
+    )
+    report = build_object_zone_fit_response(
+        task, "custom", "zone", settings, scenario=True
+    )
+    zone = report["zones"][0]
+    assert zone["objects"][0]["verdict"] == "Условно разрешен"
+    assert zone["objects"][0]["matched_vri_name"] == entry["name"]
+    assert zone["pzz_summary"]["conditional_vri"] == [{"vri_code": "2.1"}]
+    assert (
+        zone["pzz_summary"]["allowed_construction_summary"] == "Жилье разрешено условно"
+    )
+
+    # A partial upload replaces the reference; missing zones must not inherit rules.
+    descriptions["functional_zone_mappings"][0]["functional_zone_type_id"] = 999
+    descriptions_path.write_text(json.dumps(descriptions), encoding="utf-8")
+    task.result_path = runner.run(request)
+    report = build_object_zone_fit_response(
+        task, "custom", "zone", settings, scenario=True
+    )
+    assert report["zones"][0]["objects"][0]["verdict"] == "Нет описания зоны в шаблоне"
+    assert report["zones"][0]["pzz_summary"]["mapping_status"] == "no_mapping"
+
+    # Reusing the runner for an ordinary task restores built-in rules and names.
+    default_request = replace(
+        request, pzz_zone_vri_labels_path="", vri_classifier_path=""
+    )
+    result = json.loads(Path(runner.run(default_request)).read_text(encoding="utf-8"))
+    props = result["features"][0]["properties"]
+    assert props["Вердикт_ПЗЗ"] == "Разрешен"
+    assert props["Тип_использования"] != entry["name"]
 
 
 def test_allowed_reason_names_the_section_in_russian():

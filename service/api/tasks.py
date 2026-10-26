@@ -2188,6 +2188,16 @@ def build_object_zone_fit_response(
             "objects": rows,
         }
 
+    scenario_mapping = None
+    descriptions_path = getattr(task, "pzz_zone_vri_labels_path", None)
+    if scenario and descriptions_path:
+        descriptions = _load_input_geojson(descriptions_path)
+        if (
+            isinstance(descriptions, dict)
+            and "functional_zone_mappings" in descriptions
+        ):
+            scenario_mapping = descriptions
+
     zones_by_id: dict[Any, dict[str, Any]] = {}
     for row in rows:
         z_id = row["zone_type_id"] or "__no_zone__"
@@ -2196,7 +2206,9 @@ def build_object_zone_fit_response(
             bucket = {
                 "zone_type_id": row["zone_type_id"],
                 "zone_name": row["zone_name"],
-                "pzz_summary": lookup_zone_summary(row["zone_type_id"]),
+                "pzz_summary": lookup_zone_summary(
+                    row["zone_type_id"], mapping=scenario_mapping
+                ),
                 "objects": [],
                 "summary": {
                     "total": 0,

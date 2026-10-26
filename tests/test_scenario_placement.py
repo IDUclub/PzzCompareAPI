@@ -142,6 +142,50 @@ def test_scenario_fetches_all_objects_and_persists_placement_context(flow):
     assert "ВРИ 3.5.1" in args["objects_fc"]["features"][1]["properties"]["vri_text"]
 
 
+def test_classification_regulations_are_persisted_and_isolate_cache(flow):
+    descriptions = {
+        "functional_zone_mappings": [
+            {"functional_zone_type_id": 1, "averaged_pzz_profile": {"main_vri": []}}
+        ]
+    }
+    classifier = {"by_code": {"2.1": {"name": "Свое название"}}}
+    cache = {}
+    args = dict(
+        scenario_id=42,
+        year=2025,
+        source="User",
+        physical_object_type_id=4,
+        priority=1,
+        force_recompute=False,
+        idempotency_key_form=None,
+        idempotency_key_header="same-key",
+        token="user-token",
+        app_settings=flow.settings,
+        task_repo=SimpleNamespace(get_by_idempotency_key=cache.get),
+        event_repo=None,
+        session=None,
+    )
+    for extra in [
+        {},
+        {"zone_descriptions": descriptions},
+        {"vri_classifier": classifier},
+        {"zone_descriptions": descriptions, "vri_classifier": classifier},
+    ]:
+        asyncio.run(mod._build_scenario_classification_task(**args, **extra))
+        captured = flow.captured[-1]
+        assert captured["zone_descriptions"] == extra.get("zone_descriptions")
+        assert captured["vri_classifier"] == extra.get("vri_classifier")
+        key = captured["namespaced_key"]
+        assert key not in cache
+        cache[key] = SimpleNamespace(id=1, external_id=key)
+        assert (
+            asyncio.run(mod._build_scenario_classification_task(**args, **extra))
+            is cache[key]
+        )
+    assert len(flow.captured) == 4
+    assert len(flow.calls) == 8  # Access is checked even for cached results.
+
+
 def test_scenario_cache_never_bypasses_access_check(flow):
     flow.cached = SimpleNamespace(external_id="cached")
     assert flow.run() is flow.cached
@@ -305,6 +349,10 @@ def test_chat_placement_preserves_project_and_uses_placement_report(monkeypatch)
             poll_interval=2,
             idempotency_key_form=None,
             idempotency_key_header=None,
+            pzz_descriptions_file=None,
+            pzz_descriptions_upload_id=None,
+            vri_classifier_file=None,
+            vri_classifier_upload_id=None,
             user=AuthUser(token="t", user_id="u"),
             app_settings=SimpleNamespace(
                 chat_system_prompt_placement_path="placement-prompt"

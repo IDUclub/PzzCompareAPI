@@ -26,6 +26,7 @@ from .api import (
     zone_descriptions,
 )
 from .__version__ import VERSION
+from .api.error_logging import register_client_error_logging
 from .api.utils import api_log
 from .db import session_scope
 from .dependencies import (
@@ -118,6 +119,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+register_client_error_logging(app)
 
 app.include_router(system.router)
 app.include_router(classifier.router)

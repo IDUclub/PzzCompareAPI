@@ -101,6 +101,7 @@ def test_report_has_russian_fields_zones_statuses_and_sections():
             "targets_source": "service_defaults",
             "regulations": {"source": "normgraph"},
             "classes": {"A*": {"zones": 1, "ha": 12.5}},
+            "overlaps": {"parcel_overlaps": 0, "min_area_m2": 1.0, "min_share": 0.001},
             "norms": [
                 {
                     "document": "СП 1",
@@ -142,6 +143,8 @@ def test_report_has_russian_fields_zones_statuses_and_sections():
     assert "Нет описания зоны" in text
     assert "не применена" in text and "Данные отсутствуют" in text
     assert "12,5" in text
+    assert "Минимальный порог площади наложения" in text
+    assert "Минимальный порог доли наложения" in text
     assert not re.search(r"[A-Za-z]", text)
 
 

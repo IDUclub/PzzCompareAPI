@@ -6,7 +6,7 @@ import json
 import httpx
 import pytest
 from fastapi import HTTPException
-from sse_starlette.sse import ServerSentEvent
+from sse_starlette.sse import AppStatus, ServerSentEvent
 
 from service.api.security import _get_token_from_header
 from service.api.tasks import _chat_event_to_sse, _final_answer_chunk_sse
@@ -417,7 +417,10 @@ def test_build_scenario_zone_geo_layers_exposes_functional_zones_only() -> None:
     assert build_scenario_zone_geo_layers(task, "ext-1", app_settings) == []
 
 
-def test_scenario_chat_stream_emits_functional_zones_layer(monkeypatch) -> None:
+@pytest.mark.parametrize("regulations", ["none", "files", "upload_ids", "invalid"])
+def test_scenario_chat_stream_emits_functional_zones_layer(
+    monkeypatch, tmp_path, regulations
+) -> None:
     from types import SimpleNamespace
 
     from fastapi.testclient import TestClient
@@ -426,11 +429,12 @@ def test_scenario_chat_stream_emits_functional_zones_layer(monkeypatch) -> None:
     from service.api import scenarios as scenarios_module
     from service.api.security import AuthUser, get_current_user
     from service.api.tasks import build_scenario_zone_geo_layers
-    from service.dependencies import get_db
+    from service.dependencies import get_app_settings, get_db
 
     captured: dict = {}
 
     async def _fake_build_task(**kwargs):
+        captured["task_args"] = kwargs
         return SimpleNamespace(external_id="ext-1")
 
     async def _fake_project_id(*args):
@@ -459,15 +463,69 @@ def test_scenario_chat_stream_emits_functional_zones_layer(monkeypatch) -> None:
         token="t", user_id="u"
     )
     app.dependency_overrides[get_db] = lambda: SimpleNamespace(commit=lambda: None)
+    app.dependency_overrides[get_app_settings] = lambda: SimpleNamespace(
+        uploads_dir=str(tmp_path / "uploads"),
+        max_upload_bytes=1_000_000,
+        chat_system_prompt_scenario_path="data/chat_system_prompt_scenario.txt",
+    )
+    descriptions = {
+        "functional_zone_mappings": [
+            {
+                "functional_zone_type_id": 1,
+                "averaged_pzz_profile": {"main_vri": [{"vri_code": "2.1"}]},
+            }
+        ]
+    }
+    classifier = {"by_code": {"2.1": {"name": "Свое название жилья"}}}
+    data = {"user_query": "q", "year": 2026, "source": "User"}
+    files = None
+    if regulations == "files":
+        files = {
+            "pzz_descriptions_file": ("pzz.json", json.dumps(descriptions)),
+            "vri_classifier_file": ("vri.json", json.dumps(classifier)),
+        }
+    elif regulations == "upload_ids":
+        from service.api import classifier as classifier_module
+
+        stored = {}
+        for upload_id, doc in [("pzz-id", descriptions), ("vri-id", classifier)]:
+            path = tmp_path / f"{upload_id}.json"
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            stored[upload_id] = path
+
+        def resolve(upload_id, *, owner_id, **kwargs):
+            assert owner_id == "u"
+            return stored[upload_id]
+
+        monkeypatch.setattr(classifier_module, "resolve_upload", resolve)
+        data.update(
+            pzz_descriptions_upload_id="pzz-id", vri_classifier_upload_id="vri-id"
+        )
+    elif regulations == "invalid":
+        files = {"pzz_descriptions_file": ("pzz.json", "not json")}
+    # Each TestClient starts a new event loop; the SSE library keeps a global event.
+    monkeypatch.setattr(AppStatus, "should_exit_event", None)
     try:
         resp = TestClient(app).post(
             "/scenarios/1/chat/stream",
-            data={"user_query": "q", "year": 2026, "source": "User"},
+            data=data,
+            files=files,
         )
     finally:
         app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_app_settings, None)
 
+    if regulations == "invalid":
+        assert resp.status_code == 422
+        assert "task_args" not in captured
+        return
     assert resp.status_code == 200
+    assert captured["task_args"]["zone_descriptions"] == (
+        descriptions if regulations != "none" else None
+    )
+    assert captured["task_args"]["vri_classifier"] == (
+        classifier if regulations != "none" else None
+    )
     assert captured["emit_input_files"] is True
     assert captured["input_layers_builder"] is build_scenario_zone_geo_layers
