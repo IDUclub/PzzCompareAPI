@@ -368,6 +368,8 @@ async def _build_scenario_classification_task(
     task_repo: TaskRepository,
     event_repo: EventRepository,
     session: Session,
+    zone_descriptions: dict[str, Any] | None = None,
+    vri_classifier: dict[str, Any] | list[Any] | None = None,
 ) -> PipelineTask:
     """Run PZZ-style classification on a scenario's data fetched from urban_api.
 
@@ -407,6 +409,10 @@ async def _build_scenario_classification_task(
         )
         raw_key = idempotency_key_header or idempotency_key_form
         namespaced_key = f"{auto_key}:{raw_key}" if raw_key else auto_key
+        if zone_descriptions is not None:
+            namespaced_key += f":d-{_json_digest(zone_descriptions)}"
+        if vri_classifier is not None:
+            namespaced_key += f":c-{_json_digest(vri_classifier)}"
 
         existing = task_repo.get_by_idempotency_key(namespaced_key)
         if existing is not None and not force_recompute:
@@ -545,6 +551,8 @@ async def _build_scenario_classification_task(
         task_repo=task_repo,
         event_repo=event_repo,
         session=session,
+        zone_descriptions=zone_descriptions,
+        vri_classifier=vri_classifier,
     )
 
 
@@ -1119,9 +1127,10 @@ async def scenario_chat_stream_endpoint(
     scenario objects, and emits ``placement_summary`` and placement map layers.
     Functional zones use the reference mapping; NormGraph supplies service norms.
     ``physical_object_type_id`` only filters the default ``pzz_check`` mode.
-    Placement also takes the optional ``pzz_descriptions_file`` /
-    ``vri_classifier_file`` (or their ``*_upload_id``), as
-    ``POST /scenarios/{scenario_id}/placement`` does.
+    Both modes take optional ``pzz_descriptions_file`` / ``vri_classifier_file``
+    (or their ``*_upload_id``). Descriptions use the ``functional_zone_mappings``
+    JSON schema, keyed by functional-zone type id. The classifier supplies names
+    for the VRI codes resolved from object and service types in ``pzz_check``.
 
     One call: builds (or reuses a cached) classification task, waits for it to
     finish, then streams an LLM answer to ``user_query`` grounded in the
@@ -1154,15 +1163,15 @@ async def scenario_chat_stream_endpoint(
             detail="service_name (or user_query) is required for placement",
         )
 
+    zone_descriptions, vri_classifier = await read_scenario_regulation_files(
+        pzz_descriptions_file=pzz_descriptions_file,
+        pzz_descriptions_upload_id=pzz_descriptions_upload_id,
+        vri_classifier_file=vri_classifier_file,
+        vri_classifier_upload_id=vri_classifier_upload_id,
+        owner_id=user.user_id,
+        app_settings=app_settings,
+    )
     if mode == "placement":
-        zone_descriptions, vri_classifier = await read_scenario_regulation_files(
-            pzz_descriptions_file=pzz_descriptions_file,
-            pzz_descriptions_upload_id=pzz_descriptions_upload_id,
-            vri_classifier_file=vri_classifier_file,
-            vri_classifier_upload_id=vri_classifier_upload_id,
-            owner_id=user.user_id,
-            app_settings=app_settings,
-        )
         task = await _build_scenario_placement_task(
             scenario_id=scenario_id,
             year=year,
@@ -1230,6 +1239,8 @@ async def scenario_chat_stream_endpoint(
         task_repo=task_repo,
         event_repo=event_repo,
         session=session,
+        zone_descriptions=zone_descriptions,
+        vri_classifier=vri_classifier,
     )
     session.commit()
     initial = TaskOut.model_validate(task).model_dump(mode="json")

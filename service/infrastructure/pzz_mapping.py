@@ -212,7 +212,11 @@ def build_pipeline_zone_labels(
     return labels
 
 
-def lookup_zone_summary(functional_zone_type_id: int | str | None) -> dict[str, Any]:
+def lookup_zone_summary(
+    functional_zone_type_id: int | str | None,
+    *,
+    mapping: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return a stable-shape summary dict for one functional_zone_type_id.
 
     ``mapping_status`` is one of:
@@ -222,6 +226,8 @@ def lookup_zone_summary(functional_zone_type_id: int | str | None) -> dict[str, 
 
     The other fields are populated when ``mapping_status != "no_mapping"``
     and may be None for individual missing sub-fields.
+    ``mapping`` replaces the built-in reference for a task with uploaded rules;
+    missing types then return ``no_mapping`` without inheriting default rules.
     """
     if functional_zone_type_id is None:
         return _empty_summary()
@@ -230,7 +236,18 @@ def lookup_zone_summary(functional_zone_type_id: int | str | None) -> dict[str, 
     except (TypeError, ValueError):
         return _empty_summary()
 
-    entry = _index_by_type_id().get(type_id)
+    if mapping is None:
+        entry = _index_by_type_id().get(type_id)
+    else:
+        entry = next(
+            (
+                item
+                for item in mapping.get("functional_zone_mappings", [])
+                if isinstance(item, dict)
+                and str(item.get("functional_zone_type_id")) == str(type_id)
+            ),
+            None,
+        )
     if entry is None:
         return _empty_summary()
 

@@ -1156,21 +1156,23 @@ def _persist_scenario_task(tmp_path: Path, monkeypatch, **kwargs) -> dict:
         task_repo=None,
         event_repo=None,
         session=session,
-        placement_vri_code="3.5.1",
+        placement_vri_code=kwargs.pop("placement_vri_code", "3.5.1"),
         placement_service_name="школа",
         **kwargs,
     )
     return {"persisted": persisted, "input_paths": captured["input_paths"]}
 
 
+@pytest.mark.parametrize("placement_vri_code", [None, "3.5.1"])
 def test_scenario_task_uses_uploaded_regulation_files(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, placement_vri_code
 ) -> None:
     out = _persist_scenario_task(
         tmp_path,
         monkeypatch,
         zone_descriptions=_SCENARIO_DESCRIPTIONS,
         vri_classifier=[{"code": "3.5.1"}],
+        placement_vri_code=placement_vri_code,
     )
     paths = out["input_paths"]
     assert paths["pzz_zone_vri_labels_path"].endswith("/pzz_zone_descriptions.json")

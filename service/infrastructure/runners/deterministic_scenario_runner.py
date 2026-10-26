@@ -23,6 +23,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from service.application.use_cases.chat_answer import load_vri_names
 from service.domain import PipelineRequest
 from service.infrastructure.runners._deterministic_pzz import (
     CATEGORY_BUILDING,
@@ -153,6 +154,21 @@ class DeterministicScenarioRunner(PipelineRunner):
         vri_col = request.cadastral_vri_col or "vri_text"
 
         zgdf = build_zone_gdf(zones, code_col, name_col=request.pzz_zone_name_col)
+        zone_allowed, zone_nick = self._zone_allowed, self._zone_nick
+        if request.pzz_zone_vri_labels_path:
+            descriptions = json.loads(
+                Path(request.pzz_zone_vri_labels_path).read_text(encoding="utf-8")
+            )
+            # Older scenario tasks store generated pipeline labels (a list).
+            # New uploads use the functional-zone mapping schema validated by API.
+            if (
+                isinstance(descriptions, dict)
+                and "functional_zone_mappings" in descriptions
+            ):
+                zone_allowed, zone_nick = load_zone_mapping(
+                    request.pzz_zone_vri_labels_path
+                )
+        vri_names = load_vri_names(request.vri_classifier_path)
         feats = [
             f for f in (objects.get("features") or []) if f.get("geometry") is not None
         ]
@@ -162,12 +178,13 @@ class DeterministicScenarioRunner(PipelineRunner):
         for i, feature in enumerate(feats):
             old_props = feature.get("properties") or {}
             vri, vri_name, basis, category = self._resolve(old_props)
+            vri_name = vri_names.get(vri) or vri_name
 
             match = fz_by_obj.get(i)
             fz = match.key if match else None
             zone_name = match.name if match else None
             machine_verdict, reason, mcode, _ = compute_verdict(
-                vri, fz, self._zone_allowed, self._zone_nick, zone_label=zone_name
+                vri, fz, zone_allowed, zone_nick, zone_label=zone_name
             )
             if (
                 machine_verdict == "unclear"
@@ -178,7 +195,7 @@ class DeterministicScenarioRunner(PipelineRunner):
             feature["properties"] = clean_result_properties(
                 vri_text=old_props.get(vri_col),
                 fz_type_id=fz,
-                zone_nick=self._zone_nick,
+                zone_nick=zone_nick,
                 zone_name=zone_name,
                 machine_verdict=machine_verdict,
                 reason=reason,
