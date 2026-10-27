@@ -25,6 +25,7 @@ from typing import Any
 
 from service.application.use_cases.chat_answer import load_vri_names
 from service.domain import PipelineRequest
+from service.infrastructure.scenario_cadastre import CADASTRE_CHECK_KEY, CadastreChecker
 from service.infrastructure.runners._deterministic_pzz import (
     CATEGORY_BUILDING,
     CATEGORY_SERVICE,
@@ -145,7 +146,9 @@ class DeterministicScenarioRunner(PipelineRunner):
         output_dir.mkdir(parents=True, exist_ok=True)
 
         objects = json.loads(
-            Path(request.cadastral_data_path).read_text(encoding="utf-8")
+            Path(
+                request.existing_objects_data_path or request.cadastral_data_path
+            ).read_text(encoding="utf-8")
         )
         zones = json.loads(
             Path(request.pzz_zones_data_path).read_text(encoding="utf-8")
@@ -169,6 +172,20 @@ class DeterministicScenarioRunner(PipelineRunner):
                     request.pzz_zone_vri_labels_path
                 )
         vri_names = load_vri_names(request.vri_classifier_path)
+        cadastre = None
+        cadastre_counts = {"correct": 0, "wrong": 0, "unclear": 0}
+        if request.existing_objects_data_path:
+            cadastre_names = load_vri_names(
+                getattr(self._settings, "default_vri_classifier_path", "")
+            )
+            cadastre_names.update(vri_names)
+            cadastre = CadastreChecker(
+                json.loads(
+                    Path(request.cadastral_data_path).read_text(encoding="utf-8")
+                ),
+                request.cadastral_vri_col,
+                cadastre_names,
+            )
         feats = [
             f for f in (objects.get("features") or []) if f.get("geometry") is not None
         ]
@@ -192,6 +209,22 @@ class DeterministicScenarioRunner(PipelineRunner):
                 and _po_type_id(old_props) == NON_RESIDENTIAL_PO_TYPE
             ):
                 machine_verdict, reason = "vri_undetermined", _NON_RESIDENTIAL_REASON
+            parcel_properties = {}
+            if cadastre is not None:
+                from service.infrastructure.scenario_cadastre import PARCEL_REASON
+
+                land_fit, parcel_properties = cadastre.check(feature, vri)
+                bucket = (
+                    "correct"
+                    if land_fit is True
+                    else "wrong" if land_fit is False else "unclear"
+                )
+                cadastre_counts[bucket] += 1
+                if land_fit is False:
+                    machine_verdict = "not_allowed"
+                elif land_fit is None and machine_verdict.startswith("allowed_"):
+                    machine_verdict = "unclear"
+                reason += " " + parcel_properties[PARCEL_REASON]
             feature["properties"] = clean_result_properties(
                 vri_text=old_props.get(vri_col),
                 fz_type_id=fz,
@@ -204,12 +237,15 @@ class DeterministicScenarioRunner(PipelineRunner):
                 resolution_basis=basis,
                 category=category,
             )
+            feature["properties"].update(parcel_properties)
 
         result = {
             "type": "FeatureCollection",
             "features": feats,
             ZONE_STATS_KEY: zone_stats(fz_by_obj),
         }
+        if cadastre is not None:
+            result[CADASTRE_CHECK_KEY] = cadastre_counts
         out_path = (
             output_dir / f"pzz_compare_spatial_first_{request.task_external_id}.geojson"
         )

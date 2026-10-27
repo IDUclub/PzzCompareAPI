@@ -87,6 +87,8 @@ LABELS = {
     "reach_zones": "Зоны в пределах доступности жилья",
     "parcels": "Земельные участки",
     "cadastre_used": "Кадастровые данные использованы",
+    "cadastre": "Проверка по кадастровым участкам",
+    "cadastre_check": "Соответствие ВРИ кадастровых участков",
     "scenario_objects_used": "Объекты сценария использованы",
     "existing_objects_used": "Существующие объекты использованы",
     "existing_objects_count": "Количество существующих объектов",
@@ -418,9 +420,20 @@ def render_items(value, depth):
 
 def object_sections(objects):
     known = {"wrong", "correct", "matched", "unclear"}
+    cadastre = any(isinstance(row, dict) and row.get("cadastre") for row in objects)
     groups = [
-        ("wrong", "Не соответствуют ПЗЗ"),
-        ("correct", "Соответствуют ПЗЗ"),
+        (
+            "wrong",
+            (
+                "Не соответствуют ПЗЗ или ВРИ участков"
+                if cadastre
+                else "Не соответствуют ПЗЗ"
+            ),
+        ),
+        (
+            "correct",
+            "Соответствуют ПЗЗ и ВРИ участков" if cadastre else "Соответствуют ПЗЗ",
+        ),
         ("matched", "Подобраны виды использования"),
         ("unclear", "Требуют ручной проверки"),
         (None, "Результаты по объектам"),

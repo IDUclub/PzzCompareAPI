@@ -237,7 +237,10 @@ class PipelineRunnerFactory:
         elif (
             request is not None
             and getattr(request, "is_scenario", False)
-            and getattr(settings, "scenario_deterministic", False)
+            and (
+                getattr(settings, "scenario_deterministic", False)
+                or request.existing_objects_data_path
+            )
         ):
             from service.infrastructure.runners.deterministic_scenario_runner import (
                 DeterministicScenarioRunner,
