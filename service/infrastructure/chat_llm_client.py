@@ -38,6 +38,18 @@ class ChatLlmError(RuntimeError):
         super().__init__(f"chat backend returned {status}: {body!r}")
 
 
+def _no_thinking_params(model: str) -> dict[str, Any]:
+    """vLLM request params that stop a reasoning model from thinking first.
+
+    gpt-oss cannot switch reasoning off, so it gets the lowest effort; Qwen3-style
+    chat templates take ``enable_thinking``. Same rule as the pipeline's vLLM
+    client (``pipeline_modules.business.clients``).
+    """
+    if model.lower().startswith("gpt-oss"):
+        return {"reasoning_effort": "low"}
+    return {"chat_template_kwargs": {"enable_thinking": False}}
+
+
 def _loads_json_object(content: str) -> Any:
     """Parse a JSON object from model ``content``, tolerating stray wrapping.
 
@@ -126,15 +138,19 @@ class VllmChatClient(ChatLlmClient):
     ) -> AsyncIterator[str]:
         """Stream assistant content deltas for ``messages``.
 
-        Yields the incremental ``choices[0].delta.content`` chunks. Reasoning
-        deltas are dropped. Raises ``ChatLlmError`` on a non-2xx status, an
-        unparseable stream, or a transport failure.
+        Yields the incremental ``choices[0].delta.content`` chunks. Thinking is
+        switched off (see ``_no_thinking_params``): reasoning deltas are never
+        shown, so a model that thinks first leaves the user staring at a silent
+        stream. Raises ``ChatLlmError`` on a non-2xx status, an unparseable
+        stream, or a transport failure.
         """
+        selected_model = model or self._default_model
         payload: dict[str, Any] = {
-            "model": model or self._default_model,
+            "model": selected_model,
             "stream": True,
             "messages": messages,
             "temperature": (self._temperature if temperature is None else temperature),
+            **_no_thinking_params(selected_model),
         }
 
         try:
