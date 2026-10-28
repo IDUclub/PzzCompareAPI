@@ -147,6 +147,38 @@ def test_vllm_stream_sends_bearer_token_when_configured() -> None:
     assert seen["auth"] == "Bearer s3cret"
 
 
+def _vllm_stream_request_body(model: str) -> dict:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, content=_sse(["[DONE]"]))
+
+    async def run() -> None:
+        async with _client(VllmChatClient, handler) as vc:
+            async for _ in vc.stream_chat(
+                [{"role": "user", "content": "hi"}], model=model
+            ):
+                pass
+
+    asyncio.run(run())
+    return seen["body"]
+
+
+def test_vllm_stream_disables_thinking_for_qwen() -> None:
+    body = _vllm_stream_request_body("qwen3.8-27b")
+
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_effort" not in body
+
+
+def test_vllm_stream_uses_lowest_reasoning_effort_for_gpt_oss() -> None:
+    body = _vllm_stream_request_body("gpt-oss-20b")
+
+    assert body["reasoning_effort"] == "low"
+    assert "chat_template_kwargs" not in body
+
+
 def test_vllm_stream_non_2xx_raises_chat_llm_error() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, content=b'{"error":"model not found"}')
