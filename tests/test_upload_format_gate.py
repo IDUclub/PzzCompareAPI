@@ -163,6 +163,27 @@ def test_too_large_upload_is_a_413_in_russian(tmp_path: Path) -> None:
     )
 
 
+def test_unwritable_scratch_dir_is_a_503_not_a_bare_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing volume mount/permission problem must not reach the caller as
+    an unhandled PermissionError (the prod incident this guards against)."""
+
+    def _raise(self: Path, *args: object, **kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "mkdir", _raise)
+    upload = UploadFile(file=BytesIO(b"x"), filename="parcels.geojson")
+    with pytest.raises(HTTPException) as exc:
+        stream_upload_to_file(
+            upload,
+            tmp_path / "out" / "parcels.geojson",
+            1024,
+            "cadastral_feature_collection_file",
+        )
+    assert exc.value.status_code == 503
+
+
 @pytest.mark.parametrize(
     ("max_bytes", "limit"),
     [(200 * 1024 * 1024, "200 МБ"), (1024 * 1024 // 2, "0.5 МБ")],

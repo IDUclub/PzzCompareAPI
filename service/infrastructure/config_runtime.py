@@ -44,6 +44,12 @@ _DENY: frozenset[str] = frozenset(
         "DB_WAIT_TIMEOUT",
         "DB_WAIT_INTERVAL",
         "RUN_MIGRATIONS_ON_STARTUP",
+        # shared scratch directories: validated once at startup
+        # (settings.ensure_writable_dirs) — a live change here would bypass
+        # that check and reopen the exact class of bug it exists to catch.
+        "UPLOADS_DIR",
+        "TASK_INPUTS_DIR",
+        "OUTPUTS_DIR",
     }
 )
 
