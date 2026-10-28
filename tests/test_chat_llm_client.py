@@ -125,6 +125,53 @@ def test_vllm_stream_ignores_reasoning_and_stops_on_done() -> None:
     assert seen["body"]["temperature"] == 0.1
 
 
+@pytest.mark.parametrize(
+    "default_model,model,disable_thinking",
+    [
+        ("qwen3.8-27b", None, True),
+        ("m", "qwen3.8-27b", True),
+        ("Qwen/Qwen3.8-27B-FP8", None, True),
+        ("m", "Qwen/Qwen3-32B", True),
+        ("gpt-oss-20b", None, False),
+        ("qwen3.8-27b", "gpt-oss-20b", False),
+    ],
+)
+def test_vllm_stream_thinking_settings_follow_selected_model(
+    default_model: str, model: str | None, disable_thinking: bool
+) -> None:
+    seen: dict = {}
+    events = [
+        json.dumps({"choices": [{"delta": {"content": "Report"}}]}),
+        "[DONE]",
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, content=_sse(events))
+
+    async def run() -> str:
+        async with _client(VllmChatClient, handler) as vc:
+            vc._default_model = default_model
+            return "".join(
+                [
+                    delta
+                    async for delta in vc.stream_chat(
+                        [{"role": "user", "content": "Summarize the check"}],
+                        model=model,
+                    )
+                ]
+            )
+
+    assert asyncio.run(run()) == "Report"
+    assert seen["body"]["model"] == (model or default_model)
+    if disable_thinking:
+        assert seen["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+        assert "reasoning_effort" not in seen["body"]
+    else:
+        assert "chat_template_kwargs" not in seen["body"]
+        assert seen["body"]["reasoning_effort"] == "low"
+
+
 def test_vllm_stream_sends_bearer_token_when_configured() -> None:
     seen: dict = {}
 
