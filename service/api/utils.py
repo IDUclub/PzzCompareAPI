@@ -43,6 +43,20 @@ def upload_too_large_error(
     )
 
 
+def _storage_unavailable_error(field_name: str, exc: OSError) -> HTTPException:
+    """503, worded for an end user, for a scratch-directory write that the
+    deployment was supposed to make possible (missing volume mount, wrong
+    permissions) rather than something the caller did."""
+    logger.error("upload storage unavailable | field=%s | error=%s", field_name, exc)
+    return HTTPException(
+        status_code=503,
+        detail=(
+            f"{field_title(field_name)}: сервис временно не может принять файл "
+            "из-за проблемы с хранилищем. Повторите попытку позже."
+        ),
+    )
+
+
 def stream_upload_to_file(
     upload: UploadFile,
     dest: Path,
@@ -53,19 +67,26 @@ def stream_upload_to_file(
 
     Avoids buffering the full payload in memory.
     """
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise _storage_unavailable_error(field_name, exc) from exc
     written = 0
-    with dest.open("wb") as fh:
-        while True:
-            chunk = upload.file.read(1024 * 1024)
-            if not chunk:
-                break
-            written += len(chunk)
-            if written > max_bytes:
-                fh.close()
-                dest.unlink(missing_ok=True)
-                raise upload_too_large_error(field_name, max_bytes, upload.filename)
-            fh.write(chunk)
+    try:
+        with dest.open("wb") as fh:
+            while True:
+                chunk = upload.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    fh.close()
+                    dest.unlink(missing_ok=True)
+                    raise upload_too_large_error(field_name, max_bytes, upload.filename)
+                fh.write(chunk)
+    except OSError as exc:
+        dest.unlink(missing_ok=True)
+        raise _storage_unavailable_error(field_name, exc) from exc
 
 
 def api_log(stage: str, status: str, **extra: object) -> None:

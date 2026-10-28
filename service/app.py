@@ -40,7 +40,7 @@ from .infrastructure.repositories.sqlalchemy_config_repository import (
 )
 from .log_sink import setup_redis_sink
 from .logging_config import setup_logging
-from .settings import get_settings
+from .settings import ensure_writable_dirs, get_settings
 
 setup_logging()
 
@@ -62,6 +62,7 @@ def _run_migrations() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    ensure_writable_dirs(get_settings())
     setup_redis_sink(redis_url=get_settings().redis_url)
     init_dependencies(app)
     if get_settings().run_migrations_on_startup:

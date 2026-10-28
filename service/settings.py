@@ -1,7 +1,8 @@
 from functools import lru_cache
+from pathlib import Path
 import os
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from iduconfig import Config
 
@@ -221,6 +222,17 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @field_validator("uploads_dir", "task_inputs_dir", "outputs_dir")
+    @classmethod
+    def _absolute_dir(cls, value: str) -> str:
+        """Pin a shared scratch directory to an absolute path.
+
+        Left relative, it resolves against the process's current working
+        directory instead of the deployment's intended volume mount — see
+        ``ensure_writable_dirs`` for the startup check this depends on.
+        """
+        return str(Path(value).expanduser().resolve())
+
 
 @lru_cache(maxsize=1)
 def _build_settings_cached() -> Settings:
@@ -326,3 +338,27 @@ def get_settings() -> Settings:
     except Exception:  # noqa: BLE001 — never let the override layer break config
         pass
     return _build_settings_cached()
+
+
+def ensure_writable_dirs(settings: Settings) -> None:
+    """Fail fast if a shared scratch directory isn't actually writable.
+
+    ``uploads_dir``/``task_inputs_dir``/``outputs_dir`` are volumes whose real
+    path and permissions come from deployment config, not from this code. A
+    missing env var or an unmounted volume must abort startup instead of
+    surfacing as an unhandled ``PermissionError`` on whichever request first
+    happens to write there.
+    """
+    for name in ("uploads_dir", "task_inputs_dir", "outputs_dir"):
+        directory = Path(getattr(settings, name))
+        probe = directory / f".startup-check-{os.getpid()}"
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            probe.write_text("")
+        except OSError as exc:
+            raise RuntimeError(
+                f"{name} ('{directory}') is not writable: {exc}. "
+                "Check the volume mount and environment configuration."
+            ) from exc
+        finally:
+            probe.unlink(missing_ok=True)

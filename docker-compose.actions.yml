@@ -18,6 +18,7 @@ x-app-env: &app-env
   # The dedicated `migrate` service applies Alembic migrations; the api
   # workers must not race to upgrade on every boot.
   RUN_MIGRATIONS_ON_STARTUP: "false"
+  UPLOADS_DIR: /app/uploads
 
 services:
   postgres:
@@ -82,6 +83,7 @@ services:
     volumes:
       - outputs:/app/outputs
       - task_inputs:/app/task_inputs
+      - uploads:/app/uploads
     command: uvicorn service.app:app --host 0.0.0.0 --port 8000 --workers 2
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
@@ -105,6 +107,7 @@ services:
     volumes:
       - outputs:/app/outputs
       - task_inputs:/app/task_inputs
+      - uploads:/app/uploads
     # Worker exposes its own Prometheus metrics (task queue_wait / run /
     # fail / retry) — scrape this as a separate target from api:8000/metrics.
     networks:
@@ -135,6 +138,7 @@ services:
     volumes:
       - outputs:/app/outputs
       - task_inputs:/app/task_inputs
+      - uploads:/app/uploads
     networks:
       - pzz_compare
     ports:
@@ -202,6 +206,10 @@ volumes:
       type: none
       device: /var/essdata/PzzCompareData/task_inputs
       o: bind
+  # Docker-managed rather than a host bind: a new named volume is seeded from the
+  # image's /app/uploads, appuser ownership included, so no host directory has to
+  # be pre-created and chowned on the runner.
+  uploads:
 networks:
   pzz_compare:
     driver: bridge

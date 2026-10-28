@@ -11,7 +11,13 @@ from time import perf_counter
 from celery import Celery
 from celery.exceptions import MaxRetriesExceededError
 from celery.schedules import schedule
-from celery.signals import after_setup_logger, task_postrun, task_prerun, worker_ready
+from celery.signals import (
+    after_setup_logger,
+    task_postrun,
+    task_prerun,
+    worker_init,
+    worker_ready,
+)
 from sqlalchemy import func, select
 
 from .infrastructure.runners.pipeline_runner import PipelineRunnerFactory
@@ -38,7 +44,7 @@ from .metrics import (
     task_run_seconds,
 )
 from .models import PipelineTask, TaskStatus
-from .settings import get_settings
+from .settings import ensure_writable_dirs, get_settings
 from .time_utils import utc_now
 
 settings = get_settings()
@@ -87,6 +93,23 @@ def enqueue_pipeline_task(
     )
     queue = "default" if deterministic else "llm"
     return execute_pipeline_task.apply_async(args=[task_id], queue=queue)
+
+
+@worker_init.connect
+def _ensure_worker_storage_writable(**kwargs) -> None:
+    """Abort worker startup if a shared scratch directory isn't writable.
+
+    Mirrors the API's lifespan check (settings.ensure_writable_dirs): the
+    worker writes into the same uploads_dir/task_inputs_dir/outputs_dir, so a
+    missing mount must stop it instead of surfacing mid-task. Celery's
+    Signal.send logs and swallows any ``Exception`` a receiver raises, so the
+    failure is re-raised as ``SystemExit``, which escapes the dispatcher and
+    ends the ``celery worker`` process.
+    """
+    try:
+        ensure_writable_dirs(settings)
+    except RuntimeError as exc:
+        raise SystemExit(f"worker startup aborted: {exc}") from exc
 
 
 @worker_ready.connect

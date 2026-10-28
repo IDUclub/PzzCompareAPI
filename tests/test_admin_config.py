@@ -14,10 +14,14 @@ def test_is_overridable_rules(monkeypatch):
     from service.infrastructure import config_runtime as cr
 
     monkeypatch.setenv("SOME_APP_PARAM", "1")
+    monkeypatch.setenv("UPLOADS_DIR", "/app/uploads")
     assert cr.is_overridable("SOME_APP_PARAM") is True  # known + not denied
     assert cr.is_overridable("DATABASE_URL") is False  # credential (denied)
     assert cr.is_overridable("VLLM_API_KEY") is False  # credential (denied)
     assert cr.is_overridable("DEFINITELY_NOT_SET_XYZ") is False  # unknown key
+    # Validated only at startup (settings.ensure_writable_dirs); a live change
+    # would bypass that check and reopen the uploads_dir PermissionError bug.
+    assert cr.is_overridable("UPLOADS_DIR") is False
 
 
 def test_sync_env_apply_then_restore(monkeypatch):

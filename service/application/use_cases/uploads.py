@@ -73,7 +73,14 @@ def new_upload_dir(settings: Settings) -> tuple[str, Path]:
     """Reserve an id and its directory so the caller can stream straight into it."""
     upload_id = uuid4().hex
     directory = uploads_root(settings) / upload_id
-    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.error("upload directory unavailable | error=%s", exc)
+        raise UploadError(
+            "сервис временно не может принять файл из-за проблемы с хранилищем.",
+            status_code=503,
+        ) from exc
     return upload_id, directory
 
 
