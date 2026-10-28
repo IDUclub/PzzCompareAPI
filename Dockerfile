@@ -15,8 +15,8 @@ COPY . /app
 
 # Run as non-root user — Celery and uvicorn refuse/warn when run as root
 RUN useradd --no-create-home --shell /bin/false appuser \
-    && mkdir -p /app/outputs /app/task_inputs /app/data \
-    && chown -R appuser:appuser /app/outputs /app/task_inputs /app/data
+    && mkdir -p /app/outputs /app/task_inputs /app/uploads /app/data \
+    && chown -R appuser:appuser /app/outputs /app/task_inputs /app/uploads /app/data
 USER appuser
 
 ENV PYTHONUNBUFFERED=1

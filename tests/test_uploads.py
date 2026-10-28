@@ -65,6 +65,24 @@ def test_anonymous_caller_may_use_an_owned_upload(tmp_path):
     assert resolve_upload(record.upload_id, owner_id="", settings=settings).is_file()
 
 
+def test_storage_failure_raises_503_upload_error(tmp_path, monkeypatch):
+    """A missing volume mount/permission problem is a clear 503, not a bare
+    PermissionError (the prod incident this guards against)."""
+    import pathlib
+
+    settings = _settings(tmp_path)
+
+    def _raise(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(pathlib.Path, "mkdir", _raise)
+
+    with pytest.raises(UploadError) as exc_info:
+        new_upload_dir(settings)
+
+    assert exc_info.value.status_code == 503
+
+
 def test_expired_upload_is_refused(tmp_path):
     settings = _settings(tmp_path, uploads_max_age_hours=0)
     record = _store(settings)
