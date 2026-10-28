@@ -169,6 +169,46 @@ def _extract_problem_objects(
     return trimmed
 
 
+def _summarize_object_types(
+    objects: list[dict[str, Any]], max_types: int = 60
+) -> dict[str, Any]:
+    """Keep exact category totals and bounded type detail, including clean objects."""
+    categories: dict[str, dict[str, Any]] = {}
+    types: dict[tuple[str, str], dict[str, Any]] = {}
+    result_keys = {
+        "correct": "допустимо",
+        "wrong": "не_соответствует",
+        "unclear": "ручная_проверка",
+    }
+    for obj in objects:
+        category = obj.get("category") or "Категория не указана"
+        object_type = obj.get("vri_text") or "Тип объекта не указан"
+        category_row = categories.setdefault(category, {"всего": 0})
+        type_row = types.setdefault(
+            (category, object_type),
+            {
+                "Категория_объекта": category,
+                "Исходный_тип_объекта": object_type[:240],
+                "всего": 0,
+            },
+        )
+        result_key = result_keys.get(obj.get("fit"), "результат_не_указан")
+        for row in (category_row, type_row):
+            row["всего"] += 1
+            row[result_key] = row.get(result_key, 0) + 1
+
+    ordered_types = sorted(types.values(), key=lambda row: -row["всего"])
+    shown_types = ordered_types[:max_types]
+    return {
+        "по_категориям": categories,
+        "по_исходным_типам": shown_types,
+        "всего_типов": len(ordered_types),
+        "объектов_в_непоказанных_типах": sum(
+            row["всего"] for row in ordered_types[max_types:]
+        ),
+    }
+
+
 def build_classification_context(
     *,
     chat_message: str | None = None,
@@ -186,6 +226,7 @@ def build_classification_context(
     objects), yielding an empty answer. So:
 
     - the compact ``summary`` (exact counts) is always included;
+    - object checks retain category/type counts, including permitted objects;
     - the full report JSON is included only when under ``max_report_chars``;
     - otherwise a capped list of just the wrong/unclear objects is included, so
       the model still has the answer-relevant detail without overflowing.
@@ -247,6 +288,18 @@ def build_classification_context(
             all_objects = []
             for z in object_zone_fit.get("zones") or []:
                 all_objects.extend(z.get("objects") or [])
+        if object_mode and all_objects:
+            parts.append(
+                "Состав проверенных объектов и результаты по типам "
+                "(включая допустимые объекты; категории посчитаны по всем объектам, "
+                "типы показаны по убыванию количества; непоказанные типы нельзя "
+                "считать отсутствующими):\n"
+                + json.dumps(
+                    _summarize_object_types(all_objects),
+                    ensure_ascii=False,
+                    default=str,
+                )
+            )
         reason_counts: dict[tuple[str, str], int] = {}
         for o in all_objects:
             if o.get("fit") in ("wrong", "unclear"):
