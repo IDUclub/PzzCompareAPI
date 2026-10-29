@@ -152,6 +152,10 @@ class Settings(BaseSettings):
     ollama_base_url: str = Field(...)
     vllm_base_url: str = Field(...)
     vllm_api_key: str = Field(...)
+    # Shared vLLM priority matrix: live-long/blocking=-60, live/blocking=-100.
+    # Non-zero values require vllm serve --scheduling-policy priority.
+    vllm_request_priority: int = Field(default=-60, ge=-(2**63), le=2**63 - 1)
+    vllm_chat_priority: int = Field(default=-100, ge=-(2**63), le=2**63 - 1)
     embed_model: str = Field(...)
     generate_model: str = Field(...)
     top_k: int = Field(default=10)
@@ -253,6 +257,10 @@ def _build_settings_cached() -> Settings:
         ollama_base_url=_get_required_env(config, "OLLAMA_BASE_URL"),
         vllm_base_url=_get_required_env(config, "VLLM_BASE_URL"),
         vllm_api_key=_get_required_env(config, "VLLM_API_KEY"),
+        vllm_request_priority=int(
+            _get_optional_env(config, "VLLM_REQUEST_PRIORITY", "-60")
+        ),
+        vllm_chat_priority=int(_get_optional_env(config, "VLLM_CHAT_PRIORITY", "-100")),
         embed_model=_get_required_env(config, "EMBED_MODEL"),
         generate_model=_get_required_env(config, "GENERATE_MODEL"),
         vectorizer_url=_get_optional_env(config, "VECTORIZER_URL"),
