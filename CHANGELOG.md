@@ -3,6 +3,12 @@
 Every PR into `dev` is merged with a new version and adds its section here (see
 `.github/workflows/version-bump.yml`); a release to `main` tags the version that came from `dev`.
 
+## v0.1.0 (2026-10-29)
+
+[feat/vllm-request-priorities](https://github.com/IDUclub/PzzCompareAPI/pull/83) (#83)
+
+- feat(vllm): prioritize PZZ requests using shared priority matrix
+
 ## v0.0.2 (2026-10-28)
 
 [fix/chat-disable-vllm-thinking](https://github.com/IDUclub/PzzCompareAPI/pull/79) (#79)
