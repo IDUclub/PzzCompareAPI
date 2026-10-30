@@ -306,6 +306,121 @@ def test_scenario_report_context_counts_objects_not_parcels() -> None:
     assert "участк" not in ctx
 
 
+def _object_composition(context: str) -> dict:
+    block = next(
+        part for part in context.split("\n\n") if part.startswith("Состав проверенных")
+    )
+    return json.loads(block.split("\n", 1)[1])
+
+
+def test_large_scenario_context_keeps_permitted_residential_objects() -> None:
+    buildings = [
+        {"category": "Здание", "vri_text": "Жилой дом, 16 этажей", "fit": "correct"}
+        for _ in range(207)
+    ]
+    services = (
+        [
+            {"category": "Сервис", "vri_text": "Магазин", "fit": "correct"}
+            for _ in range(154)
+        ]
+        + [{"category": "Сервис", "vri_text": "Остановка", "fit": "wrong"}]
+        + [
+            {"category": "Сервис", "vri_text": "Школа", "fit": "unclear"}
+            for _ in range(14)
+        ]
+    )
+    report = {
+        "subject": "scenario_object",
+        "summary": {
+            "total": 376,
+            "in_correct_zone": 361,
+            "in_wrong_zone": 1,
+            "unclear": 14,
+        },
+        "zones": [{"objects": buildings + services}],
+    }
+
+    context = build_classification_context(object_zone_fit=report, max_report_chars=1)
+
+    assert "Структурированный отчёт" not in context
+    composition = _object_composition(context)
+    assert composition["по_категориям"] == {
+        "Здание": {"всего": 207, "допустимо": 207},
+        "Сервис": {
+            "всего": 169,
+            "допустимо": 154,
+            "не_соответствует": 1,
+            "ручная_проверка": 14,
+        },
+    }
+    assert composition["по_исходным_типам"][0] == {
+        "Категория_объекта": "Здание",
+        "Исходный_тип_объекта": "Жилой дом, 16 этажей",
+        "всего": 207,
+        "допустимо": 207,
+    }
+    assert composition["объектов_в_непоказанных_типах"] == 0
+
+
+def test_object_context_bounds_type_details_but_keeps_exact_category_counts() -> None:
+    report = {
+        "mode": "building_pzz_check",
+        "objects": [
+            {
+                "category": "Здание",
+                "vri_text": f"Тип {i}: " + "x" * 1000,
+                "fit": "correct",
+            }
+            for i in range(70)
+        ],
+    }
+
+    context = build_classification_context(object_zone_fit=report, max_report_chars=1)
+
+    composition = _object_composition(context)
+    assert composition["по_категориям"] == {"Здание": {"всего": 70, "допустимо": 70}}
+    assert len(composition["по_исходным_типам"]) == 60
+    assert composition["всего_типов"] == 70
+    assert composition["объектов_в_непоказанных_типах"] == 10
+    assert all(
+        len(row["Исходный_тип_объекта"]) <= 240
+        for row in composition["по_исходным_типам"]
+    )
+
+
+def test_object_context_keeps_unknown_types_and_results_explicit() -> None:
+    report = {
+        "subject": "scenario_object",
+        "objects": [{"matched_vri_name": "Жилая застройка"}, {}],
+    }
+
+    composition = _object_composition(
+        build_classification_context(object_zone_fit=report, max_report_chars=1)
+    )
+
+    assert composition["по_категориям"] == {
+        "Категория не указана": {"всего": 2, "результат_не_указан": 2}
+    }
+    assert composition["по_исходным_типам"] == [
+        {
+            "Категория_объекта": "Категория не указана",
+            "Исходный_тип_объекта": "Тип объекта не указан",
+            "всего": 2,
+            "результат_не_указан": 2,
+        }
+    ]
+
+
+def test_parcel_context_does_not_add_object_composition() -> None:
+    context = build_classification_context(
+        object_zone_fit={
+            "objects": [{"vri_text": "Жилая застройка", "fit": "correct"}]
+        },
+        max_report_chars=1,
+    )
+    assert "Состав проверенных" not in context
+
+
 def test_build_messages_and_context() -> None:
     ctx = build_classification_context(chat_message="РЕЗЮМЕ", object_zone_fit={"a": 1})
     assert "РЕЗЮМЕ" in ctx and "JSON" in ctx
