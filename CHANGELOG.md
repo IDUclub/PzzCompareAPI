@@ -3,6 +3,12 @@
 Every PR into `dev` is merged with a new version and adds its section here (see
 `.github/workflows/version-bump.yml`); a release to `main` tags the version that came from `dev`.
 
+## v0.2.0 (2026-10-30)
+
+[feat/pzz-chat-object-context](https://github.com/IDUclub/PzzCompareAPI/pull/82) (#82)
+
+- fix(chat): preserve object types in compact PZZ context
+
 ## v0.1.0 (2026-10-29)
 
 [feat/vllm-request-priorities](https://github.com/IDUclub/PzzCompareAPI/pull/83) (#83)
