@@ -59,6 +59,7 @@ def test_stream_chat_yields_deltas_and_stops_on_done() -> None:
     assert seen["path"] == "/api/chat"
     assert seen["body"]["stream"] is True
     assert seen["body"]["options"]["temperature"] == 0.1
+    assert "priority" not in seen["body"]
 
 
 def test_non_2xx_raises_chat_llm_error() -> None:
@@ -123,6 +124,7 @@ def test_vllm_stream_ignores_reasoning_and_stops_on_done() -> None:
     assert seen["path"] == "/v1/chat/completions"
     assert seen["body"]["stream"] is True
     assert seen["body"]["temperature"] == 0.1
+    assert seen["body"]["priority"] == -100
 
 
 def test_vllm_stream_sends_bearer_token_when_configured() -> None:
@@ -229,6 +231,7 @@ def test_vllm_complete_json_uses_response_format_and_parses_content() -> None:
     assert asyncio.run(run()) == {"column": "kad_nom"}
     body = seen["body"]
     assert body["stream"] is False
+    assert body["priority"] == -60
     assert body["response_format"]["type"] == "json_schema"
     assert body["response_format"]["json_schema"]["schema"] == schema
     assert body["response_format"]["json_schema"]["strict"] is True
@@ -290,6 +293,8 @@ def _settings(backend: str) -> SimpleNamespace:
         ollama_base_url="http://ollama.local:11434",
         vllm_base_url="http://vllm.local:8001",
         vllm_api_key="key",
+        vllm_request_priority=-60,
+        vllm_chat_priority=-100,
         chat_model="gpt-oss-20b",
         generate_model="generate",
         chat_request_timeout_seconds=900.0,
@@ -317,3 +322,36 @@ def test_factory_falls_back_to_generate_model() -> None:
     settings = _settings("vllm")
     settings.chat_model = ""
     assert build_chat_llm_client(settings)._default_model == "generate"
+
+
+@pytest.mark.parametrize(
+    "request_priority, chat_priority", [(-60, -100), (-20, -80), (0, 0)]
+)
+def test_factory_sends_configured_priorities_for_both_call_types(
+    request_priority: int, chat_priority: int
+) -> None:
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body)
+        if body["stream"]:
+            return httpx.Response(200, content=_sse(["[DONE]"]))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    async def run() -> None:
+        settings = _settings("vllm")
+        settings.vllm_request_priority = request_priority
+        settings.vllm_chat_priority = chat_priority
+        client = build_chat_llm_client(settings)
+        await client._client.aclose()
+        client._client = httpx.AsyncClient(
+            base_url="http://llm.local", transport=httpx.MockTransport(handler)
+        )
+        async with client:
+            await client.complete_json([], schema={"type": "object"})
+            async for _ in client.stream_chat([]):
+                pass
+
+    asyncio.run(run())
+    assert [body["priority"] for body in seen] == [request_priority, chat_priority]

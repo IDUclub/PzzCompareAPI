@@ -129,6 +129,17 @@ class VllmChatClient(ChatLlmClient):
 
     _PATH = "/v1/chat/completions"
 
+    def __init__(
+        self,
+        *args: Any,
+        request_priority: int = -60,
+        chat_priority: int = -100,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._request_priority = request_priority
+        self._chat_priority = chat_priority
+
     async def stream_chat(
         self,
         messages: list[dict[str, str]],
@@ -148,6 +159,7 @@ class VllmChatClient(ChatLlmClient):
         payload: dict[str, Any] = {
             "model": selected_model,
             "stream": True,
+            "priority": self._chat_priority,
             "messages": messages,
             "temperature": (self._temperature if temperature is None else temperature),
             **_no_thinking_params(selected_model),
@@ -201,6 +213,7 @@ class VllmChatClient(ChatLlmClient):
         payload: dict[str, Any] = {
             "model": selected_model,
             "stream": False,
+            "priority": self._request_priority,
             "messages": messages,
             "response_format": {
                 "type": "json_schema",
@@ -345,6 +358,8 @@ def build_chat_llm_client(settings: "Settings" | None = None) -> ChatLlmClient:
             timeout_seconds=settings.chat_request_timeout_seconds,
             temperature=settings.chat_temperature,
             api_key=settings.vllm_api_key,
+            request_priority=settings.vllm_request_priority,
+            chat_priority=settings.vllm_chat_priority,
         )
     return OllamaChatClient(
         base_url=settings.ollama_base_url,
