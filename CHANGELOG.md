@@ -5,9 +5,9 @@ Every PR into `dev` is merged with a new version and adds its section here (see
 
 ## v0.2.0 (2026-10-30)
 
-[feat/pzz-chat-object-context](https://github.com/IDUclub/PzzCompareAPI/pull/82) (#82)
+[feat/qwen-chat-thinking-regression](https://github.com/IDUclub/PzzCompareAPI/pull/81) (#81)
 
-- fix(chat): preserve object types in compact PZZ context
+- test(chat): cover Qwen thinking settings and model overrides
 
 ## v0.1.0 (2026-10-29)
 
