@@ -117,6 +117,7 @@ class SubprocessPipelineRunner(PipelineRunner):
         env["LLM_BACKEND"] = settings.llm_backend
         env["VLLM_BASE_URL"] = settings.vllm_base_url
         env["VLLM_API_KEY"] = settings.vllm_api_key
+        env["VLLM_REQUEST_PRIORITY"] = str(settings.vllm_request_priority)
         env["EMBED_MODEL"] = settings.embed_model
         env["GENERATE_MODEL"] = settings.generate_model
         env["TOP_K"] = str(settings.top_k)

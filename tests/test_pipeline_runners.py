@@ -50,6 +50,7 @@ def _settings(mode: str) -> SimpleNamespace:
         llm_backend="vllm",
         vllm_base_url="http://vllm",
         vllm_api_key="key",
+        vllm_request_priority=-60,
         embed_model="embed",
         generate_model="generate",
         top_k=10,
@@ -127,6 +128,29 @@ def test_build_output_glob_raises_if_no_geojson(tmp_path) -> None:
         raise AssertionError(
             "FileNotFoundError is expected when no geojson artifacts are produced"
         )
+
+
+def test_subprocess_receives_effective_priority(tmp_path, monkeypatch) -> None:
+    from service.settings import Settings
+
+    settings = Settings(vllm_request_priority=-20)
+    monkeypatch.setenv("VLLM_REQUEST_PRIORITY", "999")
+    monkeypatch.setattr("service.settings.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "service.infrastructure.config_runtime.apply_overrides", lambda: None
+    )
+    seen = {}
+
+    def run(args, env):
+        seen.update(env)
+        (tmp_path / "pzz_compare_spatial_first_task-123_result.geojson").write_text(
+            "{}"
+        )
+        return 0, ""
+
+    monkeypatch.setattr(runner_mod, "_run_pipeline_process", run)
+    SubprocessPipelineRunner(settings).run(_request(tmp_path))
+    assert seen["VLLM_REQUEST_PRIORITY"] == "-20"
 
 
 def _in_process_kwargs(tmp_path, monkeypatch, request) -> dict:

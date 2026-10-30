@@ -269,7 +269,7 @@ def get_shared_vllm_session() -> requests.Session:
 class VLLMChatClient:
     """OpenAI-compatible vLLM client with the same complete_json interface as Ollama client."""
 
-    def __init__(self, base_url: str, api_key: str, timeout: int = 900, default_model: Optional[str] = None, temperature: float = 0.0, max_tokens: int = 1024, think: Any = "auto") -> None:
+    def __init__(self, base_url: str, api_key: str, timeout: int = 900, default_model: Optional[str] = None, temperature: float = 0.0, max_tokens: int = 1024, think: Any = "auto", priority: int = -60) -> None:
         self.base_url = base_url.rstrip("/")
         self.chat_url = f"{self.base_url}/v1/chat/completions"
         self.api_key = api_key
@@ -279,6 +279,7 @@ class VLLMChatClient:
         self.max_tokens = max_tokens
         self.think = think
         self.session = get_shared_vllm_session()
+        self.priority = priority
 
     def _resolve_runtime(self, model: str) -> tuple[str, Any]:
         _ = model
@@ -319,6 +320,7 @@ class VLLMChatClient:
             },
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
+            "priority": self.priority,
             "stream": False,
         }
 
@@ -405,6 +407,7 @@ def build_llm_client(*, backend: str, timeout: int, default_model: Optional[str]
             default_model=default_model,
             temperature=temperature,
             max_tokens=num_predict,
+            priority=int(_config_optional("VLLM_REQUEST_PRIORITY") or "-60"),
             think=think,
         ))
     return CachingLLMClient(OllamaLLMClient(
