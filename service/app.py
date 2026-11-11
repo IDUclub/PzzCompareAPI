@@ -27,6 +27,7 @@ from .api import (
 )
 from .__version__ import VERSION
 from .api.error_logging import register_client_error_logging
+from .api.security import get_current_user, http_bearer
 from .api.utils import api_log
 from .db import session_scope
 from .dependencies import (
@@ -40,6 +41,7 @@ from .infrastructure.repositories.sqlalchemy_config_repository import (
 )
 from .log_sink import setup_redis_sink
 from .logging_config import setup_logging
+from .resumable_streams import install_resumable_streams, user_owner
 from .settings import ensure_writable_dirs, get_settings
 
 setup_logging()
@@ -119,6 +121,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 register_client_error_logging(app)
 
@@ -130,3 +133,12 @@ app.include_router(uploads.router)
 app.include_router(admin_config.router)
 app.include_router(zone_descriptions.router)
 app.include_router(regulations.router)
+
+
+async def _stream_owner(request):
+    return user_owner(await get_current_user(await http_bearer(request)))
+
+
+install_resumable_streams(
+    app, service="pzz-compare", prefix="", authenticate=_stream_owner
+)

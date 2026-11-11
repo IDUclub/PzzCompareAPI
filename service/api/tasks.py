@@ -833,7 +833,7 @@ async def task_stream_with_chat_generator(
         geo_layers: list[dict[str, Any]] = []
         inputs_emitted = False
         while True:
-            if await request.is_disconnected():
+            if not getattr(request.state, "resumable_stream", False) and await request.is_disconnected():
                 break
 
             with session_scope() as session:
