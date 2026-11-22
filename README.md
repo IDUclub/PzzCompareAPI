@@ -1,47 +1,49 @@
 # PZZ Pipeline Service
 
-Сервис классификации кадастровых объектов по правилам землепользования и
-застройки (**ПЗЗ**). Сравнивает функциональные зоны проекта с объектами,
-которые на них стоят, и сообщает, какие объекты находятся **не в своей зоне**,
-с человекочитаемым объяснением для чат-бота.
+A service that classifies cadastral objects against land use and development
+rules (**PZZ**, zoning regulations). It compares a project's functional zones
+with the objects located in them, reports which objects are **in the wrong zone**,
+and gives a human-readable explanation for the chatbot.
 
-Построен вокруг готового пайплайна классификации (`pipeline_modules/`),
-обёрнутого в продакшн-сервис: HTTP API, фоновый воркер, объектное хранилище и
-MCP-сервер для AI-агентов.
+It is built around an existing classification pipeline (`pipeline_modules/`),
+wrapped into a production service: an HTTP API, a background worker, object
+storage and an MCP server for AI agents.
 
 ---
 
-## Что умеет
+## What it does
 
-Три сценария использования (соответствуют пунктам ТЗ):
+Three use cases (matching the items of the technical specification):
 
-1. **Сравнение зон с объектами** — определить, какие объекты стоят не в своей
-   функциональной зоне (пока в фокусе — жилые объекты).
-2. **Справка по зонам** — по проекту отдать список зон с текстовым описанием
-   «что можно / нельзя строить».
-3. **Ответ чат-бота** — готовый plain-text с перечнем неуместных объектов.
+1. **Comparing zones with objects** — find out which objects stand outside
+   their proper functional zone (currently focused on residential objects).
+2. **Zone reference** — for a project, return the list of zones with a text
+   description of "what may / may not be built".
+3. **Chatbot answer** — ready-made plain text listing the misplaced objects.
 
-Два способа подать данные:
+Two ways to supply data:
 
-- **Сценарный флоу** (для агентов): данные тянутся из IDU `urban_api` по
-  `scenario_id` + `(year, source)`. Токен пользователя форвардится в urban_api.
-- **Файловый флоу**: пользователь загружает GeoJSON напрямую
+- **Scenario flow** (for agents): data is pulled from IDU `urban_api` by
+  `scenario_id` + `(year, source)`. The user's token is forwarded to urban_api.
+- **File flow**: the user uploads GeoJSON directly
   (`/tasks/pzz-check`, `/tasks/classify-only`).
 
-Отдельно — **точечная проверка ВРИ по ПЗЗ территории** для агента проверки
-соответствия: допустим ли вид использования в зоне по настоящим ПЗЗ территории
-проекта (их читает NormGraph), с предельной этажностью и высотой
-(см. «Проверка ВРИ по ПЗЗ территории»). Сценарный и файловый флоу её не используют.
+Separately, there is a **point check of a VRI (permitted use type) against the
+territory's PZZ** for the compliance-checking agent: is a given use permitted in
+a zone under the actual PZZ of the project's territory (read via NormGraph),
+including the maximum number of floors and height
+(see [Checking VRI against the territory's PZZ](#checking-vri-against-the-territorys-pzz)).
+The scenario and file flows do not use it.
 
 ---
 
-## Архитектура
+## Architecture
 
 ```
                 ┌─────────────┐      ┌──────────────┐
-   агент ─MCP──▶│  mcp_server │─REST▶│   FastAPI    │
+   agent ─MCP──▶│  mcp_server │─REST▶│   FastAPI    │
                 └─────────────┘      │   (api)      │
-   фронт ─REST───────────────────────▶              │
+   front ─REST───────────────────────▶              │
                                      └──────┬───────┘
                                             │ enqueue (Redis)
                                      ┌──────▼───────┐   ┌──────────┐
@@ -52,268 +54,269 @@ MCP-сервер для AI-агентов.
                           Postgres ◀────────┴────────▶ MinIO (inputs/outputs)
 ```
 
-Слои внутри `service/`:
+Layers inside `service/`:
 
-| Каталог | Назначение |
+| Directory | Purpose |
 |---|---|
-| `api/` | HTTP-эндпоинты (classifier, scenarios, tasks, system) |
-| `application/` | use-cases (create/start/finish task) — оркестрация |
-| `domain/` | бизнес-правила, порты (контракты репозиториев), состояния задач |
-| `infrastructure/` | реализации: БД-репозитории, MinIO, urban_api клиент, PZZ-маппинг, **раннер пайплайна** |
-| `mcp_server/` | MCP-сервер для агентов (отдельный процесс, тонкий клиент к API) |
+| `api/` | HTTP endpoints (classifier, scenarios, tasks, system) |
+| `application/` | use cases (create/start/finish task) — orchestration |
+| `domain/` | business rules, ports (repository contracts), task states |
+| `infrastructure/` | implementations: DB repositories, MinIO, urban_api client, PZZ mapping, **pipeline runner** |
+| `mcp_server/` | MCP server for agents (separate process, thin client over the API) |
 
-`pipeline_modules/` — **сторонний пайплайн** классификации (geopandas + NLP +
-LLM). Сервис вызывает его через порт `PipelineRunner`
-(`infrastructure/runners/pipeline_runner.py`) — in-process или в subprocess, с
-прозрачной загрузкой/выгрузкой входов и результатов из MinIO.
+`pipeline_modules/` is a **third-party** classification **pipeline** (geopandas +
+NLP + LLM). The service calls it through the `PipelineRunner` port
+(`infrastructure/runners/pipeline_runner.py`), in-process or in a subprocess,
+transparently loading inputs from and uploading results to MinIO.
 
 ---
 
-## Технологии
+## Technologies
 
-- Python 3.11, uv (зависимости в `pyproject.toml` + `uv.lock`), FastAPI, Celery, SQLAlchemy + Alembic
-- PostgreSQL, Redis, MinIO (S3-совместимое хранилище)
-- FastMCP 3.x (MCP-сервер), Prometheus-метрики
+- Python 3.11, uv (dependencies in `pyproject.toml` + `uv.lock`), FastAPI, Celery, SQLAlchemy + Alembic
+- PostgreSQL, Redis, MinIO (S3-compatible storage)
+- FastMCP 3.x (MCP server), Prometheus metrics
 - Docker / Docker Compose
 
 ---
 
-## Быстрый старт (локально)
+## Quick start (local)
 
-Требуется заполненный `.env.development` (см. `.env.example`) с доступами к БД,
-Redis, MinIO, LLM-бэкенду и (для сценарного флоу) urban_api.
+You need a filled-in `.env.development` (see `.env.example`) with access to the DB,
+Redis, MinIO, the LLM backend and (for the scenario flow) urban_api.
 
 ```bash
 docker compose -f docker-compose.yml up -d --build
 ```
 
-Поднимет 6 сервисов: `postgres`, `redis`, `api` (миграции на старте),
+This starts 6 services: `postgres`, `redis`, `api` (runs migrations on startup),
 `worker`, `beat`, `mcp`.
 
-| Сервис | Адрес |
+| Service | Address |
 |---|---|
 | API | http://localhost:8000 (OpenAPI: `/docs`) |
 | MCP | http://localhost:8765/mcp (health: `/health`) |
-| Метрики воркера | http://localhost:9100/metrics |
+| Worker metrics | http://localhost:9100/metrics |
 | Postgres / Redis | 5432 / 6379 |
 
-Свернуть: `docker compose -f docker-compose.yml down`.
+Shut down: `docker compose -f docker-compose.yml down`.
 
 ---
 
-## Эндпоинты (основное)
+## Endpoints (main)
 
-**Файловый флоу**
-- `POST /uploads` — загрузить файл один раз и дальше ссылаться на него по `upload_id` (требует Bearer, живёт 24 ч); в ответе `url` — долговечная ссылка для истории чата
-- `GET /uploads/{upload_id}` — скачать свою загрузку (требует Bearer; чужая — 403)
+**File flow**
+- `POST /uploads` — upload a file once and then refer to it by `upload_id` (requires Bearer, lives 24 h); the `url` in the response is a durable link for the chat history
+- `GET /uploads/{upload_id}` — download your own upload (requires Bearer; someone else's → 403)
 
-Каталог загрузок вынесен в том (`/app/uploads`), чтобы `upload_id` переживал передеплой: иначе
-выкатка посреди диалога обесценила бы файлы, которые пользователь только что приложил. Просроченные
-загрузки удаляет celery beat (`cleanup-expired-uploads`, интервал `UPLOADS_CLEANUP_INTERVAL_SECONDS`,
-срок жизни `UPLOADS_MAX_AGE_HOURS`).
-- `POST /tasks/pzz-check` — полная проверка ПЗЗ (кадастр + зоны)
-- `POST /tasks/classify-only` — только классификация ВРИ по классификатору
-- `POST /tasks/building-pzz-check` — проверка зданий по ПЗЗ; колонки определяются
-  автоматически. Задача создаётся не всегда: если коды зон не покрыты встроенным
-  шаблоном, в ответе приходит `action` = `confirm` (подтвердить подобранные
-  соответствия и повторить с `confirmed_zone_map`) или `suggest_upload` (загрузить
-  своё описание разрешённых ВРИ)
-- `POST /tasks/auto/chat/stream` с `mode=placement` — подбор мест; необязательный `existing_objects_feature_collection_file` задаёт фактические объекты для `A*`/`B*` отдельно от кадастра (`existing_objects_type_col` — явная колонка типа)
-- `POST /tasks/pzz-check/chat/stream` — проверка ПЗЗ + стрим разговорного ответа LLM (SSE, требует Bearer)
-- `POST /tasks/classify-only/chat/stream` — классификация ВРИ + стрим разговорного ответа LLM (SSE, требует Bearer)
+The uploads directory is mounted as a volume (`/app/uploads`) so that `upload_id` survives a redeploy:
+otherwise a rollout in the middle of a conversation would invalidate files the user has just attached.
+Expired uploads are removed by celery beat (`cleanup-expired-uploads`, interval
+`UPLOADS_CLEANUP_INTERVAL_SECONDS`, lifetime `UPLOADS_MAX_AGE_HOURS`).
+- `POST /tasks/pzz-check` — full PZZ check (cadastre + zones)
+- `POST /tasks/classify-only` — VRI classification against the classifier only
+- `POST /tasks/building-pzz-check` — PZZ check of buildings; columns are detected
+  automatically. A task is not always created: if the zone codes are not covered by the
+  built-in template, the response contains `action` = `confirm` (confirm the proposed
+  mappings and retry with `confirmed_zone_map`) or `suggest_upload` (upload your own
+  description of permitted VRIs)
+- `POST /tasks/auto/chat/stream` with `mode=placement` — site selection; the optional `existing_objects_feature_collection_file` supplies actual objects for `A*`/`B*` separately from the cadastre (`existing_objects_type_col` — explicit type column)
+- `POST /tasks/pzz-check/chat/stream` — PZZ check + streamed conversational LLM answer (SSE, requires Bearer)
+- `POST /tasks/classify-only/chat/stream` — VRI classification + streamed conversational LLM answer (SSE, requires Bearer)
 - `GET /tasks/{id}` · `GET /tasks_list` · `GET /tasks/{id}/result`
-- `GET /files/{slot}/{id}` — долговечная ссылка на геослой (`slot`: `result`/`cadastral`/`zones` — API отдаёт байты из MinIO потоком через себя; `result_buildings`/`result_services`/`functional_zones` — собираются на лету)
-- `GET /tasks/{id}/object-zone-fit?group_by=zone|object` — структурированный отчёт + `chat_message`
+- `GET /files/{slot}/{id}` — durable link to a geo layer (`slot`: `result`/`cadastral`/`zones` — the API streams the bytes from MinIO through itself; `result_buildings`/`result_services`/`functional_zones` — assembled on the fly)
+- `GET /tasks/{id}/object-zone-fit?group_by=zone|object` — structured report + `chat_message`
 - `GET /tasks/{id}/events` · `DELETE /tasks/{id}` · `POST /tasks/{id}/recompute`
 
-Загрузки кадастра/зон принимают GeoJSON, а также GeoPackage `.gpkg`, GML, KML,
-GeoParquet и ZIP-архив со слоем Shapefile (`.shp`) или MapInfo (`.tab` / `.mif`) —
-не-GeoJSON форматы конвертируются в GeoJSON (EPSG:4326) на входе.
-Каждый слой передаётся либо файлом в теле запроса, либо полем `<слой>_upload_id`
-с идентификатором из `POST /uploads` — второй вариант нужен MCP-клиентам, где
-слой не помещается в аргумент инструмента.
+Cadastre/zone uploads accept GeoJSON, as well as GeoPackage `.gpkg`, GML, KML,
+GeoParquet and a ZIP archive with a Shapefile (`.shp`) or MapInfo (`.tab` / `.mif`) layer;
+non-GeoJSON formats are converted to GeoJSON (EPSG:4326) on input.
+Each layer is passed either as a file in the request body or as a `<layer>_upload_id` field
+with an identifier from `POST /uploads`; the latter is needed by MCP clients where a layer
+does not fit into a tool argument.
 
-**Сценарный флоу** (требует `Authorization: Bearer <jwt>`)
-- `POST /scenarios/{id}/classify` — запуск по данным urban_api
-- `POST /scenarios/{id}/chat/stream` — запуск + стрим разговорного ответа LLM (SSE)
-- `POST /scenarios/{id}/chat/stream` с `mode=placement`, `service_name`, `year`, `source` — подбор мест по функциональным зонам и всем объектам сценария, без загрузки файлов
-- `POST /scenarios/{id}/placement` — тот же подбор без чат-стрима; `GET /scenarios/{id}/tasks/{external_id}/placement-summary` — сводка
-- `GET /scenarios/{id}/zones-info` — зоны + справка «что можно строить»
+**Scenario flow** (requires `Authorization: Bearer <jwt>`)
+- `POST /scenarios/{id}/classify` — run on urban_api data
+- `POST /scenarios/{id}/chat/stream` — run + streamed conversational LLM answer (SSE)
+- `POST /scenarios/{id}/chat/stream` with `mode=placement`, `service_name`, `year`, `source` — site selection based on the functional zones and all objects of the scenario, without uploading files
+- `POST /scenarios/{id}/placement` — the same selection without the chat stream; `GET /scenarios/{id}/tasks/{external_id}/placement-summary` — summary
+- `GET /scenarios/{id}/zones-info` — zones + "what may be built" reference
 - `GET /scenarios/{id}/tasks/{external_id}` (+ `/result`, `/object-zone-fit`, `/events`)
 - `DELETE` / `POST .../recompute`
 
-**Проверка ВРИ по ПЗЗ территории** (требует `Authorization: Bearer <jwt>`)
-- `POST /pzz/regulations/check-vri` — допустим ли вид использования в зоне по ПЗЗ
-  территории; см. «Проверка ВРИ по ПЗЗ территории»
+**Checking VRI against the territory's PZZ** (requires `Authorization: Bearer <jwt>`)
+- `POST /pzz/regulations/check-vri` — is a use permitted in a zone under the territory's
+  PZZ; see [Checking VRI against the territory's PZZ](#checking-vri-against-the-territorys-pzz)
 
-**Админ: рантайм-конфиг** (заголовок `X-Admin-Token: <ADMIN_API_TOKEN>`; пусто → 503)
-- `GET /admin/config/settings` — текущие эффективные настройки (секреты замаскированы)
-- `GET /admin/config/overrides` — активные оверрайды
-- `GET /admin/config/{key}` — эффективное значение + статус оверрайда
-- `PUT /admin/config/{key}` `{value, updated_by?}` — задать оверрайд (валидируется; кред/boot-only/неизвестные ключи → 400)
-- `DELETE /admin/config/{key}` — снять оверрайд (вернуть деплой-значение)
-- `POST /admin/config/reload` — форс-ресинк оверрайдов в этом процессе
+**Admin: runtime config** (header `X-Admin-Token: <ADMIN_API_TOKEN>`; empty → 503)
+- `GET /admin/config/settings` — current effective settings (secrets masked)
+- `GET /admin/config/overrides` — active overrides
+- `GET /admin/config/{key}` — effective value + override status
+- `PUT /admin/config/{key}` `{value, updated_by?}` — set an override (validated; credential/boot-only/unknown keys → 400)
+- `DELETE /admin/config/{key}` — remove an override (restore the deployed value)
+- `POST /admin/config/reload` — force a resync of overrides in this process
 
-  Оверрайды хранятся в таблице `config_override` (общая для всех контейнеров) и синкаются в
-  `os.environ` каждого процесса (TTL ~5с) + сбрасывают кэш `Settings` — меняются **без редеплоя**,
-  на всём флоте, включая subprocess пайплайна. Секреты (`ENV_SECRET`) и boot-only ключи менять
-  нельзя. `ADMIN_API_TOKEN` живёт в `ENV_SECRET`.
+  Overrides are stored in the `config_override` table (shared by all containers) and synced into
+  each process's `os.environ` (TTL ~5 s), also resetting the `Settings` cache — they change
+  **without a redeploy** across the whole fleet, including the pipeline subprocess. Secrets
+  (`ENV_SECRET`) and boot-only keys cannot be changed. `ADMIN_API_TOKEN` lives in `ENV_SECRET`.
 
-Чат-ручки `*/chat/stream` дожидаются завершения классификации, затем стримят (в формате gMART:
-конверт `{type, content}`) отчёт (`object_zone_fit` для pzz-check, `classify_summary` для
-classify-only) → `service_event/chat_created` (если не передан `chat_id`) → `chunk`* → `done`,
-и сохраняют диалог (user + assistant) в **ChatStorage**.
-Разговорный ответ генерирует тот же LLM-бэкенд, что и пайплайн (`LLM_BACKEND`): при `vllm` —
-OpenAI-совместимый `/v1/chat/completions` на `VLLM_BASE_URL`, иначе Ollama `/api/chat` на
-`OLLAMA_BASE_URL`. Модель — параметр запроса `model` (дефолт `CHAT_MODEL`/`GENERATE_MODEL`).
+The `*/chat/stream` chat endpoints wait for the classification to finish, then stream (in gMART
+format: an envelope `{type, content}`) the report (`object_zone_fit` for pzz-check,
+`classify_summary` for classify-only) → `service_event/chat_created` (if no `chat_id` was passed)
+→ `chunk`* → `done`, and save the conversation (user + assistant) to **ChatStorage**.
+The conversational answer is generated by the same LLM backend as the pipeline (`LLM_BACKEND`):
+with `vllm`, the OpenAI-compatible `/v1/chat/completions` at `VLLM_BASE_URL`; otherwise Ollama
+`/api/chat` at `OLLAMA_BASE_URL`. The model is the `model` request parameter (default
+`CHAT_MODEL`/`GENERATE_MODEL`).
 
-Большой GeoJSON-результат в чат-стриме отдаётся **ссылкой** (событие `file`), а не инлайном:
-долговечный `url = /files/result/{id}` (API проксирует байты из MinIO, не протухает) сохраняется в
-ChatStorage как `file`-часть сообщения. `download_url` всегда `null`: MinIO во внешней сети недоступен.
-`url` всегда относительный: фронт сам подставляет базовый адрес сервиса по `source_service`.
+A large GeoJSON result in the chat stream is delivered **as a link** (a `file` event), not inline:
+the durable `url = /files/result/{id}` (the API proxies the bytes from MinIO, the link does not expire)
+is stored in ChatStorage as the `file` part of the message. `download_url` is always `null`: MinIO is
+not reachable from the external network. `url` is always relative: the frontend prepends the
+service base URL itself based on `source_service`.
 
-**Системное**: `GET /health`, `GET /readiness`, `GET /metrics`
+**System**: `GET /health`, `GET /readiness`, `GET /metrics`
 
-Подробное руководство для фронтенда — [`docs/frontend-api-guide.md`](docs/frontend-api-guide.md).
+Detailed frontend guide (in Russian): [`docs/frontend-api-guide.md`](docs/frontend-api-guide.md).
 
 ---
 
-## MCP (для AI-агентов)
+## MCP (for AI agents)
 
-MCP-сервер (`service/mcp_server/`) — отдельный процесс на FastMCP, тонкий
-клиент поверх REST API. Позволяет AI-агенту (Claude и др.) запускать
-классификацию и читать отчёты как набор инструментов, без знания внутренностей
-сервиса. Транспорт — streamable-HTTP на `:8765/mcp` (`MCP_API_BASE_URL`
-указывает на api).
+The MCP server (`service/mcp_server/`) is a separate FastMCP process, a thin
+client on top of the REST API. It lets an AI agent (Claude and others) run
+classification and read reports as a set of tools, without knowing the
+service internals. Transport: streamable HTTP at `:8765/mcp` (`MCP_API_BASE_URL`
+points to the api).
 
-### Инструменты
+### Tools
 
-**Сценарные** (`tools/scenarios.py`):
+**Scenario tools** (`tools/scenarios.py`):
 
-| Инструмент | Назначение |
+| Tool | Purpose |
 |---|---|
-| `classify_scenario` | Запустить классификацию по данным urban_api → `external_id` |
-| `classify_scenario_and_wait` | То же + ожидание с прогрессом, сразу возвращает отчёт |
-| `get_scenario_classification_status` | Статус задачи (`queued/running/finished/failed`) |
-| `get_scenario_classification_report` | Отчёт «кто не в своей зоне» + готовый `chat_message` |
-| `get_scenario_zones_info` | Зоны проекта + справка «что можно строить» |
-| `recompute_scenario_classification` | Принудительный пересчёт |
+| `classify_scenario` | Start classification on urban_api data → `external_id` |
+| `classify_scenario_and_wait` | Same + wait with progress, returns the report directly |
+| `get_scenario_classification_status` | Task status (`queued/running/finished/failed`) |
+| `get_scenario_classification_report` | "Who is in the wrong zone" report + ready-made `chat_message` |
+| `get_scenario_zones_info` | Project zones + "what may be built" reference |
+| `recompute_scenario_classification` | Forced recomputation |
 
-**Файловые** (`tools/tasks.py`): `submit_pzz_check_task`,
+**File tools** (`tools/tasks.py`): `submit_pzz_check_task`,
 `submit_classify_only_task`, `get_task_status`, `list_tasks`,
 `get_task_events`, `get_task_result`, `cancel_task`, `recompute_task`.
 
-**Сценарный подбор** (`tools/scenarios.py`): `place_service_in_scenario` →
+**Scenario site selection** (`tools/scenarios.py`): `place_service_in_scenario` →
 `get_scenario_classification_status` → `get_scenario_placement_summary`.
-Использует справочное соответствие функциональных зон и нормы NormGraph;
-геометрия объектов сценария не заменяет фактические границы кадастра и ПЗЗ.
+It uses a reference mapping of functional zones and NormGraph standards;
+the geometry of scenario objects does not replace the actual cadastral and PZZ boundaries.
 
-**ПЗЗ территории** (`tools/regulations.py`): `check_vri_in_pzz` — точечная
-проверка вида использования по ПЗЗ территории проекта (`POST /pzz/regulations/check-vri`).
+**Territory PZZ** (`tools/regulations.py`): `check_vri_in_pzz` — point check of a
+permitted use against the PZZ of the project's territory (`POST /pzz/regulations/check-vri`).
 
-### Параметры
+### Parameters
 
-Агент передаёт содержательные параметры **явно**: `scenario_id`, `year`,
-`source`, `physical_object_type_id` (4 = жилые), `group_by`, `external_id`
-и т.п. `scenario_id` указывает, с каким проектом/сценарием работать.
+The agent passes all substantive parameters **explicitly**: `scenario_id`, `year`,
+`source`, `physical_object_type_id` (4 = residential), `group_by`, `external_id`
+and so on. `scenario_id` specifies which project/scenario to work with.
 
-**Не** является аргументом инструмента только аутентификация: Bearer-токен
-пользователя берётся из заголовка `Authorization` и форвардится в urban_api.
+The only thing that is **not** a tool argument is authentication: the user's Bearer
+token is taken from the `Authorization` header and forwarded to urban_api.
 
-### Типовой диалог
+### Typical conversation
 
 ```
-get_scenario_zones_info(scenario_id, year, source)          # справка + проверка доступа/токена
+get_scenario_zones_info(scenario_id, year, source)          # reference + access/token check
 classify_scenario(scenario_id, year, source, type_id) → external_id
 poll get_scenario_classification_status(scenario_id, external_id) → finished
-get_scenario_classification_report(scenario_id, external_id) # отдать chat_message пользователю
+get_scenario_classification_report(scenario_id, external_id) # return chat_message to the user
 ```
 
-### Обработка токена
+### Token handling
 
-Если urban_api отвергает токен, инструмент возвращает
-`-32002 AUTH_TOKEN_EXPIRED` — агент должен запросить свежий Bearer у
-фронтенда/пользователя и **не** повторять со старым.
+If urban_api rejects the token, the tool returns
+`-32002 AUTH_TOKEN_EXPIRED`; the agent must request a fresh Bearer token from the
+frontend/user and must **not** retry with the old one.
 
-### Подключение (Claude Desktop)
+### Connecting (Claude Desktop)
 
-Через мост `mcp-remote` (stdio → HTTP):
+Via the `mcp-remote` bridge (stdio → HTTP):
 
 ```json
 { "command": "cmd", "args": ["/c", "npx", "-y", "mcp-remote", "http://localhost:8765/mcp"] }
 ```
 
-Смоук-тест end-to-end: `scripts/test_mcp_scenario.py` (нужен `URBAN_API_TOKEN`,
-опц. `SCENARIO_ID` / `SCENARIO_YEAR` / `SCENARIO_SOURCE`).
+End-to-end smoke test: `scripts/test_mcp_scenario.py` (requires `URBAN_API_TOKEN`,
+optionally `SCENARIO_ID` / `SCENARIO_YEAR` / `SCENARIO_SOURCE`).
 
-Дополнительные справки для мультиагентной апробации:
+Additional references for multi-agent trials (in Russian):
 [`docs/pzz-multiagent-scenarios-reference.md`](docs/pzz-multiagent-scenarios-reference.md) —
-роль PzzCompare в сценариях; [`docs/pzz-mcp-agent-contract.md`](docs/pzz-mcp-agent-contract.md) —
-stateless MCP-контракт для взаимодействия агентов.
+the role of PzzCompare in the scenarios; [`docs/pzz-mcp-agent-contract.md`](docs/pzz-mcp-agent-contract.md) —
+the stateless MCP contract for agent interaction.
 
 ---
 
-## Аутентификация
+## Authentication
 
-Сценарные эндпоинты (`/scenarios/*`) требуют `Authorization: Bearer <jwt>`.
-Токен форвардится в urban_api и, опционально, **проверяется локально** по
-образцу IDUclub (Keycloak JWT через JWKS, см. `service/auth/`):
+Scenario endpoints (`/scenarios/*`) require `Authorization: Bearer <jwt>`.
+The token is forwarded to urban_api and, optionally, **verified locally**
+following the IDUclub pattern (Keycloak JWT via JWKS, see `service/auth/`):
 
-- `AUTH_VERIFY=false` (по умолчанию) — токен принимается без проверки подписи
-  (dev, либо когда его уже проверил вышестоящий шлюз);
+- `AUTH_VERIFY=false` (default) — the token is accepted without signature verification
+  (dev, or when an upstream gateway has already verified it);
 - `AUTH_VERIFY=true` + `AUTH_SERVER_URL=https://<host>/realms/<realm>` —
-  проверяются подпись (RS256 по JWKS), issuer и (опц.) audience; отвергнутый
-  токен → `401`.
+  the signature (RS256 via JWKS), issuer and (optionally) audience are verified; a rejected
+  token → `401`.
 
-Параметры: `AUTH_SERVER_URL`, `AUTH_CLIENT_ID`, `AUTH_VERIFY_AUD`,
-`AUTH_VALID_AUDIENCES`, кеши `AUTH_JWKS_CACHE_TTL` / `AUTH_USER_CACHE_TTL`.
+Parameters: `AUTH_SERVER_URL`, `AUTH_CLIENT_ID`, `AUTH_VERIFY_AUD`,
+`AUTH_VALID_AUDIENCES`, caches `AUTH_JWKS_CACHE_TTL` / `AUTH_USER_CACHE_TTL`.
 
-### Сервисный токен для истории чата
+### Service token for chat history
 
-Чат-ручки принимают пользовательский токен с фронта, но **историю чата бэкенд
-сохраняет своим сервисным токеном** (Keycloak `client_credentials` через
-[`idu-service-auth`](https://github.com/IDUclub/idu-service-auth)), а не токеном
-пользователя. Причина: пользовательский токен успевает протухнуть за время
-долгого расчёта, и к моменту записи истории ChatStorage отверг бы его. Бэкенд
-извлекает `user_id` (`sub`) из пользовательского токена в начале запроса (пока
-он свежий) и передаёт его в ChatStorage заголовком `X-User-Id` — так история
-остаётся привязанной к реальному пользователю.
+The chat endpoints accept the user's token from the frontend, but **the backend saves the chat
+history with its own service token** (Keycloak `client_credentials` via
+[`idu-service-auth`](https://github.com/IDUclub/idu-service-auth)), not with the user's
+token. The reason: the user's token can expire during a long computation, and by the time
+the history is written ChatStorage would reject it. The backend extracts `user_id` (`sub`)
+from the user's token at the start of the request (while it is still fresh) and passes it
+to ChatStorage in the `X-User-Id` header, so the history stays bound to the real user.
 
-Параметры: `KEYCLOAK_URL` (база, без `/realms`), `KEYCLOAK_REALM`,
-`KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`, опц. `KEYCLOAK_SCOPE`. Если они
-не заданы — сервисный токен не создаётся и персист истории выключен (ответ всё
-равно стримится). Клиент токена создаётся один раз на процесс в lifespan
-(`service/app.py`), с фоновым обновлением токена.
+Parameters: `KEYCLOAK_URL` (base, without `/realms`), `KEYCLOAK_REALM`,
+`KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`, optionally `KEYCLOAK_SCOPE`. If they
+are not set, no service token is created and history persistence is disabled (the answer is
+still streamed). The token client is created once per process in the lifespan
+(`service/app.py`), with background token refresh.
 
-## Метрики
+## Metrics
 
-Метрики задач (`queue_wait_seconds`, `task_run_seconds`, `task_fail_total`,
-`task_retry_total`) пишутся в процессе воркера, поэтому экспонируются **им** на
-`:9100` — отдельным таргетом от API `:8000/metrics`. Prometheus должен скрейпить
-оба.
+Task metrics (`queue_wait_seconds`, `task_run_seconds`, `task_fail_total`,
+`task_retry_total`) are recorded in the worker process, so they are exposed **by the worker** on
+`:9100`, a separate target from the API's `:8000/metrics`. Prometheus must scrape
+both.
 
 ---
 
-## Тесты
+## Tests
 
 ```bash
-uv sync          # зависимости из uv.lock, вместе с dev-группой (pytest, black, pre-commit)
+uv sync          # dependencies from uv.lock, including the dev group (pytest, black, pre-commit)
 uv run pytest
-uv run pre-commit install   # black на каждый коммит
+uv run pre-commit install   # black on every commit
 ```
 
-Зависимости меняются через `uv add` / `uv remove` (или правкой `pyproject.toml` и `uv lock`);
-`uv.lock` коммитится вместе с `pyproject.toml`. CI ставит их `uv sync --locked`, образ —
-`uv sync --frozen --no-dev`.
+Dependencies are changed via `uv add` / `uv remove` (or by editing `pyproject.toml` and running
+`uv lock`); `uv.lock` is committed together with `pyproject.toml`. CI installs them with
+`uv sync --locked`, the image with `uv sync --frozen --no-dev`.
 
-Тесты герметичны (sqlite, dummy-окружение в `tests/conftest.py`) — живой
-Postgres/Redis не нужен. Пайплайн-тесты требуют установленных зависимостей
-пайплайна (geopandas, nltk и пр.).
+Tests are hermetic (sqlite, dummy environment in `tests/conftest.py`), so no live
+Postgres/Redis is needed. Pipeline tests require the pipeline dependencies to be
+installed (geopandas, nltk, etc.).
 
-Интеграционные тесты (`tests/integration`, маркер `integration`) работают с настоящими
-PostgreSQL, Redis и MinIO: миграции Alembic строят схему моделей и откатываются, задача проходит
-свои статусы в базе, брокер Celery принимает сообщение, файлы задач проходят через MinIO. Без
-переменных `PZZ_TEST_*` они пропускаются:
+Integration tests (`tests/integration`, marker `integration`) run against real
+PostgreSQL, Redis and MinIO: Alembic migrations build the model schema and roll back, a task goes
+through its statuses in the database, the Celery broker accepts a message, task files pass through
+MinIO. Without the `PZZ_TEST_*` variables they are skipped:
 
 ```bash
 PZZ_TEST_DATABASE_URL=postgresql+psycopg://pzz:pzz@localhost:5432/pzz \
@@ -323,166 +326,177 @@ PZZ_TEST_MINIO_SECRET_KEY=minioadmin \
 uv run pytest -m integration tests/integration
 ```
 
-## CI и версии
+## CI and versions
 
-- `tests.yml` — на каждый PR в `dev`/`main`: юнит-тесты, интеграционные тесты (`integration.yml`,
-  ещё и по ночам) и проверка black (несоответствия правятся коммитом в ветку PR).
-- `pr-autofill.yml` — заголовок PR `vX.Y.Z (ветка)` (версия, с которой он вольётся) и список
-  коммитов в секции «Commits» в конце описания. Текст, написанный автором PR, не меняется:
-  обновляется только эта секция.
-- `version-bump.yml` — версия поднимается в ветке PR перед мерджем в `dev`: включите **Enable
-  auto-merge**, и коммит `bump:` обновит `pyproject.toml`, `service/__version__.py`, `uv.lock` и
-  `CHANGELOG.md` (метка `major` → major, ветки `feat/*`/`feature/*` → minor, остальные → patch),
-  после чего статус `version` пропустит мердж. Без auto-merge `version` ждёт.
-  - **Мердж в `dev` — только через Enable auto-merge.** Ruleset на `dev` требует статус
-    `version`, поэтому обычная кнопка Merge ждёт его. Каждый PR получает от бота коммит `bump:`;
-    когда `dev` уходит вперёд, бот заново вливает `dev` в ветки PR, стоящих в auto-merge, и
-    поднимает их версию.
-  - **Токен `VERSION_STATUS_TOKEN`.** Секрет репозитория с fine-grained PAT (доступ к этому
-    репозиторию, право Commit statuses: write) или classic PAT со scope `repo:status`. Им
-    ставится итоговый статус `version`: мердж, который auto-merge делает после проверки от
-    `GITHUB_TOKEN`, не запускает workflow, и релиз на dev бы не стартовал. Токен выпускает и
-    продлевает мейнтейнер репозитория; когда срок истекает, `version` перестаёт проходить, и
-    нужно выпустить новый токен и обновить секрет (Settings → Secrets and variables → Actions).
-- `release.yml` — мердж в `main` ставит тег версии из `dev` и черновик релиза из CHANGELOG.
-- Версия видна в `GET /health` и в OpenAPI.
+- `tests.yml` — on every PR to `dev`/`main`: unit tests, integration tests (`integration.yml`,
+  also nightly) and a black check (mismatches are fixed by a commit to the PR branch).
+- `pr-autofill.yml` — PR title `vX.Y.Z (branch)` (the version it will be merged as) and a list
+  of commits in the "Commits" section at the end of the description. Text written by the PR author
+  is not changed: only that section is updated.
+- `version-bump.yml` — the version is bumped in the PR branch before merging into `dev`: enable
+  **Enable auto-merge**, and a `bump:` commit will update `pyproject.toml`, `service/__version__.py`,
+  `uv.lock` and `CHANGELOG.md` (label `major` → major, branches `feat/*`/`feature/*` → minor,
+  everything else → patch), after which the `version` status lets the merge through. Without
+  auto-merge, `version` waits.
+  - **Merging into `dev` is only possible via Enable auto-merge.** The ruleset on `dev` requires the
+    `version` status, so the regular Merge button waits for it. Every PR gets a `bump:` commit from
+    the bot; when `dev` moves ahead, the bot merges `dev` into the branches of PRs queued for
+    auto-merge again and bumps their version.
+  - **The `VERSION_STATUS_TOKEN` token.** A repository secret holding a fine-grained PAT (access to
+    this repository, Commit statuses: write permission) or a classic PAT with the `repo:status`
+    scope. It is used to set the final `version` status: a merge that auto-merge performs after a
+    check by `GITHUB_TOKEN` does not trigger workflows, so the dev release would not start. The
+    token is issued and renewed by the repository maintainer; when it expires, `version` stops
+    passing, and a new token must be issued and the secret updated (Settings → Secrets and
+    variables → Actions).
+- `release.yml` — a merge into `main` tags the version from `dev` and creates a draft release from
+  the CHANGELOG.
+- The version is shown in `GET /health` and in OpenAPI.
 
 ---
 
-## Деплой
+## Deployment
 
-CI-пайплайн [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
-(`workflow_dispatch`) собирает образ, пушит в реестр и поднимает полный стек
-через [`docker-compose.actions.yml`](docker-compose.actions.yml):
+The CI pipeline [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
+(`workflow_dispatch`) builds the image, pushes it to the registry and brings up the full stack
+via [`docker-compose.actions.yml`](docker-compose.actions.yml):
 `postgres + redis + migrate + api + worker + beat + mcp`.
 
-В проде миграции выполняет отдельный one-shot сервис `migrate`
-(`RUN_MIGRATIONS_ON_STARTUP=false` для api).
+In production, migrations are run by a separate one-shot `migrate` service
+(`RUN_MIGRATIONS_ON_STARTUP=false` for api).
 
 ---
 
-## Проверка ВРИ по ПЗЗ территории
+## Checking VRI against the territory's PZZ
 
-`POST /pzz/regulations/check-vri` (MCP `check_vri_in_pzz`) отвечает агенту проверки
-соответствия, допустим ли вид использования в зоне по ПЗЗ территории. В запросе —
-по одному из каждой группы:
+`POST /pzz/regulations/check-vri` (MCP `check_vri_in_pzz`) tells the compliance-checking
+agent whether a permitted use type (VRI) is allowed in a zone under the territory's PZZ.
+The request contains one item from each group:
 
-- территория: `project_id` (территория проекта) или `territory_id` (urban_api);
-- вид использования: `vri_code` («2.1»), `physical_object_type_id` (тип объекта
-  urban_api; жилой дом — по этажности, как в сценарном флоу) или `service_type_id`;
-- зона: `pzz_zone_code` (точная зона ПЗЗ, «Ж-2.15») или `functional_zone_type_id`
-  (тип функциональной зоны urban_api);
-- необязательно `floors`, `height` — для проверки предельных параметров.
+- territory: `project_id` (the project's territory) or `territory_id` (urban_api);
+- use type: `vri_code` ("2.1"), `physical_object_type_id` (urban_api object type;
+  a residential building is resolved by its number of floors, as in the scenario flow) or `service_type_id`;
+- zone: `pzz_zone_code` (an exact PZZ zone, "Ж-2.15") or `functional_zone_type_id`
+  (urban_api functional zone type);
+- optionally `floors`, `height` — to check the maximum permitted parameters.
 
-**Откуда ПЗЗ.** Территорию даёт urban_api с токеном пользователя: геометрия проекта
-(`/projects/{id}/territory`) → самая глубокая территория, целиком её покрывающая
-(`/common_territory`), → её родители. NormGraph (`NORMGRAPH_BASE_URL`, сервисный токен
-`KEYCLOAK_*`) отдаёт ПЗЗ этих территорий (`/regulations/documents`,
-`/regulations/zones`) — берётся ПЗЗ самой глубокой (поселения, а не района).
+**Where the PZZ comes from.** The territory is provided by urban_api with the user's token: the
+project geometry (`/projects/{id}/territory`) → the deepest territory that fully covers it
+(`/common_territory`) → its parents. NormGraph (`NORMGRAPH_BASE_URL`, service token
+`KEYCLOAK_*`) returns the PZZ of these territories (`/regulations/documents`,
+`/regulations/zones`); the PZZ of the deepest one is used (the settlement, not the district).
 
-**Тип функциональной зоны → зоны ПЗЗ.** Типу urban_api соответствуют несколько зон
-ПЗЗ. Какие именно, решает языковая модель чата (`LLM_BACKEND`, `CHAT_MODEL`): по
-названию, группе и основным ВРИ каждой зоны документа и по описанию типов во
-встроенном шаблоне (`functional_zones_to_pzz_mapping.json`). Модель отвечает трижды
-параллельно, зона относится к типу по большинству ответов. Подзоны (Ж-1.10) следуют
-своей зоне (Ж-1), зона подтипа («Малоэтажная жилая зона») — и общему типу. Ответ
-кешируется на редакцию документа (хеш его зон). Без модели зоны подбираются по
-префиксу кода (Ж — жилые, О/ОИ/ОД — общественно-деловые, П/ПП/И — промышленные,
-Т/ТД/И — транспортные, …). Каким способом подобраны зоны, видно в
-`zone.mapping.method` (`llm` / `code_prefix`), сами зоны — в `zone.mapping.zone_codes`.
+**Functional zone type → PZZ zones.** One urban_api type corresponds to several PZZ zones.
+Which ones exactly is decided by the chat language model (`LLM_BACKEND`, `CHAT_MODEL`), based on
+the name, group and main VRIs of each zone in the document and the type descriptions in the
+built-in template (`functional_zones_to_pzz_mapping.json`). The model answers three times in
+parallel, and a zone is assigned to the type by majority vote. Subzones (Ж-1.10) follow their
+parent zone (Ж-1); a subtype zone ("Low-rise residential zone") also follows the general type.
+The answer is cached per document revision (a hash of its zones). Without a model, zones are
+matched by code prefix (Ж — residential, О/ОИ/ОД — public and business, П/ПП/И — industrial,
+Т/ТД/И — transport, …). The matching method is shown in `zone.mapping.method`
+(`llm` / `code_prefix`), and the zones themselves in `zone.mapping.zone_codes`.
 
-**Вердикт** проверяется по каждой зоне (`zones[]`: вердикт, причина, предельные
-параметры) и сводится:
+The **verdict** is checked for each zone (`zones[]`: verdict, reason, maximum permitted
+parameters) and then aggregated:
 
-- разрешён во всех зонах — `allowed_main` / `allowed_conditional` /
-  `allowed_auxiliary` по самому слабому разделу;
-- не разрешён ни в одной — `not_allowed`;
-- разрешён в части зон — `depends_on_zone` («Зависит от зоны ПЗЗ»): решает зона ПЗЗ,
-  в которой стоит объект;
-- нет ВРИ для объекта, нет зон этого типа в документе или не прочитаны ВРИ зон —
-  `unclear`.
+- permitted in all zones — `allowed_main` / `allowed_conditional` /
+  `allowed_auxiliary`, according to the weakest section;
+- not permitted in any zone — `not_allowed`;
+- permitted in some zones — `depends_on_zone` ("Зависит от зоны ПЗЗ", "Depends on the PZZ zone"):
+  the decision depends on the PZZ zone where the object is located;
+- no VRI for the object, no zones of this type in the document, or the zones' VRIs could not be
+  read — `unclear`.
 
-Этажность и высота сравниваются с предельными параметрами зоны (с учётом строк «для
-вида …», «кроме …», жилой / нежилой застройки; «не подлежит установлению» не
-ограничивает): `parameters.status` — «Соответствует» / «Превышены» / «Не проверено».
+Number of floors and height are compared with the zone's maximum permitted parameters (taking into
+account rows "for use type …", "except …", residential / non-residential development; "not subject
+to establishment" imposes no limit): `parameters.status` — "Соответствует" (Compliant) /
+"Превышены" (Exceeded) / "Не проверено" (Not checked).
 
-Нет ПЗЗ у территории — 404; urban_api / NormGraph недоступны — 502; не настроены
-`NORMGRAPH_BASE_URL` или сервисный аккаунт — 503.
+No PZZ for the territory — 404; urban_api / NormGraph unavailable — 502;
+`NORMGRAPH_BASE_URL` or the service account not configured — 503.
 
-## Конфигурация
+## Configuration
 
-Все настройки — через переменные окружения / `.env.development`
-(см. `service/settings.py` и `.env.example`). Ключевое: `DATABASE_URL`,
-`REDIS_URL`, `LLM_BACKEND` + модели, `FILESERVER_*` (MinIO), `URBAN_API_BASE_URL`.
-Для чат-ручек: `CHAT_STORAGE_BASE_URL` (история диалогов; пусто — персист выключен),
-`CHAT_MODEL` (дефолтная модель чата на хосте выбранного `LLM_BACKEND`), `CHAT_SYSTEM_PROMPT_PATH`,
-`KEYCLOAK_*` (сервисный токен для записи истории, см. «Аутентификация»).
-Проверка ВРИ по ПЗЗ территории: `NORMGRAPH_BASE_URL` (пусто — проверка недоступна),
-`NORMGRAPH_TIMEOUT_SECONDS`; NormGraph вызывается тем же сервисным токеном.
-Секреты в репозиторий не коммитятся.
+All settings come from environment variables / `.env.development`
+(see `service/settings.py` and `.env.example`). Key ones: `DATABASE_URL`,
+`REDIS_URL`, `LLM_BACKEND` + models, `FILESERVER_*` (MinIO), `URBAN_API_BASE_URL`.
+For the chat endpoints: `CHAT_STORAGE_BASE_URL` (conversation history; empty — persistence disabled),
+`CHAT_MODEL` (default chat model on the host of the selected `LLM_BACKEND`), `CHAT_SYSTEM_PROMPT_PATH`,
+`KEYCLOAK_*` (service token for writing history, see [Authentication](#authentication)).
+Checking VRI against the territory's PZZ: `NORMGRAPH_BASE_URL` (empty — the check is unavailable),
+`NORMGRAPH_TIMEOUT_SECONDS`; NormGraph is called with the same service token.
+Secrets are not committed to the repository.
 
-### Приоритеты запросов vLLM
+### vLLM request priorities
 
-Сервис передаёт `priority` в JSON каждого запроса `/v1/chat/completions`
-по общей матрице приоритетов:
+The service sends `priority` in the JSON of every `/v1/chat/completions` request,
+following the shared priority matrix:
 
-| Вызов модели | Категория | Переменная | Значение по умолчанию |
+| Model call | Class | Variable | Default |
 | --- | --- | --- | --- |
-| Потоковый ответ/отчёт ПЗЗ в чате | live / blocking | `VLLM_CHAT_PRIORITY` | `-100` |
-| Классификация ВРИ, проверка ПЗЗ, повторная оценка кандидатов, разбор атрибутов, маппинг зон и названий | live-long / blocking | `VLLM_REQUEST_PRIORITY` | `-60` |
+| Streamed chat answer / PZZ report | live / blocking | `VLLM_CHAT_PRIORITY` | `-100` |
+| VRI classification, PZZ check, candidate re-scoring, attribute parsing, zone and name mapping | live-long / blocking | `VLLM_REQUEST_PRIORITY` | `-60` |
 
-Меньшее число обрабатывается раньше: ответ пользователю (`-100`) идёт перед
-проверками (`-60`), оба — перед обычными запросами с `0`. Параметр `priority`
-у API-задачи (1–10) управляет резервированием мощности воркеров и не меняет
-эти категории vLLM. Текстовый файл отчёта формируется без модели.
+Lower numbers are handled first: the answer to the user (`-100`) goes before the
+checks (`-60`), and both go before regular requests with `0`. The `priority` parameter
+of an API task (1–10) controls worker capacity reservation and does not change
+these vLLM classes. The text report file is produced without the model.
 
-**Перед обновлением сервиса** добавьте к команде запуска внешнего сервера
-`vllm serve <model> ...` флаг `--scheduling-policy priority` и перезапустите его.
-Здесь vLLM не запускается: изменение Docker Compose приложения не переключит
-его планировщик. Затем задайте в `.env.development` (для Actions — в `ENV_APP`):
+**Before updating the service**, add the `--scheduling-policy priority` flag to the
+launch command of the external `vllm serve <model> ...` server and restart it.
+vLLM is not started here: changing the application's Docker Compose will not switch
+its scheduler. Then set in `.env.development` (for Actions, in `ENV_APP`):
 
 ```dotenv
 VLLM_REQUEST_PRIORITY=-60
 VLLM_CHAT_PRIORITY=-100
 ```
 
-Перезапустите API и LLM-воркеры. Для сервера с прежним планировщиком `fcfs`
-временно задайте **обе** переменные равными `0`: vLLM отклоняет ненулевой
-приоритет без priority scheduling. Само приложение не снижает приоритет
-автоматически при ошибке сервера. Приоритет меняет порядок обслуживания,
-но не устраняет ошибки модели, сети или нехватку GPU.
+Restart the API and the LLM workers. For a server still on the old `fcfs` scheduler,
+temporarily set **both** variables to `0`: vLLM rejects a non-zero priority without
+priority scheduling. The application itself does not lower the priority automatically
+when the server returns an error. Priority changes the order of service, but does not
+fix model or network errors or a GPU shortage.
 
-Контракт: [приоритет запроса](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/),
-[планировщик vLLM](https://docs.vllm.ai/en/latest/cli/serve/#scheduling-policy).
+Contract: [request priority](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/),
+[vLLM scheduler](https://docs.vllm.ai/en/latest/cli/serve/#scheduling-policy).
 
-## Текстовые отчёты сервиса
+## Text reports
 
-После выполнения операции чат дополнительно возвращает событие `file` с
-`name: "report"`, `role: "report"`, `mime_type: "text/plain"`, `filename: "Отчёт.txt"`.
-Обычный текстовый ответ остаётся в потоке. Ссылка на отчёт сохраняется рядом с ним
-в истории ChatStorage как часть `kind: "file"`; содержимое файла в историю не копируется.
+After an operation completes, the chat additionally emits a `file` event with
+`name: "report"`, `role: "report"`, `mime_type: "text/plain"`, `filename: "Отчёт.txt"`
+("Report.txt"). The regular text answer stays in the stream. The link to the report is
+stored next to it in the ChatStorage history as a `kind: "file"` part; the file contents
+are not copied into the history.
 
-Дескриптор содержит две долговечные ссылки относительно базы `source_service`:
+The descriptor carries two durable links relative to the `source_service` base URL:
 
-- `url`: `GET /reports/id` — UTF-8 текст для просмотра (`Content-Disposition: inline`).
-- `download_url`: тот же адрес с `?download=true` — скачивание (`attachment; filename="report.txt"`).
+- `url`: `GET /reports/id` — UTF-8 text for viewing (`Content-Disposition: inline`).
+- `download_url`: the same address with `?download=true` — download (`attachment; filename="report.txt"`).
 
-Дескриптор находится в `content` события `file`.
-Отчёт собирается из сохранённого результата задачи: ПЗЗ по участкам/зданиям/сценарию, классификация либо подбор мест. Включает полную сводку, все строки объектов и нормативы без сокращений текста для LLM. `id` — `external_id` задачи. Пока задача не завершена, API возвращает 409. Файл доступен независимо от LLM и ChatStorage; `include_report=false` скрывает структурированное SSE-событие, но не файловое вложение.
+The descriptor is located in the `content` of the `file` event.
+The report is built from the stored task result: PZZ check by land plots/buildings/scenario,
+classification or site selection. It includes the full summary, all object rows and the
+standards, without the text truncation applied for the LLM. `id` is the task's `external_id`.
+Until the task has finished, the API returns 409. The file is available regardless of the LLM
+and ChatStorage; `include_report=false` hides the structured SSE event but not the file attachment.
 
-Фронтенду следует читать отчёт как текст, не как GeoJSON и не как HTML. Для показа
-достаточно `fetch(url).text()` и текстового компонента с сохранением переносов строк.
-Ссылки проходят через API сервиса: доступ к внутреннему MinIO браузеру не нужен.
-Модель доступа совпадает с существующими `/files/...`: UUID задачи является ключом доступа. Удаление задачи/результата делает отчёт недоступным.
+The frontend should read the report as text, not as GeoJSON or HTML. To display it,
+`fetch(url).text()` and a text component that preserves line breaks are enough.
+Links go through the service API, so the browser never needs access to the internal MinIO.
+The access model is the same as for the existing `/files/...`: the task UUID is the access key.
+Deleting the task/result makes the report unavailable.
 
+The report is written in Russian, following the layout of a regulatory compliance check:
+headings, a summary metrics table and separate detail sections. In PZZ reports, objects
+are grouped by compliance and by whether they need manual review; a classification result
+is never presented as a PZZ compliance check.
+The text is saved as UTF-8 TXT with Markdown markup suitable for rendering on the
+frontend. Internal API fields are omitted; parameter names, zone names and system
+statuses are translated. Original zone codes, VRI codes, document codes and metric values
+are kept as is. These changes affect only how the report is presented; the JSON and SSE
+schemas are unchanged.
 
-Отчёт оформлен на русском языке по образцу нормативной проверки: заголовки,
-таблица сводных показателей и отдельные разделы подробностей. В отчётах ПЗЗ
-объекты сгруппированы по соответствию и необходимости ручной проверки;
-результат классификации не объявляется проверкой соответствия ПЗЗ.
-Текст сохраняется в UTF-8 TXT с разметкой Markdown, пригодной для отображения
-на фронте. Служебные поля API исключены; названия параметров, зон и системные
-статусы переведены. Исходные коды зон, ВРИ, документов и значения показателей
-сохраняются. Изменения касаются представления отчёта, схема JSON и SSE не меняется.
-
-Для скачивания используется русское имя `Отчёт.txt` через параметр заголовка `filename*`; `filename` содержит совместимое резервное имя.
+For download, the Russian file name `Отчёт.txt` is sent via the `filename*` header
+parameter; `filename` carries an ASCII-compatible fallback name.
